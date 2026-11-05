@@ -280,7 +280,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "tabs",
-            show: None,
+            show: Some(demos::tabs_demo),
         },
         DemoPage {
             name: "breadcrumb",

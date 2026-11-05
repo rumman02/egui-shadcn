@@ -2232,6 +2232,121 @@ pub fn accordion_demo(ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(multi_store, multi));
 }
 
+pub fn tabs_demo(ui: &mut egui::Ui) {
+    let controlled_store = egui::Id::unique("tabs_demo_controlled");
+    let mut controlled: String = ui.ctx().data_mut(|d| {
+        d.get_temp(controlled_store)
+            .unwrap_or_else(|| "account".to_owned())
+    });
+
+    ui.label("Default variant (bg-muted pill list)");
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_default").show(ui, |ui| {
+        TabsList::new().show(ui, |ui| {
+            TabsTrigger::new("account", "Account").show(ui);
+            TabsTrigger::new("password", "Password").show(ui);
+        });
+        TabsContent::new("account").show(ui, |ui| {
+            ui.label("Make changes to your account here.");
+        });
+        TabsContent::new("password").show(ui, |ui| {
+            ui.label("Change your password here.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Line variant (underline indicator)");
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_line").show(ui, |ui| {
+        TabsList::new().variant(TabsVariant::Line).show(ui, |ui| {
+            TabsTrigger::new("preview", "Preview").show(ui);
+            TabsTrigger::new("code", "Code").show(ui);
+            TabsTrigger::new("logs", "Logs").show(ui);
+        });
+        TabsContent::new("preview").show(ui, |ui| {
+            ui.label("Rendered output preview.");
+        });
+        TabsContent::new("code").show(ui, |ui| {
+            ui.label("Source code panel.");
+        });
+        TabsContent::new("logs").show(ui, |ui| {
+            ui.label("Build logs panel.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label(format!("Controlled (selected: {controlled:?})"));
+    ui.add_space(4.0);
+    Tabs::controlled(&mut controlled)
+        .id_salt("tabs_demo_controlled")
+        .show(ui, |ui| {
+            TabsList::new().show(ui, |ui| {
+                TabsTrigger::new("account", "Account").show(ui);
+                TabsTrigger::new("password", "Password").show(ui);
+            });
+            TabsContent::new("account").show(ui, |ui| {
+                ui.label("The selected String mirrors the active tab each frame.");
+            });
+            TabsContent::new("password").show(ui, |ui| {
+                ui.label("Switched programmatically or by clicking a trigger.");
+            });
+        });
+    ui.small(format!("value = {controlled:?}"));
+
+    ui.add_space(12.0);
+    ui.label("Vertical orientation");
+    ui.add_space(4.0);
+    Tabs::new()
+        .id_salt("tabs_demo_vertical")
+        .orientation(TabsOrientation::Vertical)
+        .show(ui, |ui| {
+            TabsList::new().show(ui, |ui| {
+                TabsTrigger::new("general", "General").show(ui);
+                TabsTrigger::new("security", "Security").show(ui);
+                TabsTrigger::new("notifications", "Notifications").show(ui);
+            });
+            TabsContent::new("general").show(ui, |ui| {
+                ui.label("General settings.");
+            });
+            TabsContent::new("security").show(ui, |ui| {
+                ui.label("Security settings.");
+            });
+            TabsContent::new("notifications").show(ui, |ui| {
+                ui.label("Notification settings.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("With icons and a disabled trigger");
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_icons").show(ui, |ui| {
+        TabsList::new().show(ui, |ui| {
+            TabsTrigger::new("files", "Files")
+                .icon(Icon::Paperclip)
+                .show(ui);
+            TabsTrigger::new("search", "Search")
+                .icon(Icon::Search)
+                .show(ui);
+            TabsTrigger::new("locked", "Locked").disabled(true).show(ui);
+        });
+        TabsContent::new("files").show(ui, |ui| {
+            ui.label("Attachments live here.");
+        });
+        TabsContent::new("search").show(ui, |ui| {
+            ui.label("Search across the workspace.");
+        });
+        TabsContent::new("locked").show(ui, |ui| {
+            ui.label("Requires a higher plan.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab and Arrow keys move focus; Enter or Space selects.");
+
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(controlled_store, controlled));
+}
+
 pub fn collapsible_demo(ui: &mut egui::Ui) {
     let controlled_store = egui::Id::unique("collapsible_demo_controlled");
     let mut controlled: bool = ui

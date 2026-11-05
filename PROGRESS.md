@@ -54,7 +54,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 37 | resizable | ✅ done | C | 0725a5e | PanelGroup(h/v, length builder) + Panel(min/max fractions) + Handle(drag, arrow-key resize, grip chip, focus ring); fractions persist per group id; grip glyph drawn inline (no Icon::GripVertical in foundation) |
 | 38 | accordion | ✅ done | D | | Item/Trigger/Content; single (collapsible opt) + multiple; chevron rotates 180°, animated height (shared helper w/ collapsible); egui built-in Tab/arrows focus + Enter/Space activate (no Radix arrow auto-activation) |
 | 39 | collapsible | ✅ done | D | | Collapsible(root)/Trigger/Content; state persisted per id_salt or controlled &mut bool; animated height clip (open_progress, 150ms open / 75ms close) |
-| 40 | tabs | ⬜ todo | D | | list/trigger/content, vertical |
+| 40 | tabs | ✅ done | D | | Tabs/List/Trigger/Content; variants default (bg-muted pill + active fill) and line (underline/side indicator), horizontal + vertical; value per id_salt or controlled &mut String; egui arrows/Enter/Space |
 | 41 | breadcrumb | ⬜ todo | D | | list/item/link/page/ellipsis/separator |
 | 42 | pagination | ⬜ todo | D | | content/previous/next/ellipsis/links |
 | 43 | dialog | ⬜ todo | E | | modal, backdrop, Esc close, sizes |
