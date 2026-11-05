@@ -296,7 +296,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "dialog",
-            show: None,
+            show: Some(demos::dialog_demo::dialog_demo),
         },
         DemoPage {
             name: "alert-dialog",

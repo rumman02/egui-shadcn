@@ -11,6 +11,7 @@ pub mod button_group;
 pub mod card;
 pub mod checkbox;
 pub mod collapsible;
+pub mod dialog;
 pub mod empty;
 pub mod field;
 pub mod hover_card;
@@ -60,6 +61,10 @@ pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
+pub use dialog::{
+    Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    DialogTrigger, DIALOG_MAX_WIDTH,
+};
 pub use empty::{
     Empty, EmptyContent, EmptyDescription, EmptyFooter, EmptyHeader, EmptyMedia, EmptyMediaVariant,
     EmptyTitle,
