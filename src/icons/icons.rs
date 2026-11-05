@@ -376,7 +376,7 @@ fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 36] = [
+    const ALL: [Icon; 38] = [
         Icon::Check,
         Icon::ChevronDown,
         Icon::ChevronUp,
