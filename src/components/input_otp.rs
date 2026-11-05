@@ -341,8 +341,8 @@ impl InputOTPGroup {
             .ctx()
             .data_mut(|d| d.get_temp(seen_id).unwrap_or_default());
         if seen.len() >= 2 {
-            let first = *seen.iter().min().unwrap();
-            let last = *seen.iter().max().unwrap();
+            let first = seen.iter().min().copied().unwrap_or(0);
+            let last = seen.iter().max().copied().unwrap_or(0);
             ui.ctx().data_mut(|d| {
                 let mut registry: Vec<(Id, Vec<GroupRange>)> =
                     d.get_temp(group_registry_id()).unwrap_or_default();
