@@ -244,7 +244,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "avatar",
-            show: None,
+            show: Some(demos::avatar_demo),
         },
         DemoPage {
             name: "progress",

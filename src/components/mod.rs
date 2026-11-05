@@ -2,6 +2,7 @@
 
 pub mod alert;
 pub mod aspect_ratio;
+pub mod avatar;
 pub mod badge;
 pub mod button;
 pub mod button_group;
@@ -28,6 +29,9 @@ pub mod typography;
 
 pub use alert::{Alert, AlertAction, AlertDescription, AlertTitle, AlertVariant};
 pub use aspect_ratio::AspectRatio;
+pub use avatar::{
+    initials_from_name, Avatar, AvatarBadge, AvatarGroup, AvatarGroupCount, AvatarSize,
+};
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};

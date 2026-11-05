@@ -1580,3 +1580,117 @@ pub fn alert_demo(ui: &mut egui::Ui) {
             });
         });
 }
+
+pub fn avatar_demo(ui: &mut egui::Ui) {
+    // A generated gradient texture so the demo shows a real image without
+    // needing file loaders.
+    let tex_store = egui::Id::unique("avatar_demo_texture");
+    let tex_id = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_store));
+    let texture = tex_id.unwrap_or_else(|| {
+        let size = 64;
+        let mut pixels = Vec::with_capacity(size * size);
+        for y in 0..size {
+            for x in 0..size {
+                let t = (x as f32 / size as f32 + y as f32 / size as f32) * 0.5;
+                let r = (60.0 + 140.0 * t) as u8;
+                let g = (90.0 + 80.0 * (1.0 - t)) as u8;
+                let b = (220.0 - 120.0 * t) as u8;
+                pixels.push(egui::Color32::from_rgb(r, g, b));
+            }
+        }
+        let image = egui::ColorImage::new([size, size], pixels);
+        ui.ctx().load_texture(
+            "avatar_demo_gradient",
+            image,
+            egui::TextureOptions::default(),
+        )
+    });
+    let src = egui::ImageSource::Texture(egui::load::SizedTexture::new(
+        texture.id(),
+        texture.size_vec2(),
+    ));
+
+    ui.label("Sizes with fallback initials");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Avatar::new().size(AvatarSize::Sm).fallback("CN").show(ui);
+        Avatar::new().fallback("CN").show(ui);
+        Avatar::new().size(AvatarSize::Lg).fallback("CN").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("With an image (texture), icon fallback and badges");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Avatar::new().image(src.clone()).show(ui);
+        Avatar::new()
+            .size(AvatarSize::Lg)
+            .image(src.clone())
+            .show(ui);
+        Avatar::new()
+            .fallback_icon(Icon::User)
+            .badge(AvatarBadge::new())
+            .show(ui);
+        Avatar::new()
+            .fallback("OK")
+            .badge(AvatarBadge::new().icon(Icon::Check))
+            .show(ui);
+        Avatar::new()
+            .size(AvatarSize::Lg)
+            .fallback_icon(Icon::User)
+            .badge(AvatarBadge::new().icon(Icon::Plus))
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Small badges hide their icon");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Avatar::new()
+            .size(AvatarSize::Sm)
+            .fallback("S")
+            .badge(AvatarBadge::new().icon(Icon::Check))
+            .show(ui);
+        Avatar::new()
+            .size(AvatarSize::Sm)
+            .fallback("M")
+            .badge(AvatarBadge::new())
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Group (-space-x-2 overlap with separation rings)");
+    ui.add_space(4.0);
+    AvatarGroup::new().show(ui, |ui| {
+        Avatar::new().image(src.clone()).show(ui);
+        Avatar::new().fallback("AB").show(ui);
+        Avatar::new().fallback("CD").show(ui);
+        Avatar::new().fallback_icon(Icon::User).show(ui);
+        AvatarGroupCount::new("+2").show(ui);
+    });
+
+    ui.add_space(8.0);
+    ui.label("Small group");
+    ui.add_space(4.0);
+    AvatarGroup::new().size(AvatarSize::Sm).show(ui, |ui| {
+        Avatar::new().fallback("EF").show(ui);
+        Avatar::new().fallback("GH").show(ui);
+        AvatarGroupCount::new("+9").show(ui);
+    });
+
+    ui.add_space(8.0);
+    ui.label("Large group with icons");
+    ui.add_space(4.0);
+    AvatarGroup::new().size(AvatarSize::Lg).show(ui, |ui| {
+        Avatar::new().image(src.clone()).show(ui);
+        Avatar::new().fallback("IJ").show(ui);
+        AvatarGroupCount::new("")
+            .icon(Icon::MoreHorizontal)
+            .show(ui);
+    });
+
+    ui.add_space(8.0);
+    ui.small("URI images load through the context's texture loaders and fall back to initials until resolved.");
+}
