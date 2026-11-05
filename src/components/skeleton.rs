@@ -30,7 +30,7 @@ pub(crate) fn fill_color(p: &Palette, style: Style) -> Color32 {
 }
 
 /// A shadcn skeleton. See the [module docs](self) for an example.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Skeleton {
     size: Vec2,
     corner_radius: Option<u8>,
@@ -94,9 +94,7 @@ impl Skeleton {
                 let t = ui.input(|i| i.time);
                 fill = crate::theme::color_alpha(fill, pulse_alpha(t));
             }
-            let radius = self
-                .corner_radius
-                .unwrap_or_else(|| theme.radius.md_u8());
+            let radius = self.corner_radius.unwrap_or_else(|| theme.radius.md_u8());
             ui.painter().rect_filled(rect, radius, fill);
         }
 
@@ -139,7 +137,10 @@ mod tests {
         assert_eq!(s.size, Vec2::new(250.0, 125.0));
         assert!(s.animate);
         assert_eq!(s.corner_radius, None);
-        let s = Skeleton::new().corner_radius(12).animate(false).id_salt("x");
+        let s = Skeleton::new()
+            .corner_radius(12)
+            .animate(false)
+            .id_salt("x");
         assert_eq!(s.corner_radius, Some(12));
         assert!(!s.animate);
         assert_eq!(s.id_salt.as_deref(), Some("x"));

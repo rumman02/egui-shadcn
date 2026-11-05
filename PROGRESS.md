@@ -26,7 +26,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 9 | separator | ✅ done | A | 8b706dc | horizontal/vertical |
 | 10 | kbd | ✅ done | A | 4c81d7b | h-5 min-w-5 chip, sans font per source; KbdGroup gap-1 |
 | 11 | spinner | ✅ done | A | 9ac2f30 | rotating lucide loader-circle arc, 1 rev/s; size builder (source is size-4) |
-| 12 | skeleton | ⬜ todo | A | | animated pulse |
+| 12 | skeleton | ✅ done | A | 6ce2078 | animate-pulse cosine approx; nova fill bg-muted, base bg-accent |
 | 13 | typography | ⬜ todo | A | | docs family: h1..h4, p, blockquote, list, code, pre, muted |
 | 14 | aspect-ratio | ⬜ todo | A | | fixed ratio container |
 | 15 | marker | ⬜ todo | A | | variants incl. type/size (AI era component) |

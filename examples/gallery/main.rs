@@ -168,7 +168,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "skeleton",
-            show: None,
+            show: Some(demos::skeleton_demo),
         },
         DemoPage {
             name: "typography",

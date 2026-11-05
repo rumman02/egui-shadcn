@@ -277,3 +277,46 @@ pub fn spinner_demo(ui: &mut egui::Ui) {
             .show(ui);
     });
 }
+
+pub fn skeleton_demo(ui: &mut egui::Ui) {
+    ui.label("Text-line placeholders");
+    ui.add_space(4.0);
+    Skeleton::new()
+        .size(ui.available_width().min(320.0), 16.0)
+        .show(ui);
+    Skeleton::new()
+        .size(ui.available_width().min(280.0), 16.0)
+        .show(ui);
+    Skeleton::new()
+        .size(ui.available_width().min(300.0), 16.0)
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Card placeholder");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Skeleton::new()
+            .size(48.0, 48.0)
+            .corner_radius(theme_radius_full(ui))
+            .show(ui);
+        ui.vertical(|ui| {
+            Skeleton::new().size(180.0, 16.0).show(ui);
+            ui.add_space(6.0);
+            Skeleton::new().size(140.0, 12.0).show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Large block (h-[125px] w-[250px])");
+    ui.add_space(4.0);
+    Skeleton::new().size(250.0, 125.0).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Static (animation off)");
+    ui.add_space(4.0);
+    Skeleton::new().size(200.0, 20.0).animate(false).show(ui);
+}
+
+fn theme_radius_full(ui: &egui::Ui) -> u8 {
+    ShadcnTheme::of_ui(ui).radius.full_u8()
+}
