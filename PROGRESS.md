@@ -24,7 +24,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 7 | badge | ✅ done | A | 2acad1e | variants: default/secondary/destructive/outline/ghost/link |
 | 8 | label | ✅ done | A | 28db73b | text-sm font-medium; for_id focus binding; disabled 50% (base recipe, no required dot in v4 source) |
 | 9 | separator | ✅ done | A | 8b706dc | horizontal/vertical |
-| 10 | kbd | ⬜ todo | A | | mono chip |
+| 10 | kbd | ✅ done | A | 4c81d7b | h-5 min-w-5 chip, sans font per source; KbdGroup gap-1 |
 | 11 | spinner | ⬜ todo | A | | sizes sm/md/lg |
 | 12 | skeleton | ⬜ todo | A | | animated pulse |
 | 13 | typography | ⬜ todo | A | | docs family: h1..h4, p, blockquote, list, code, pre, muted |

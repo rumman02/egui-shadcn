@@ -200,3 +200,45 @@ pub fn separator_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     Separator::new().length(160.0).show(ui);
 }
+
+pub fn kbd_demo(ui: &mut egui::Ui) {
+    ui.label("Single keys");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Kbd::new("⌘").show(ui);
+        Kbd::new("⇧").show(ui);
+        Kbd::new("K").show(ui);
+        Kbd::new("Enter").show(ui);
+        Kbd::new("Esc").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Groups (gap-1)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Command palette:");
+        KbdGroup::new().show(ui, |ui| {
+            Kbd::new("⌘").show(ui);
+            Kbd::new("K").show(ui);
+        });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Undo:");
+        KbdGroup::new().show(ui, |ui| {
+            Kbd::new("⌘").show(ui);
+            Kbd::new("⇧").show(ui);
+            Kbd::new("Z").show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Inline with text");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Press");
+        Kbd::new("Tab").show(ui);
+        ui.label("to move focus, or");
+        Kbd::new("Esc").show(ui);
+        ui.label("to dismiss.");
+    });
+}
