@@ -1857,3 +1857,73 @@ pub fn table_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(sel_store, selected));
 }
+
+pub fn empty_demo(ui: &mut egui::Ui) {
+    ui.label("Bordered empty state with icon media, actions and inputs");
+    ui.add_space(4.0);
+    Empty::new().bordered(true).show(ui, |ui| {
+        EmptyHeader::new().show(ui, |ui| {
+            EmptyMedia::icon(Icon::Search).show(ui);
+            EmptyTitle::new("No results found").show(ui);
+            EmptyDescription::new(
+                "We couldn't find anything matching your filters. Try a different search term.",
+            )
+            .show(ui);
+        });
+        EmptyContent::new().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                Button::new("Clear filters").show(ui);
+                Button::new("Save search")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui);
+            });
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.label("Form-style empty (new project)");
+    ui.add_space(4.0);
+    Empty::new().bordered(true).show(ui, |ui| {
+        EmptyHeader::new().show(ui, |ui| {
+            EmptyMedia::icon(Icon::Plus).show(ui);
+            EmptyTitle::new("No projects yet").show(ui);
+            EmptyDescription::new("Create your first project to get started.").show(ui);
+        });
+        EmptyContent::new().show(ui, |ui| {
+            let store = egui::Id::unique("empty_demo_project");
+            let mut name: String = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or_default());
+            Input::new(&mut name)
+                .placeholder("Project name")
+                .width(240.0)
+                .show(ui);
+            ui.ctx().data_mut(|d| d.insert_temp(store, name));
+            Button::new("Create project").show(ui);
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.label("Bare (no border) and free-form media");
+    ui.add_space(4.0);
+    Empty::new().show(ui, |ui| {
+        EmptyHeader::new().show(ui, |ui| {
+            EmptyMedia::new().show_with(ui, |ui| {
+                let theme = ShadcnTheme::of_ui(ui);
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 8, theme.palette.muted);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "img",
+                    egui::FontId::proportional(12.0),
+                    theme.palette.muted_foreground,
+                );
+            });
+            EmptyTitle::new("Inbox is empty").show(ui);
+            EmptyDescription::new("Messages you receive will show up here.").show(ui);
+        });
+        EmptyFooter::new().show(ui, |ui| {
+            Button::new("Compose message").show(ui);
+        });
+    });
+}
