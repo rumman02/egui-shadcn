@@ -5,6 +5,7 @@ pub mod badge;
 pub mod button;
 pub mod button_group;
 pub mod checkbox;
+pub mod field;
 pub mod input;
 pub mod input_otp;
 pub mod kbd;
@@ -27,6 +28,10 @@ pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
+pub use field::{
+    Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend,
+    FieldLegendVariant, FieldOrientation, FieldSeparator, FieldSet, FieldTitle,
+};
 pub use input::{Input, INPUT_HEIGHT};
 pub use input_otp::{
     InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot, OtpOutput, OTP_CARET_HEIGHT,

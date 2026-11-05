@@ -228,7 +228,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "field",
-            show: None,
+            show: Some(demos::field_demo),
         },
         DemoPage {
             name: "input-group",

@@ -1238,3 +1238,87 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn field_demo(ui: &mut egui::Ui) {
+    let notif_store = egui::Id::unique("field_demo_notif");
+    let email_store = egui::Id::unique("field_demo_email");
+    let name_store = egui::Id::unique("field_demo_name");
+    let mut notifications: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(notif_store).unwrap_or(false));
+    let mut email: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(email_store).unwrap_or_default());
+    let mut name: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(name_store).unwrap_or_default());
+
+    FieldSet::new().show(ui, |ui| {
+        FieldLegend::new("Notification settings").show(ui);
+        FieldDescription::new("Choose how you want to be contacted. These apply to all projects.")
+            .show(ui);
+
+        FieldGroup::new().show(ui, |ui| {
+            Field::new().show(ui, |ui| {
+                let id = egui::Id::unique("field_demo_notif");
+                FieldLabel::new("Push notifications").for_id(id).show(ui);
+                FieldDescription::new("Send notifications to device.").show(ui);
+                Checkbox::new(&mut notifications)
+                    .id_salt("field_demo_notif")
+                    .show(ui);
+            });
+
+            Field::new().show(ui, |ui| {
+                FieldLabel::new("Email").show(ui);
+                FieldDescription::new("We use your email for the digest only.").show(ui);
+                Input::new(&mut email).placeholder("m@example.com").show(ui);
+            });
+
+            Field::new().invalid(true).show(ui, |ui| {
+                FieldLabel::new("Name").show(ui);
+                Input::new(&mut name).invalid(true).show(ui);
+                FieldError::new("Your display name cannot be empty.").show(ui);
+            });
+        });
+
+        FieldSeparator::content("or continue with").show(ui);
+
+        Field::new().show(ui, |ui| {
+            FieldLabel::new("Billing plan").show(ui);
+            FieldContent::new().show(ui, |ui| {
+                FieldDescription::new("Updates your plan to Pro.").show(ui);
+                FieldError::errors(vec![
+                    "Card declined".to_owned(),
+                    "Insufficient funds".to_owned(),
+                ])
+                .show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Horizontal orientation (label beside the control)");
+    ui.add_space(4.0);
+    Field::new()
+        .orientation(FieldOrientation::Horizontal)
+        .show(ui, |ui| {
+            FieldLabel::new("Enable notifications").show(ui);
+            Switch::new(&mut notifications)
+                .id_salt("field_demo_switch")
+                .show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Field title with icon");
+    ui.add_space(4.0);
+    Field::new().show(ui, |ui| {
+        FieldTitle::new("Account").icon(Icon::User).show(ui);
+        FieldDescription::new("Manage your account details.").show(ui);
+    });
+
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(notif_store, notifications);
+        d.insert_temp(email_store, email);
+        d.insert_temp(name_store, name);
+    });
+}
