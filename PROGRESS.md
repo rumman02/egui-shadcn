@@ -33,7 +33,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 16 | button-group | ✅ done | A | 5afcbf2 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
 | 17 | input | ✅ done | B | d035ace | invalid/disabled/password, w-full default, ButtonGroup fusing |
 | 18 | textarea | ✅ done | B | 4d1e95f | min-h-16, rows, placeholder, states |
-| 19 | checkbox | ✅ done | B | TBD-CB | checked/indeterminate (minus icon), disabled, invalid, Space+Enter toggle |
+| 19 | checkbox | ✅ done | B | 959c672 | checked/indeterminate (minus icon), disabled, invalid, Space+Enter toggle |
 | 20 | radio-group | ⬜ todo | B | | |
 | 21 | switch | ⬜ todo | B | | |
 | 22 | slider | ⬜ todo | B | | single + range |
