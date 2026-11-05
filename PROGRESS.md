@@ -38,7 +38,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 21 | switch | ✅ done | B | bb81ad0 | default+sm sizes, animated thumb, dark thumb tokens, Space toggle |
 | 22 | slider | ✅ done | B | b144941 | single + range thumbs, step, arrow/home/end keys, track click, disabled |
 | 23 | toggle | ✅ done | B | d4eee72 | default/outline variants, sm/default/lg sizes, icon+text, group fusing |
-| 24 | toggle-group | ✅ done | B | TBD-TGG | single (deselectable) + multiple modes, spacing 0 fusing via group protocol |
+| 24 | toggle-group | ✅ done | B | 69d0eb7 | single (deselectable) + multiple modes, spacing 0 fusing via group protocol |
 | 25 | input-otp | ⬜ todo | B | | N-slot OTP input |
 | 26 | native-select | ⬜ todo | B | | egui ComboBox-based |
 | 27 | field | ⬜ todo | B | | Field/Label/Description/Error/Group/Set |
