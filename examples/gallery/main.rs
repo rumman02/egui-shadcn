@@ -324,7 +324,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "hover-card",
-            show: None,
+            show: Some(demos::hover_card_demo::hover_card_demo),
         },
         DemoPage {
             name: "sonner",

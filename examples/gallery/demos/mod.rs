@@ -1,5 +1,6 @@
 //! One demo module per ported component.
 
+pub mod hover_card_demo;
 pub mod popover_demo;
 pub mod tooltip_demo;
 

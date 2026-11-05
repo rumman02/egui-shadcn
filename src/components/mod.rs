@@ -13,6 +13,7 @@ pub mod checkbox;
 pub mod collapsible;
 pub mod empty;
 pub mod field;
+pub mod hover_card;
 pub mod input;
 pub mod input_group;
 pub mod input_otp;
@@ -66,6 +67,10 @@ pub use empty::{
 pub use field::{
     Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend,
     FieldLegendVariant, FieldOrientation, FieldSeparator, FieldSet, FieldTitle,
+};
+pub use hover_card::{
+    HoverCard, HoverCardContent, HoverCardTrigger, HOVER_CARD_DEFAULT_CLOSE_DELAY_MS,
+    HOVER_CARD_DEFAULT_OPEN_DELAY_MS, HOVER_CARD_DEFAULT_WIDTH, HOVER_CARD_SIDE_OFFSET,
 };
 pub use input::{Input, INPUT_HEIGHT};
 pub use input_group::{
