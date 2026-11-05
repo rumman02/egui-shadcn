@@ -8,6 +8,7 @@ pub mod button;
 pub mod button_group;
 pub mod card;
 pub mod checkbox;
+pub mod collapsible;
 pub mod empty;
 pub mod field;
 pub mod input;
@@ -43,6 +44,7 @@ pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosit
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
+pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
 pub use empty::{
     Empty, EmptyContent, EmptyDescription, EmptyFooter, EmptyHeader, EmptyMedia, EmptyMediaVariant,
     EmptyTitle,

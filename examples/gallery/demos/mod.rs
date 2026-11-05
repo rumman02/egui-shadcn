@@ -2133,6 +2133,110 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
         });
 }
 
+pub fn collapsible_demo(ui: &mut egui::Ui) {
+    let controlled_store = egui::Id::unique("collapsible_demo_controlled");
+    let mut controlled: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(controlled_store).unwrap_or(false));
+
+    ui.label("Uncontrolled (state persisted per id_salt)");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_1")
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("@peduarte starred 3 repositories")
+                .icon_end(Icon::ChevronDown)
+                .show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("@radix-ui/primitives");
+                ui.label("@radix-ui/colors");
+                ui.label("@stitches/react");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Icon trigger, open by default (demo-style bordered rows)");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_2")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("@peduarte starred 3 repositories");
+                CollapsibleTrigger::new("")
+                    .icon_start(Icon::ChevronDown)
+                    .id_salt("collapsible_demo_2_trigger")
+                    .show(ui);
+            });
+            CollapsibleContent::new().show(ui, |ui| {
+                for name in ["@radix-ui/primitives", "@radix-ui/colors"] {
+                    ui.add_space(2.0);
+                    BorderRow::draw(ui, name);
+                }
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label(format!("Controlled (open: {controlled})"));
+    ui.add_space(4.0);
+    Collapsible::controlled(&mut controlled)
+        .id_salt("collapsible_demo_3")
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("Toggle details").show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("Anything inside the content region animates open and closed.");
+                ui.label("The `controlled` bool mirrors the open state each frame.");
+            });
+        });
+    ui.small(format!("open = {controlled}"));
+
+    ui.add_space(12.0);
+    ui.label("Disabled trigger");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_4")
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("Cannot be opened")
+                .disabled(true)
+                .show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("Hidden content.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a trigger, press Space or Enter to toggle.");
+
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(controlled_store, controlled));
+}
+
+/// A tiny helper that mimics the demo's `rounded-md border px-4 py-2` row.
+struct BorderRow;
+
+impl BorderRow {
+    fn draw(ui: &mut egui::Ui, text: &str) {
+        let theme = ShadcnTheme::of_ui(ui);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width().min(350.0), 36.0),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_stroke(
+            rect,
+            theme.radius.md_u8(),
+            egui::Stroke::new(1.0, theme.palette.border),
+            egui::epaint::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            egui::Pos2::new(rect.min.x + 16.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::monospace(14.0),
+            theme.palette.foreground,
+        );
+    }
+}
+
 pub fn resizable_demo(ui: &mut egui::Ui) {
     ui.label("Horizontal group (drag the handle; grip chip shown)");
     ui.add_space(4.0);

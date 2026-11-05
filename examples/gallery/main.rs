@@ -276,7 +276,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "collapsible",
-            show: None,
+            show: Some(demos::collapsible_demo),
         },
         DemoPage {
             name: "tabs",
