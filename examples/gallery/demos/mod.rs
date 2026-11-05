@@ -320,3 +320,62 @@ pub fn skeleton_demo(ui: &mut egui::Ui) {
 fn theme_radius_full(ui: &egui::Ui) -> u8 {
     ShadcnTheme::of_ui(ui).radius.full_u8()
 }
+
+pub fn typography_demo(ui: &mut egui::Ui) {
+    H1::new("Taxing Laughter: The Joke Tax Chronicles").show(ui);
+    ui.add_space(8.0);
+    P::new("The joke tax is a levy imposed on the punchline economy. When the people discovered the jokes were taxable, laughter became a ledger entry — and humor learned to hide.").show(ui);
+    ui.add_space(12.0);
+    H2::new("The King's Plan").show(ui);
+    ui.add_space(8.0);
+    P::new("The king, seeing how much happier his subjects were, realized the error of his ways and repealed the joke tax.").show(ui);
+    ui.add_space(12.0);
+    Blockquote::new("After the tax was repealed, the court jester's salary doubled, and the kingdom's GDP of giggles soared.").show(ui);
+    ui.add_space(12.0);
+    H3::new("The Joke Tax Chronicles").show(ui);
+    ui.add_space(8.0);
+    P::new("As implemented in the royal decree, the tax collected a flat rate on all punchlines above three words.").show(ui);
+    ui.add_space(12.0);
+    H4::new("Exemptions").show(ui);
+    ui.add_space(8.0);
+    Ul::new(&[
+        "Puns under one second",
+        "Knock-knock jokes",
+        "Sighs and groans",
+    ])
+    .show(ui);
+    ui.add_space(12.0);
+    Ol::new(&[
+        "File form LOL-1",
+        "Attach proof of laughter",
+        "Pay within 30 days",
+    ])
+    .show(ui);
+    ui.add_space(12.0);
+    Lead::new(
+        "A modal dialog that interrupts the user with important content and expects a response.",
+    )
+    .show(ui);
+    ui.add_space(8.0);
+    Large::new("Display a prominent message in a large size.").show(ui);
+    ui.add_space(8.0);
+    Small::new("Email address").show(ui);
+    ui.add_space(4.0);
+    Muted::new("Enter your email to subscribe to the joke tax digest.").show(ui);
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.label("Press");
+        InlineCode::new("Cmd + K").show(ui);
+        ui.label("to open the palette. Kingdom GDP figure:");
+        InlineCode::new("GDP_giggles").show(ui);
+    });
+    ui.add_space(12.0);
+    CodeBlock::new(
+        "fn levy(punchline: &Punchline) -> Tax {
+    Tax::new(punchline.words()).rate(0.2)
+}",
+    )
+    .show(ui);
+    ui.add_space(8.0);
+    TableCaption::new("Table 1 — joke revenue by quarter.").show(ui);
+}

@@ -172,7 +172,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "typography",
-            show: None,
+            show: Some(demos::typography_demo),
         },
         DemoPage {
             name: "aspect-ratio",
