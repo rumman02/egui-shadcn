@@ -188,7 +188,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "input",
-            show: None,
+            show: Some(demos::input_demo),
         },
         DemoPage {
             name: "textarea",

@@ -576,3 +576,64 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
         });
     });
 }
+
+pub fn input_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("input_demo_values");
+    let mut values: Vec<String> = ui.ctx().data_mut(|d| {
+        d.get_temp::<Vec<String>>(store)
+            .unwrap_or_else(|| vec![String::new(); 6])
+    });
+
+    ui.label("Default (w-full)");
+    ui.add_space(4.0);
+    Input::new(&mut values[0]).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("With placeholder and label");
+    ui.add_space(4.0);
+    Label::new("Email").show(ui);
+    Input::new(&mut values[1])
+        .placeholder("m@example.com")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Password");
+    ui.add_space(4.0);
+    Input::new(&mut values[2])
+        .password(true)
+        .width(280.0)
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Fixed width");
+    ui.add_space(4.0);
+    Input::new(&mut values[3]).width(240.0).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    Input::new(&mut values[4])
+        .disabled(true)
+        .width(240.0)
+        .placeholder("Disabled field")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Invalid (aria-invalid)");
+    ui.add_space(4.0);
+    Input::new(&mut values[5])
+        .invalid(true)
+        .width(240.0)
+        .placeholder("Invalid email")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Fused inside a ButtonGroup");
+    ui.add_space(4.0);
+    ButtonGroup::new().show(ui, |ui| {
+        Input::new(&mut values[0]).width(200.0).show(ui);
+        Button::new("Subscribe").show(ui);
+    });
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}
