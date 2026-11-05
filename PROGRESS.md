@@ -32,7 +32,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 15 | marker | ✅ done | A | c99c5c5 | default/separator/border variants, MarkerIcon + MarkerContent |
 | 16 | button-group | ✅ done | A | 5afcbf2 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
 | 17 | input | ✅ done | B | d035ace | invalid/disabled/password, w-full default, ButtonGroup fusing |
-| 18 | textarea | ⬜ todo | B | | |
+| 18 | textarea | ✅ done | B | TBD-TA | min-h-16, rows, placeholder, states |
 | 19 | checkbox | ⬜ todo | B | | checked/indeterminate, disabled |
 | 20 | radio-group | ⬜ todo | B | | |
 | 21 | switch | ⬜ todo | B | | |

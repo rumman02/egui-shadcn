@@ -637,3 +637,46 @@ pub fn input_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn textarea_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("textarea_demo_values");
+    let mut values: Vec<String> = ui.ctx().data_mut(|d| {
+        d.get_temp::<Vec<String>>(store)
+            .unwrap_or_else(|| vec![String::new(); 4])
+    });
+
+    ui.label("Default (min-h-16, w-full)");
+    ui.add_space(4.0);
+    Textarea::new(&mut values[0]).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("With placeholder");
+    ui.add_space(4.0);
+    Label::new("Your message").show(ui);
+    Textarea::new(&mut values[1])
+        .placeholder("Type your message here.")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Rows (grows with content)");
+    ui.add_space(4.0);
+    Textarea::new(&mut values[2]).rows(5).width(360.0).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("States");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Textarea::new(&mut values[3])
+            .disabled(true)
+            .width(200.0)
+            .placeholder("Disabled")
+            .show(ui);
+        Textarea::new(&mut values[3])
+            .invalid(true)
+            .width(200.0)
+            .placeholder("Invalid")
+            .show(ui);
+    });
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}

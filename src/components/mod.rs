@@ -11,6 +11,7 @@ pub mod marker;
 pub mod separator;
 pub mod skeleton;
 pub mod spinner;
+pub mod textarea;
 pub mod typography;
 
 pub use aspect_ratio::AspectRatio;
@@ -24,6 +25,7 @@ pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};
 pub use separator::{Separator, SeparatorOrientation};
 pub use skeleton::Skeleton;
 pub use spinner::Spinner;
+pub use textarea::{Textarea, TEXTAREA_MIN_HEIGHT};
 pub use typography::{
     Blockquote, CodeBlock, InlineCode, Large, Lead, ListMarker, Muted, Ol, Small, TableCaption, Ul,
     H1, H2, H3, H4, P,
