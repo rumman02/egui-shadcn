@@ -20,17 +20,17 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 3 | foundation: icons (lucide) | ✅ done | F0 | 0585bd9 | 36 icons, extendable pure-Rust Painter paths |
 | 4 | foundation: utils (anim/focus/shadow/id) | ✅ done | F0 | afdafdd | |
 | 5 | foundation: gallery skeleton | ✅ done | F0 | 87e5c64 | light/dark + preset pickers sidebar + light/dark + preset picker |
-| 6 | button | ✅ done | A | 210eb9d | variants: default/destructive/outline/secondary/ghost/link; sizes: xs..lg, icon-* |
-| 7 | badge | ✅ done | A | 2acad1e | variants: default/secondary/destructive/outline/ghost/link |
-| 8 | label | ✅ done | A | 28db73b | text-sm font-medium; for_id focus binding; disabled 50% (base recipe, no required dot in v4 source) |
-| 9 | separator | ✅ done | A | 8b706dc | horizontal/vertical |
-| 10 | kbd | ✅ done | A | 4c81d7b | h-5 min-w-5 chip, sans font per source; KbdGroup gap-1 |
-| 11 | spinner | ✅ done | A | 9ac2f30 | rotating lucide loader-circle arc, 1 rev/s; size builder (source is size-4) |
-| 12 | skeleton | ✅ done | A | 6ce2078 | animate-pulse cosine approx; nova fill bg-muted, base bg-accent |
-| 13 | typography | ✅ done | A | 7419878 | h1..h4, p, blockquote, ul/ol, inline-code, code-block, lead, large, small, muted, table-caption |
-| 14 | aspect-ratio | ✅ done | A | 14119fb | ratio container with child ui; max_width builder |
-| 15 | marker | ✅ done | A | 33c9c26 | default/separator/border variants, MarkerIcon + MarkerContent |
-| 16 | button-group | ✅ done | A | c98ac51 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
+| 6 | button | ✅ done | A | ca7250a | variants: default/destructive/outline/secondary/ghost/link; sizes: xs..lg, icon-* |
+| 7 | badge | ✅ done | A | 4bbdc59 | variants: default/secondary/destructive/outline/ghost/link |
+| 8 | label | ✅ done | A | b29c2e0 | text-sm font-medium; for_id focus binding; disabled 50% (base recipe, no required dot in v4 source) |
+| 9 | separator | ✅ done | A | 3d582dd | horizontal/vertical |
+| 10 | kbd | ✅ done | A | 69d9bed | h-5 min-w-5 chip, sans font per source; KbdGroup gap-1 |
+| 11 | spinner | ✅ done | A | 47b3ab0 | rotating lucide loader-circle arc, 1 rev/s; size builder (source is size-4) |
+| 12 | skeleton | ✅ done | A | 91c8946 | animate-pulse cosine approx; nova fill bg-muted, base bg-accent |
+| 13 | typography | ✅ done | A | 1ec0765 | h1..h4, p, blockquote, ul/ol, inline-code, code-block, lead, large, small, muted, table-caption |
+| 14 | aspect-ratio | ✅ done | A | 03f3b3b | ratio container with child ui; max_width builder |
+| 15 | marker | ✅ done | A | c99c5c5 | default/separator/border variants, MarkerIcon + MarkerContent |
+| 16 | button-group | ✅ done | A | 5afcbf2 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
 | 17 | input | ⬜ todo | B | | invalid, disabled, sizes |
 | 18 | textarea | ⬜ todo | B | | |
 | 19 | checkbox | ⬜ todo | B | | checked/indeterminate, disabled |
