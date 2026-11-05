@@ -39,7 +39,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 22 | slider | ✅ done | B | b144941 | single + range thumbs, step, arrow/home/end keys, track click, disabled |
 | 23 | toggle | ✅ done | B | d4eee72 | default/outline variants, sm/default/lg sizes, icon+text, group fusing |
 | 24 | toggle-group | ✅ done | B | 69d0eb7 | single (deselectable) + multiple modes, spacing 0 fusing via group protocol |
-| 25 | input-otp | ✅ done | B | b65d9c9 | groups/separators, digit+backspace+arrows+paste, caret blink, numeric filter |
+| 25 | input-otp | ✅ done | B | b65d9c9+eba4a8e | groups/separators, digit+backspace+arrows+paste, caret blink, numeric filter |
 | 26 | native-select | ✅ done | B | 1f8bb2e | Popup-based dropdown, sm/default, chevron, hover/invalid/disabled, option rows |
 | 27 | field | ✅ done | B | 31fb810 | Field/Label/Title/Description/Error/Content/Group/Set/Legend/Separator, horizontal+responsive |
 | 28 | input-group | ✅ done | B | d4f1e2d | container+addons(4 aligns)+text+button+input+textarea; focus/invalid via group record; ButtonGroup fusing |
