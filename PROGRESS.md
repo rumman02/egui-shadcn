@@ -40,7 +40,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 23 | toggle | ✅ done | B | d4eee72 | default/outline variants, sm/default/lg sizes, icon+text, group fusing |
 | 24 | toggle-group | ✅ done | B | 69d0eb7 | single (deselectable) + multiple modes, spacing 0 fusing via group protocol |
 | 25 | input-otp | ✅ done | B | b65d9c9 | groups/separators, digit+backspace+arrows+paste, caret blink, numeric filter |
-| 26 | native-select | ⬜ todo | B | | egui ComboBox-based |
+| 26 | native-select | ✅ done | B | TBD-NS | Popup-based dropdown, sm/default, chevron, hover/invalid/disabled, option rows |
 | 27 | field | ⬜ todo | B | | Field/Label/Description/Error/Group/Set |
 | 28 | input-group | ⬜ todo | B | | input + addons/icons/inputs |
 | 29 | card | ⬜ todo | C | | Header/Title/Description/Content/Footer/Action |

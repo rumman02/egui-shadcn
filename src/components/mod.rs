@@ -10,6 +10,7 @@ pub mod input_otp;
 pub mod kbd;
 pub mod label;
 pub mod marker;
+pub mod native_select;
 pub mod radio_group;
 pub mod separator;
 pub mod skeleton;
@@ -34,6 +35,7 @@ pub use input_otp::{
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
 pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};
+pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
 pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, RADIO_SIZE};
 pub use separator::{Separator, SeparatorOrientation};
 pub use skeleton::Skeleton;

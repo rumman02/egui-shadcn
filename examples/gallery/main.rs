@@ -224,7 +224,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "native-select",
-            show: None,
+            show: Some(demos::native_select_demo),
         },
         DemoPage {
             name: "field",

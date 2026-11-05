@@ -1180,3 +1180,61 @@ pub fn input_otp_demo(ui: &mut egui::Ui) {
         d.insert_temp(disabled_store, frozen);
     });
 }
+
+pub fn native_select_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("native_select_demo_values");
+    let mut values: [Option<usize>; 3] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or([None, Some(0), Some(1)]));
+
+    ui.label("Default");
+    ui.add_space(4.0);
+    NativeSelect::new(&mut values[0])
+        .id_salt("ns_demo_1")
+        .options(["Light", "Dark", "System"])
+        .placeholder("Pick a theme")
+        .show(ui);
+    ui.small(format!("selected: {:?}", values[0]));
+
+    ui.add_space(12.0);
+    ui.label("Small with a selection");
+    ui.add_space(4.0);
+    NativeSelect::new(&mut values[2])
+        .id_salt("ns_demo_2")
+        .size(NativeSelectSize::Sm)
+        .width(240.0)
+        .option("engine")
+        .option("web")
+        .option("native")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Disabled and invalid");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        NativeSelect::new(&mut values[1])
+            .id_salt("ns_demo_disabled")
+            .disabled(true)
+            .options(["Light", "Dark"])
+            .show(ui);
+        NativeSelect::new(&mut values[1])
+            .id_salt("ns_demo_invalid")
+            .invalid(true)
+            .options(["Light", "Dark"])
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Options with one disabled");
+
+    ui.add_space(4.0);
+    NativeSelect::new(&mut values[2])
+        .id_salt("ns_demo_disabled_opt")
+        .width(220.0)
+        .option("Push notifications")
+        .option_disabled("Email digest (unavailable)")
+        .option("Nothing")
+        .show(ui);
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}
