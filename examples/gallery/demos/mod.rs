@@ -242,3 +242,38 @@ pub fn kbd_demo(ui: &mut egui::Ui) {
         ui.label("to dismiss.");
     });
 }
+
+pub fn spinner_demo(ui: &mut egui::Ui) {
+    ui.label("Sizes (default size-4 = 16px)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Spinner::new().size(12.0).show(ui);
+        Spinner::new().show(ui);
+        Spinner::new().size(24.0).show(ui);
+        Spinner::new().size(32.0).show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("With colors and inside a button");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        Spinner::new().color(theme.palette.primary).show(ui);
+        Spinner::new().color(theme.palette.destructive).show(ui);
+        Spinner::new()
+            .color(theme.palette.muted_foreground)
+            .show(ui);
+    });
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        Button::new("Loading")
+            .icon_start(Icon::LoaderCircle)
+            .disabled(true)
+            .show(ui);
+        Spinner::new()
+            .color(theme.palette.primary_foreground)
+            .show(ui);
+    });
+}

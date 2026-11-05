@@ -25,7 +25,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 8 | label | ✅ done | A | 28db73b | text-sm font-medium; for_id focus binding; disabled 50% (base recipe, no required dot in v4 source) |
 | 9 | separator | ✅ done | A | 8b706dc | horizontal/vertical |
 | 10 | kbd | ✅ done | A | 4c81d7b | h-5 min-w-5 chip, sans font per source; KbdGroup gap-1 |
-| 11 | spinner | ⬜ todo | A | | sizes sm/md/lg |
+| 11 | spinner | ✅ done | A | 9ac2f30 | rotating lucide loader-circle arc, 1 rev/s; size builder (source is size-4) |
 | 12 | skeleton | ⬜ todo | A | | animated pulse |
 | 13 | typography | ⬜ todo | A | | docs family: h1..h4, p, blockquote, list, code, pre, muted |
 | 14 | aspect-ratio | ⬜ todo | A | | fixed ratio container |
