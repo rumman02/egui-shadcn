@@ -268,7 +268,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "resizable",
-            show: None,
+            show: Some(demos::resizable_demo),
         },
         DemoPage {
             name: "accordion",

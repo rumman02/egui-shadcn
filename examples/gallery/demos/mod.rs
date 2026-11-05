@@ -2132,3 +2132,78 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
             ui.label("Second line.");
         });
 }
+
+pub fn resizable_demo(ui: &mut egui::Ui) {
+    ui.label("Horizontal group (drag the handle; grip chip shown)");
+    ui.add_space(4.0);
+    let store = egui::Id::unique("resizable_demo_left");
+    let mut left_count: usize = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(3));
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_h")
+        .length(440.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().min(0.2).max(0.7).show(ui, |ui| {
+                ui.heading("Left panel");
+                for i in 1..=left_count {
+                    ui.label(format!("Item {i}"));
+                }
+                if Button::new("Add item")
+                    .size(ButtonSize::Sm)
+                    .show(ui)
+                    .clicked()
+                {
+                    left_count += 1;
+                }
+            });
+            ResizableHandle::new().with_handle(true).show(ui);
+            ResizablePanel::new().show(ui, |ui| {
+                ui.heading("Right panel");
+                ui.label("Drag the divider between us.");
+                ui.small("Panel sizes persist across frames (per group id).");
+            });
+        });
+    ui.ctx().data_mut(|d| d.insert_temp(store, left_count));
+
+    ui.add_space(12.0);
+    ui.label("Vertical group (thin handles, arrow keys when focused)");
+    ui.add_space(4.0);
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_v")
+        .orientation(ResizableOrientation::Vertical)
+        .length(200.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().min(0.15).show(ui, |ui| {
+                ui.heading("Top");
+                ui.label("Tab to a handle and use Arrow Up / Arrow Down.");
+            });
+            ResizableHandle::new().show(ui);
+            ResizablePanel::new().show(ui, |ui| {
+                ui.heading("Middle");
+                ui.label("20% minimum via .min(0.15).");
+            });
+            ResizableHandle::new().with_handle(true).show(ui);
+            ResizablePanel::new().show(ui, |ui| {
+                ui.heading("Bottom");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Three panels with clamps (middle capped at 0.4)");
+    ui.add_space(4.0);
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_3")
+        .length(440.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().min(0.15).show(ui, |ui| {
+                ui.label("Sidebar");
+            });
+            ResizableHandle::new().show(ui);
+            ResizablePanel::new().max(0.4).show(ui, |ui| {
+                ui.label("Content (max 40%)");
+            });
+            ResizableHandle::new().show(ui);
+            ResizablePanel::new().min(0.2).show(ui, |ui| {
+                ui.label("Details");
+            });
+        });
+}
