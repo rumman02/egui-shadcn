@@ -2347,6 +2347,72 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
         .data_mut(|d| d.insert_temp(controlled_store, controlled));
 }
 
+pub fn breadcrumb_demo(ui: &mut egui::Ui) {
+    ui.label("Default trail (links, separators, current page)");
+    ui.add_space(4.0);
+    Breadcrumb::new().show(ui, |ui| {
+        BreadcrumbList::new().show(ui, |ui| {
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Home").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Components").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbPage::new("Breadcrumb").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("With an ellipsis slot for collapsed levels");
+    ui.add_space(4.0);
+    Breadcrumb::new().show(ui, |ui| {
+        BreadcrumbList::new().show(ui, |ui| {
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Home").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbEllipsis::new().show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Design System").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Components").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbPage::new("Breadcrumb").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Hover a link — it brightens (hover:text-foreground).");
+
+    let clicked_store = egui::Id::unique("breadcrumb_demo_clicked");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(clicked_store).unwrap_or(0));
+    ui.add_space(8.0);
+    if BreadcrumbLink::new("Clickable link (counts clicks)")
+        .show(ui)
+        .clicked()
+    {
+        clicks += 1;
+    }
+    if clicks > 0 {
+        ui.small(format!("link clicked {clicks} time(s)"));
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(clicked_store, clicks));
+}
+
 pub fn collapsible_demo(ui: &mut egui::Ui) {
     let controlled_store = egui::Id::unique("collapsible_demo_controlled");
     let mut controlled: bool = ui

@@ -5,6 +5,7 @@ pub mod alert;
 pub mod aspect_ratio;
 pub mod avatar;
 pub mod badge;
+pub mod breadcrumb;
 pub mod button;
 pub mod button_group;
 pub mod card;
@@ -46,6 +47,10 @@ pub use avatar::{
     initials_from_name, Avatar, AvatarBadge, AvatarGroup, AvatarGroupCount, AvatarSize,
 };
 pub use badge::{Badge, BadgeVariant};
+pub use breadcrumb::{
+    Breadcrumb, BreadcrumbEllipsis, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage,
+    BreadcrumbSeparator, BREADCRUMB_ELLIPSIS_SIZE, BREADCRUMB_SEPARATOR_SIZE,
+};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};

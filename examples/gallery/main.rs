@@ -284,7 +284,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "breadcrumb",
-            show: None,
+            show: Some(demos::breadcrumb_demo),
         },
         DemoPage {
             name: "pagination",
