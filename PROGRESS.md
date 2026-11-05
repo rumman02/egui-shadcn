@@ -36,7 +36,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 19 | checkbox | ✅ done | B | 959c672+723d56a | checked/indeterminate (minus icon), disabled, invalid, Space+Enter toggle |
 | 20 | radio-group | ✅ done | B | 09929bd | RadioGroup+Item, arrow roving focus via egui spatial nav (no wrap), disabled/invalid |
 | 21 | switch | ✅ done | B | bb81ad0 | default+sm sizes, animated thumb, dark thumb tokens, Space toggle |
-| 22 | slider | ⬜ todo | B | | single + range |
+| 22 | slider | ✅ done | B | TBD-SL | single + range thumbs, step, arrow/home/end keys, track click, disabled |
 | 23 | toggle | ⬜ todo | B | | variants/sizes |
 | 24 | toggle-group | ⬜ todo | B | | single/multiple |
 | 25 | input-otp | ⬜ todo | B | | N-slot OTP input |

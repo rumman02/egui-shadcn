@@ -866,3 +866,61 @@ pub fn switch_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn slider_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("slider_demo_values");
+    let mut values: (f32, f32, f32, f32, f32) = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or((30.0, 20.0, 80.0, 25.0, 50.0)));
+
+    ui.label("Single value (drag the thumb, click the track, use Arrow keys)");
+    ui.add_space(4.0);
+    let (v0, _, _, _, _) = values;
+    let mut single = v0;
+    let resp = Slider::new(&mut single).min(0.0).max(100.0).show(ui);
+    values.0 = single;
+    if resp.changed() {
+        ui.ctx().request_repaint();
+    }
+    ui.small(format!("value: {:.0}", values.0));
+
+    ui.add_space(12.0);
+    ui.label("Range (two thumbs)");
+    ui.add_space(4.0);
+    let (a, b, _, _, _) = values;
+    let mut pair = (a, b);
+    Slider::range(&mut pair).min(0.0).max(100.0).show(ui);
+    values.1 = pair.0;
+    values.2 = pair.1;
+    ui.small(format!("range: {:.0} – {:.0}", pair.0, pair.1));
+
+    ui.add_space(12.0);
+    ui.label("Stepped (step = 10)");
+    ui.add_space(4.0);
+    let (_, _, _, c, _) = values;
+    let mut stepped = c;
+    Slider::new(&mut stepped)
+        .min(0.0)
+        .max(100.0)
+        .step(10.0)
+        .show(ui);
+    values.3 = stepped;
+    ui.small(format!("value: {:.0}", stepped));
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    let (_, _, _, _, e) = values;
+    let mut frozen = e;
+    Slider::new(&mut frozen)
+        .min(0.0)
+        .max(100.0)
+        .disabled(true)
+        .show(ui);
+    values.4 = frozen;
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a thumb, use Arrow keys, Home and End.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}
