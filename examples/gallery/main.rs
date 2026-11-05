@@ -319,6 +319,10 @@ fn demo_pages() -> Vec<DemoPage> {
             show: None,
         },
         DemoPage {
+            name: "tooltip",
+            show: Some(demos::tooltip_demo::tooltip_demo),
+        },
+        DemoPage {
             name: "hover-card",
             show: None,
         },
