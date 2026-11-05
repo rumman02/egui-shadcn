@@ -463,3 +463,116 @@ pub fn marker_demo(ui: &mut egui::Ui) {
         MarkerContent::new("Last synced 2 minutes ago").show(ui);
     });
 }
+
+pub fn button_group_demo(ui: &mut egui::Ui) {
+    ui.label("Horizontal (fused corners and borders)");
+    ui.add_space(4.0);
+    ButtonGroup::new().show(ui, |ui| {
+        Button::new("Day").show(ui);
+        Button::new("Month").show(ui);
+        Button::new("Year").show(ui);
+    });
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new().show(ui, |ui| {
+            Button::new("Outline left")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+            Button::new("Outline right")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+        });
+    });
+
+    ui.add_space(8.0);
+    ui.label("With separators");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new().show(ui, |ui| {
+            Button::new("")
+                .size(ButtonSize::Icon)
+                .variant(ButtonVariant::Outline)
+                .icon_start(Icon::ChevronLeft)
+                .show(ui);
+            ButtonGroupSeparator::new().show(ui);
+            Button::new("")
+                .size(ButtonSize::Icon)
+                .variant(ButtonVariant::Outline)
+                .icon_start(Icon::MoreHorizontal)
+                .show(ui);
+            ButtonGroupSeparator::new().show(ui);
+            Button::new("")
+                .size(ButtonSize::Icon)
+                .variant(ButtonVariant::Outline)
+                .icon_start(Icon::ChevronRight)
+                .show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("With a text slot");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new().show(ui, |ui| {
+            ButtonGroupText::new("https://example.com").show(ui);
+            Button::new("")
+                .size(ButtonSize::Icon)
+                .variant(ButtonVariant::Outline)
+                .icon_start(Icon::Copy)
+                .show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Vertical");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new()
+            .orientation(GroupOrientation::Vertical)
+            .id_salt("vertical_group")
+            .show(ui, |ui| {
+                Button::new("Cut").show(ui);
+                Button::new("Copy").show(ui);
+                Button::new("Paste").show(ui);
+            });
+        ButtonGroup::new()
+            .orientation(GroupOrientation::Vertical)
+            .id_salt("vertical_group_outline")
+            .show(ui, |ui| {
+                Button::new("Top").variant(ButtonVariant::Outline).show(ui);
+                ButtonGroupSeparator::new()
+                    .orientation(GroupOrientation::Vertical)
+                    .show(ui);
+                Button::new("Middle")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui);
+                ButtonGroupSeparator::new()
+                    .orientation(GroupOrientation::Vertical)
+                    .show(ui);
+                Button::new("Bottom")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui);
+            });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Sizes and states");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new().show(ui, |ui| {
+            Button::new("Sm").size(ButtonSize::Sm).show(ui);
+            Button::new("Sm")
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Secondary)
+                .show(ui);
+        });
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new().show(ui, |ui| {
+            Button::new("Disabled").disabled(true).show(ui);
+            Button::new("Active").show(ui);
+        });
+    });
+}

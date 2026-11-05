@@ -3,6 +3,7 @@
 pub mod aspect_ratio;
 pub mod badge;
 pub mod button;
+pub mod button_group;
 pub mod kbd;
 pub mod label;
 pub mod marker;
@@ -14,6 +15,7 @@ pub mod typography;
 pub use aspect_ratio::AspectRatio;
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
+pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
 pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};

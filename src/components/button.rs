@@ -616,8 +616,6 @@ pub(crate) mod group {
     }
 
     /// A group starts laying out children; call before the child closure.
-    // (Used by button_group.rs, which lands in a later commit.)
-    #[allow(dead_code)]
     pub(crate) fn begin(ui: &Ui, id: Id, orientation: GroupOrientation) {
         let ctx = ui.ctx().clone();
         let frame = ctx.cumulative_frame_nr();
@@ -641,8 +639,6 @@ pub(crate) mod group {
 
     /// The group finished; call after the child closure. Records the child
     /// count so the next frame can compute First/Middle/Last.
-    // (Used by button_group.rs, which lands in a later commit.)
-    #[allow(dead_code)]
     pub(crate) fn end(ui: &Ui, id: Id) {
         let ctx = ui.ctx().clone();
         if let Some(mut state) = read_state(&ctx, id) {

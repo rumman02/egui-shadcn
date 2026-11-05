@@ -184,7 +184,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "button-group",
-            show: None,
+            show: Some(demos::button_group_demo),
         },
         DemoPage {
             name: "input",

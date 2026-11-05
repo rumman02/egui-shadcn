@@ -30,7 +30,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 13 | typography | ✅ done | A | 7419878 | h1..h4, p, blockquote, ul/ol, inline-code, code-block, lead, large, small, muted, table-caption |
 | 14 | aspect-ratio | ✅ done | A | 14119fb | ratio container with child ui; max_width builder |
 | 15 | marker | ✅ done | A | 33c9c26 | default/separator/border variants, MarkerIcon + MarkerContent |
-| 16 | button-group | ⬜ todo | A | | orientation, sizes, split, nested |
+| 16 | button-group | ✅ done | A | c98ac51 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
 | 17 | input | ⬜ todo | B | | invalid, disabled, sizes |
 | 18 | textarea | ⬜ todo | B | | |
 | 19 | checkbox | ⬜ todo | B | | checked/indeterminate, disabled |
