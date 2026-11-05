@@ -216,7 +216,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "toggle-group",
-            show: None,
+            show: Some(demos::toggle_group_demo),
         },
         DemoPage {
             name: "input-otp",

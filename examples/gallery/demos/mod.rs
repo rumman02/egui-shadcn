@@ -1011,3 +1011,95 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn toggle_group_demo(ui: &mut egui::Ui) {
+    let single_store = egui::Id::unique("toggle_group_demo_single");
+    let multi_store = egui::Id::unique("toggle_group_demo_multi");
+    let mut single: Option<usize> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(single_store).unwrap_or(None));
+    let mut multi: Vec<bool> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(multi_store).unwrap_or(vec![false; 3]));
+
+    ui.label("Single (default: pressing the pressed item deselects)");
+    ui.add_space(4.0);
+    ToggleGroup::single(&mut single)
+        .id_salt("tg_demo_single")
+        .item("Bold")
+        .item("Italic")
+        .item("Underline")
+        .show(ui);
+    ui.small(format!("selected: {:?}", single));
+
+    ui.add_space(12.0);
+    ui.label("Multiple, outline variant");
+    ui.add_space(4.0);
+    ToggleGroup::multiple(&mut multi)
+        .id_salt("tg_demo_multi")
+        .variant(ToggleVariant::Outline)
+        .item("Bold")
+        .item("Italic")
+        .item("Underline")
+        .show(ui);
+    ui.small(format!("pressed: {:?}", multi));
+
+    ui.add_space(12.0);
+    ui.label("With icons and sizes");
+    ui.add_space(4.0);
+    ToggleGroup::single(&mut single)
+        .id_salt("tg_demo_icons")
+        .item_with_icon("Left", Icon::ChevronLeft)
+        .item("Center")
+        .item_with_icon("Right", Icon::ChevronRight)
+        .size(ToggleSize::Sm)
+        .show(ui);
+    ui.add_space(4.0);
+    ToggleGroup::single(&mut single)
+        .id_salt("tg_demo_lg")
+        .item("Day")
+        .item("Month")
+        .item("Year")
+        .size(ToggleSize::Lg)
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Positive spacing (individually rounded)");
+    ui.add_space(4.0);
+    ToggleGroup::multiple(&mut multi)
+        .id_salt("tg_demo_spaced")
+        .spacing(8.0)
+        .variant(ToggleVariant::Outline)
+        .item("Filter A")
+        .item("Filter B")
+        .item("Filter C")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Vertical, disabled");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ToggleGroup::single(&mut single)
+            .id_salt("tg_demo_vertical")
+            .orientation(GroupOrientation::Vertical)
+            .item("Top")
+            .item("Middle")
+            .item("Bottom")
+            .show(ui);
+        ToggleGroup::single(&mut single)
+            .id_salt("tg_demo_disabled")
+            .disabled(true)
+            .item("Cut")
+            .item("Copy")
+            .item("Paste")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab and Arrow keys move focus between items.");
+
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(single_store, single);
+        d.insert_temp(multi_store, multi);
+    });
+}
