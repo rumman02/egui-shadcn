@@ -7,6 +7,7 @@ pub mod button_group;
 pub mod checkbox;
 pub mod field;
 pub mod input;
+pub mod input_group;
 pub mod input_otp;
 pub mod kbd;
 pub mod label;
@@ -33,6 +34,10 @@ pub use field::{
     FieldLegendVariant, FieldOrientation, FieldSeparator, FieldSet, FieldTitle,
 };
 pub use input::{Input, INPUT_HEIGHT};
+pub use input_group::{
+    AddonAlign, InputGroup, InputGroupAddon, InputGroupButton, InputGroupButtonSize,
+    InputGroupInput, InputGroupText, InputGroupTextarea,
+};
 pub use input_otp::{
     InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot, OtpOutput, OTP_CARET_HEIGHT,
     OTP_SLOT_SIZE,

@@ -1322,3 +1322,124 @@ pub fn field_demo(ui: &mut egui::Ui) {
         d.insert_temp(name_store, name);
     });
 }
+
+pub fn input_group_demo(ui: &mut egui::Ui) {
+    let url_store = egui::Id::unique("ig_demo_url");
+    let search_store = egui::Id::unique("ig_demo_search");
+    let bio_store = egui::Id::unique("ig_demo_bio");
+    let invalid_store = egui::Id::unique("ig_demo_invalid");
+    let mut url: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(url_store).unwrap_or_default());
+    let mut search: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(search_store).unwrap_or_default());
+    let mut bio: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(bio_store).unwrap_or_default());
+    let mut bad: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(invalid_store).unwrap_or_default());
+
+    ui.label("Inline start text addon + inline end icon button");
+    ui.add_space(4.0);
+    InputGroup::new().id_salt("ig_demo_url").show(ui, |ui| {
+        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+            InputGroupText::new("https://").show(ui);
+        });
+        InputGroupInput::new(&mut url)
+            .placeholder("example.com")
+            .show(ui);
+        InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+            InputGroupButton::icon(Icon::Copy).show(ui);
+        });
+    });
+    ui.small(format!("url: {url:?}"));
+
+    ui.add_space(12.0);
+    ui.label("Icon addon and kbd hint");
+    ui.add_space(4.0);
+    InputGroup::new().id_salt("ig_demo_search").show(ui, |ui| {
+        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+            InputGroupText::new("").icon(Icon::Search).show(ui);
+        });
+        InputGroupInput::new(&mut search)
+            .placeholder("Search anything…")
+            .show(ui);
+        InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+            KbdGroup::new().show(ui, |ui| {
+                Kbd::new("⌘").show(ui);
+                Kbd::new("K").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Textarea control (auto-height column layout)");
+    ui.add_space(4.0);
+    InputGroup::new().id_salt("ig_demo_bio").show(ui, |ui| {
+        InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+            InputGroupText::new("Bio").icon(Icon::User).show(ui);
+        });
+        InputGroupTextarea::new(&mut bio)
+            .rows(3)
+            .placeholder("Tell us about yourself…")
+            .show(ui);
+        InputGroupAddon::new(AddonAlign::BlockEnd).show(ui, |ui| {
+            InputGroupText::new("Markdown supported").show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Invalid control (container border turns destructive)");
+    ui.add_space(4.0);
+    InputGroup::new().id_salt("ig_demo_invalid").show(ui, |ui| {
+        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+            InputGroupText::new("").icon(Icon::CircleAlert).show(ui);
+        });
+        InputGroupInput::new(&mut bad)
+            .invalid(true)
+            .placeholder("Invalid URL")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    InputGroup::new()
+        .id_salt("ig_demo_disabled")
+        .width(280.0)
+        .disabled(true)
+        .show(ui, |ui| {
+            InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                InputGroupText::new("https://").show(ui);
+            });
+            InputGroupInput::new(&mut url)
+                .disabled(true)
+                .placeholder("Disabled")
+                .show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Fused inside a ButtonGroup");
+    ui.add_space(4.0);
+    ButtonGroup::new().show(ui, |ui| {
+        InputGroup::new()
+            .id_salt("ig_demo_fused")
+            .width(240.0)
+            .show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                    InputGroupText::new("").icon(Icon::Search).show(ui);
+                });
+                InputGroupInput::new(&mut search).show(ui);
+            });
+        Button::new("Go").show(ui);
+    });
+
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(url_store, url);
+        d.insert_temp(search_store, search);
+        d.insert_temp(bio_store, bio);
+        d.insert_temp(invalid_store, bad);
+    });
+}

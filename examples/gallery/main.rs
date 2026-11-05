@@ -232,7 +232,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "input-group",
-            show: None,
+            show: Some(demos::input_group_demo),
         },
         DemoPage {
             name: "card",
