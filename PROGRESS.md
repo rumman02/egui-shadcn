@@ -43,15 +43,15 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 26 | native-select | ✅ done | B | 1f8bb2e | Popup-based dropdown, sm/default, chevron, hover/invalid/disabled, option rows |
 | 27 | field | ✅ done | B | 31fb810 | Field/Label/Title/Description/Error/Content/Group/Set/Legend/Separator, horizontal+responsive |
 | 28 | input-group | ✅ done | B | d4f1e2d | container+addons(4 aligns)+text+button+input+textarea; focus/invalid via group record; ButtonGroup fusing |
-| 29 | card | ⬜ todo | C | | Header/Title/Description/Content/Footer/Action |
-| 30 | alert | ⬜ todo | C | | default/destructive, icon/title/description/action |
-| 31 | avatar | ⬜ todo | C | | image/fallback/group, sizes |
-| 32 | progress | ⬜ todo | C | | value track |
-| 33 | table | ⬜ todo | C | | Header/Body/Row/Head/Cell/Caption/Footer |
-| 34 | empty | ⬜ todo | C | | header/media/title/description/content |
-| 35 | item | ⬜ todo | C | | Item/Media/Content/Actions/Group/Header/Footer |
-| 36 | scroll-area | ⬜ todo | C | | egui ScrollArea wrapper, styled scrollbar |
-| 37 | resizable | ⬜ todo | C | | panels with drag handles |
+| 29 | card | ✅ done | C | 9adcbfe | Header/Title/Description/Content/Footer/Action; nova ring+16px spacing+footer band, base border+shadow-sm; CardAction top-right overlay slot |
+| 30 | alert | ✅ done | C | ee66597 | default/destructive, icon slot, AlertTitle/Description/Action top-right slot (pr-18 reservation, self-correcting across frames) |
+| 31 | avatar | ✅ done | C | ae21552 | AvatarImage via ImageSource (texture = circular cover; uri degrades to fallback), initials/icon fallback, badge, group overlap + count; sm/default/lg |
+| 32 | progress | ✅ done | C | dbec4f1 | animated fill via animate_value_with_time (150ms transition-all); nova bg-muted h-1, base bg-primary/20 h-2; width/id_salt |
+| 33 | table | ✅ done | C | 80dfb46 | Table/Header/Body/Footer/Row/Head/Cell; last-row border via 2-frame tracker; hover/selected bg; explicit column widths; caption reuses typography::TableCaption |
+| 34 | empty | ✅ done | C | 7a3e060 | Empty/Header/Media(default+icon)/Title/Description/Content (+Footer ext.); centered text, optional dashed border, nova gap-4/size-8 box |
+| 35 | item | ✅ done | C | 972c575 | Item/Media(icon|image)/Content/Actions/Group/Header/Footer/Separator; variants default/outline/muted, sizes default/sm/xs(nova); actions flex via 2-frame width reservation + right-align in header/footer |
+| 36 | scroll-area | ✅ done | C | e50bb85 | egui ScrollArea wrapper; scoped ScrollStyle::solid (10px track, p-px) + extreme_bg_color=border thumb; vertical/horizontal/both; viewport focus-ring gap (egui SA not focusable) |
+| 37 | resizable | ✅ done | C | 0725a5e | PanelGroup(h/v, length builder) + Panel(min/max fractions) + Handle(drag, arrow-key resize, grip chip, focus ring); fractions persist per group id; grip glyph drawn inline (no Icon::GripVertical in foundation) |
 | 38 | accordion | ⬜ todo | D | | single/multiple, animated |
 | 39 | collapsible | ⬜ todo | D | | |
 | 40 | tabs | ⬜ todo | D | | list/trigger/content, vertical |
