@@ -58,6 +58,11 @@ impl RadiusTokens {
         f32::MAX / 4.0
     }
 
+    /// [`Self::sm`] rounded for egui's `CornerRadius` (u8 pixels).
+    pub fn sm_u8(&self) -> u8 {
+        self.sm().round() as u8
+    }
+
     /// [`Self::md`] rounded for egui's `CornerRadius` (u8 pixels).
     pub fn md_u8(&self) -> u8 {
         self.md().round() as u8

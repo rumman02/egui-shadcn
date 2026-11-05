@@ -68,6 +68,8 @@ pub enum Icon {
     Send,
     Circle,
     Dot,
+    GripVertical,
+    GripHorizontal,
 }
 
 impl Icon {
@@ -265,6 +267,22 @@ impl Icon {
             ])],
             Icon::Circle => vec![El::Circle([12.0, 12.0], 10.0)],
             Icon::Dot => vec![El::Dot([12.0, 12.0], 3.0)],
+            Icon::GripVertical => vec![
+                El::Dot([9.0, 5.0], 1.0),
+                El::Dot([9.0, 12.0], 1.0),
+                El::Dot([9.0, 19.0], 1.0),
+                El::Dot([15.0, 5.0], 1.0),
+                El::Dot([15.0, 12.0], 1.0),
+                El::Dot([15.0, 19.0], 1.0),
+            ],
+            Icon::GripHorizontal => vec![
+                El::Dot([5.0, 9.0], 1.0),
+                El::Dot([12.0, 9.0], 1.0),
+                El::Dot([19.0, 9.0], 1.0),
+                El::Dot([5.0, 15.0], 1.0),
+                El::Dot([12.0, 15.0], 1.0),
+                El::Dot([19.0, 15.0], 1.0),
+            ],
         }
     }
 
@@ -395,6 +413,8 @@ mod tests {
         Icon::Send,
         Icon::Circle,
         Icon::Dot,
+        Icon::GripVertical,
+        Icon::GripHorizontal,
     ];
 
     #[test]
