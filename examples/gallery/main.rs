@@ -200,7 +200,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "radio-group",
-            show: None,
+            show: Some(demos::radio_group_demo),
         },
         DemoPage {
             name: "switch",

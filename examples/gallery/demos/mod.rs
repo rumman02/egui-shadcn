@@ -697,9 +697,7 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let id = egui::Id::unique("cb_demo_2");
-        Checkbox::new(&mut values[1])
-            .id_salt("cb_demo_2")
-            .show(ui);
+        Checkbox::new(&mut values[1]).id_salt("cb_demo_2").show(ui);
         Label::new("Enable notifications").for_id(id).show(ui);
     });
 
@@ -733,6 +731,82 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
 
     ui.add_space(12.0);
     ui.label("Keyboard: Tab to a checkbox, press Space or Enter to toggle.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}
+
+pub fn radio_group_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("radio_demo_values");
+    let mut values: [Option<usize>; 3] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or([Some(0), None, Some(1)]));
+
+    ui.label("Vertical (default, gap-3)");
+    ui.add_space(4.0);
+    RadioGroup::new(&mut values[0])
+        .id_salt("radio_demo_default")
+        .option("Default")
+        .option("Comfortable")
+        .option("Compact")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Horizontal");
+    ui.add_space(4.0);
+    RadioGroup::new(&mut values[2])
+        .id_salt("radio_demo_horizontal")
+        .orientation(GroupOrientation::Horizontal)
+        .option("Day")
+        .option("Month")
+        .option("Year")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("No initial selection, one disabled option");
+    ui.add_space(4.0);
+    RadioGroup::new(&mut values[1])
+        .id_salt("radio_demo_disabled")
+        .option("Push notifications")
+        .option_disabled("Email digest (unavailable)")
+        .option("Nothing")
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Disabled group and invalid items");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        RadioGroup::new(&mut values[0])
+            .id_salt("radio_demo_disabled_group")
+            .disabled(true)
+            .option("A")
+            .option("B")
+            .show(ui);
+        RadioGroup::new(&mut values[0])
+            .id_salt("radio_demo_invalid")
+            .invalid(true)
+            .option("A")
+            .option("B")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Standalone RadioGroupItem + label");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let mut standalone = ui.ctx().data_mut(|d| {
+            d.get_temp(egui::Id::unique("radio_demo_standalone"))
+                .unwrap_or(false)
+        });
+        RadioGroupItem::new(&mut standalone)
+            .id_salt("radio_demo_item")
+            .show(ui);
+        ui.label("Standalone item");
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::unique("radio_demo_standalone"), standalone));
+    });
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: arrows move the selection and focus (wrapping).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
