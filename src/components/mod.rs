@@ -1,5 +1,6 @@
 //! Components are added here as they are ported.
 
+pub mod aspect_ratio;
 pub mod badge;
 pub mod button;
 pub mod kbd;
@@ -9,6 +10,7 @@ pub mod skeleton;
 pub mod spinner;
 pub mod typography;
 
+pub use aspect_ratio::AspectRatio;
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use kbd::{Kbd, KbdGroup};

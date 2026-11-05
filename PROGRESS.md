@@ -28,7 +28,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 11 | spinner | ✅ done | A | 9ac2f30 | rotating lucide loader-circle arc, 1 rev/s; size builder (source is size-4) |
 | 12 | skeleton | ✅ done | A | 6ce2078 | animate-pulse cosine approx; nova fill bg-muted, base bg-accent |
 | 13 | typography | ✅ done | A | 7419878 | h1..h4, p, blockquote, ul/ol, inline-code, code-block, lead, large, small, muted, table-caption |
-| 14 | aspect-ratio | ⬜ todo | A | | fixed ratio container |
+| 14 | aspect-ratio | ✅ done | A | 14119fb | ratio container with child ui; max_width builder |
 | 15 | marker | ⬜ todo | A | | variants incl. type/size (AI era component) |
 | 16 | button-group | ⬜ todo | A | | orientation, sizes, split, nested |
 | 17 | input | ⬜ todo | B | | invalid, disabled, sizes |

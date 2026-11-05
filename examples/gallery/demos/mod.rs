@@ -379,3 +379,52 @@ pub fn typography_demo(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     TableCaption::new("Table 1 — joke revenue by quarter.").show(ui);
 }
+
+pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
+    ui.label("16 / 9 (full width)");
+    ui.add_space(4.0);
+    AspectRatio::new(16.0 / 9.0).show(ui, |ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 8, theme.palette.muted);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "16:9 content",
+            egui::FontId::proportional(14.0),
+            theme.palette.muted_foreground,
+        );
+    });
+
+    ui.add_space(12.0);
+    ui.label("1 / 1, max width 240");
+    ui.add_space(4.0);
+    AspectRatio::new(1.0).max_width(240.0).show(ui, |ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 8, theme.palette.accent);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "1:1",
+            egui::FontId::proportional(14.0),
+            theme.palette.accent_foreground,
+        );
+    });
+
+    ui.add_space(12.0);
+    ui.label("4 / 3, max width 320");
+    ui.add_space(4.0);
+    AspectRatio::new(4.0 / 3.0).max_width(320.0).show(ui, |ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 8, theme.palette.secondary);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "4:3",
+            egui::FontId::proportional(14.0),
+            theme.palette.secondary_foreground,
+        );
+    });
+}
