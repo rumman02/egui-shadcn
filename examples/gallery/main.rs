@@ -152,7 +152,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "label",
-            show: None,
+            show: Some(demos::label_demo),
         },
         DemoPage {
             name: "separator",

@@ -141,3 +141,35 @@ pub fn badge_demo(ui: &mut egui::Ui) {
             .show(ui);
     });
 }
+
+pub fn label_demo(ui: &mut egui::Ui) {
+    ui.label("Plain labels");
+    ui.add_space(4.0);
+    Label::new("Email address").show(ui);
+    ui.add_space(4.0);
+    Label::new("Project name").show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Bound to a control: click the label to focus the field.");
+    ui.add_space(4.0);
+    let id = egui::Id::unique("demo_email_field");
+    let store = egui::Id::unique("demo_email_value");
+    Label::new("Email").for_id(id).show(ui);
+    let mut email: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or_else(|| "m@example.com".to_owned()));
+    let resp = egui::TextEdit::singleline(&mut email)
+        .id_salt(id)
+        .desired_width(280.0)
+        .show(ui);
+    if resp.response.has_focus() {
+        ui.label("(focused via label click)");
+    }
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(store, email));
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    Label::new("Disabled label").disabled(true).show(ui);
+}

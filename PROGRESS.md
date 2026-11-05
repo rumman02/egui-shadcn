@@ -22,7 +22,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 5 | foundation: gallery skeleton | ✅ done | F0 | 87e5c64 | light/dark + preset pickers sidebar + light/dark + preset picker |
 | 6 | button | ✅ done | A | 210eb9d | variants: default/destructive/outline/secondary/ghost/link; sizes: xs..lg, icon-* |
 | 7 | badge | ✅ done | A | 2acad1e | variants: default/secondary/destructive/outline/ghost/link |
-| 8 | label | ⬜ todo | A | | required dot, invalid/disabled |
+| 8 | label | ✅ done | A | 28db73b | text-sm font-medium; for_id focus binding; disabled 50% (base recipe, no required dot in v4 source) |
 | 9 | separator | ⬜ todo | A | | horizontal/vertical |
 | 10 | kbd | ⬜ todo | A | | mono chip |
 | 11 | spinner | ⬜ todo | A | | sizes sm/md/lg |
