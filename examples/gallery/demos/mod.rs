@@ -428,3 +428,38 @@ pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
         );
     });
 }
+
+pub fn marker_demo(ui: &mut egui::Ui) {
+    ui.label("Default");
+    ui.add_space(4.0);
+    Marker::new().show(ui, |ui| {
+        MarkerIcon::new(Icon::Sparkles).show(ui);
+        MarkerContent::new("Heads up — AI usage is trending up this week").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Separator (content centered between rules)");
+    ui.add_space(4.0);
+    Marker::new()
+        .variant(MarkerVariant::Separator)
+        .show(ui, |ui| {
+            MarkerContent::new("or continue with").show(ui);
+        });
+    Marker::new()
+        .variant(MarkerVariant::Separator)
+        .show(ui, |ui| {
+            MarkerIcon::new(Icon::Plus).show(ui);
+            MarkerContent::new("add item").show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Border (bottom rule)");
+    ui.add_space(4.0);
+    Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
+        MarkerIcon::new(Icon::CircleAlert).show(ui);
+        MarkerContent::new("Deployment pending review").show(ui);
+    });
+    Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
+        MarkerContent::new("Last synced 2 minutes ago").show(ui);
+    });
+}

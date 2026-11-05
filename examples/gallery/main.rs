@@ -180,7 +180,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "marker",
-            show: None,
+            show: Some(demos::marker_demo),
         },
         DemoPage {
             name: "button-group",
