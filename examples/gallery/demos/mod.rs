@@ -1507,3 +1507,76 @@ pub fn card_demo(ui: &mut egui::Ui) {
         });
     });
 }
+
+pub fn alert_demo(ui: &mut egui::Ui) {
+    ui.label("Default (no icon)");
+    ui.add_space(4.0);
+    Alert::new().id_salt("alert_demo_plain").show(ui, |ui| {
+        AlertTitle::new("Heads up!").show(ui);
+        AlertDescription::new("You can add components and dependencies to your app using the cli.")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Destructive with icon");
+    ui.add_space(4.0);
+    Alert::new()
+        .id_salt("alert_demo_destructive")
+        .variant(AlertVariant::Destructive)
+        .icon(Icon::CircleAlert)
+        .show(ui, |ui| {
+            AlertTitle::new("Deployment failed").show(ui);
+            AlertDescription::new(
+                "Your build could not be completed. Check the logs and try again.",
+            )
+            .show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Success and info icons");
+    ui.add_space(4.0);
+    Alert::new()
+        .id_salt("alert_demo_success")
+        .icon(Icon::CircleCheck)
+        .show(ui, |ui| {
+            AlertTitle::new("Payment received").show(ui);
+            AlertDescription::new("Your invoice #1043 was paid in full.").show(ui);
+        });
+    ui.add_space(4.0);
+    Alert::new()
+        .id_salt("alert_demo_info")
+        .icon(Icon::Info)
+        .show(ui, |ui| {
+            AlertTitle::new("Scheduled maintenance").show(ui);
+            AlertDescription::new("The API will be unavailable Sunday 02:00–04:00 UTC.").show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("With an action (top-right slot)");
+    ui.add_space(4.0);
+    Alert::new()
+        .id_salt("alert_demo_action")
+        .icon(Icon::CircleAlert)
+        .show(ui, |ui| {
+            AlertTitle::new("Token expiring").show(ui);
+            AlertDescription::new("Your API token expires in 3 days.").show(ui);
+            AlertAction::new().show(ui, |ui| {
+                Button::new("Renew").size(ButtonSize::Sm).show(ui);
+            });
+        });
+    ui.add_space(4.0);
+    Alert::new()
+        .id_salt("alert_demo_action_destructive")
+        .variant(AlertVariant::Destructive)
+        .icon(Icon::CircleX)
+        .show(ui, |ui| {
+            AlertTitle::new("Storage quota exceeded").show(ui);
+            AlertDescription::new("Delete some files to keep syncing.").show(ui);
+            AlertAction::new().show(ui, |ui| {
+                Button::new("Free up space")
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Destructive)
+                    .show(ui);
+            });
+        });
+}
