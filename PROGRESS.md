@@ -15,11 +15,11 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 
 | # | Component | Status | Batch | Commit | Notes |
 |---|-----------|--------|-------|--------|-------|
-| 1 | foundation: theme/tokens/colors | ⬜ todo | F0 | | light+dark OKLCH palettes, radius/spacing/type scale |
-| 2 | foundation: presets (styles + colors) | ⬜ todo | F0 | | 8 styles × 7 base colors × 17 accents, `Preset::from_code` |
-| 3 | foundation: icons (lucide) | ⬜ todo | F0 | | pure-Rust Painter paths |
-| 4 | foundation: utils (anim/focus/shadow/id) | ⬜ todo | F0 | | |
-| 5 | foundation: gallery skeleton | ⬜ todo | F0 | | sidebar + light/dark + preset picker |
+| 1 | foundation: theme/tokens/colors | ✅ done | F0 | 4839425 | light+dark OKLCH palettes, radius/spacing/type scale |
+| 2 | foundation: presets (styles + colors) | ✅ done | F0 | 4839425 | from_code("b0") round-trips 8 styles × 7 base colors × 17 accents, `Preset::from_code` |
+| 3 | foundation: icons (lucide) | ✅ done | F0 | 0585bd9 | 36 icons, extendable pure-Rust Painter paths |
+| 4 | foundation: utils (anim/focus/shadow/id) | ✅ done | F0 | afdafdd | |
+| 5 | foundation: gallery skeleton | ✅ done | F0 | 87e5c64 | light/dark + preset pickers sidebar + light/dark + preset picker |
 | 6 | button | ⬜ todo | A | | variants: default/destructive/outline/secondary/ghost/link; sizes: xs..lg, icon-* |
 | 7 | badge | ⬜ todo | A | | variants: default/secondary/destructive/outline/ghost/link |
 | 8 | label | ⬜ todo | A | | required dot, invalid/disabled |
