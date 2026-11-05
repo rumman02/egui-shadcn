@@ -2413,6 +2413,121 @@ pub fn breadcrumb_demo(ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(clicked_store, clicks));
 }
 
+pub fn pagination_demo(ui: &mut egui::Ui) {
+    let page_store = egui::Id::unique("pagination_demo_page");
+    let total_pages = 9usize;
+    let mut page: usize = ui.ctx().data_mut(|d| d.get_temp(page_store).unwrap_or(2));
+
+    ui.label("Interactive (click pages, Previous and Next)");
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                if PaginationPrevious::new()
+                    .disabled(page == 1)
+                    .show(ui)
+                    .clicked()
+                {
+                    page = page.saturating_sub(1).max(1);
+                }
+            });
+            for p in 1..=4usize {
+                PaginationItem::new().show(ui, |ui| {
+                    if PaginationLink::new(p.to_string())
+                        .active(p == page)
+                        .show(ui)
+                        .clicked()
+                    {
+                        page = p;
+                    }
+                });
+            }
+            PaginationItem::new().show(ui, |ui| {
+                PaginationEllipsis::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                if PaginationLink::new(total_pages.to_string())
+                    .active(page == total_pages)
+                    .show(ui)
+                    .clicked()
+                {
+                    page = total_pages;
+                }
+            });
+            PaginationItem::new().show(ui, |ui| {
+                if PaginationNext::new()
+                    .disabled(page == total_pages)
+                    .show(ui)
+                    .clicked()
+                {
+                    page = (page + 1).min(total_pages);
+                }
+            });
+        });
+    });
+    ui.small(format!("current page: {page} of {total_pages}"));
+
+    ui.add_space(12.0);
+    ui.label("Disabled states (first page)");
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                PaginationPrevious::new().disabled(true).show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("1").active(true).show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("2").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("3").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationEllipsis::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationNext::new().show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Last page (Next disabled, wide page label)");
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                PaginationPrevious::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationEllipsis::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("98").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("99").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("100")
+                    .active(true)
+                    .size(ButtonSize::Sm)
+                    .show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationNext::new().disabled(true).show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("The active page uses the Outline button variant, the rest Ghost.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(page_store, page));
+}
+
 pub fn collapsible_demo(ui: &mut egui::Ui) {
     let controlled_store = egui::Id::unique("collapsible_demo_controlled");
     let mut controlled: bool = ui

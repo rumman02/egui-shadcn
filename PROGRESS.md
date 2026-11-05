@@ -56,7 +56,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 39 | collapsible | ✅ done | D | | Collapsible(root)/Trigger/Content; state persisted per id_salt or controlled &mut bool; animated height clip (open_progress, 150ms open / 75ms close) |
 | 40 | tabs | ✅ done | D | | Tabs/List/Trigger/Content; variants default (bg-muted pill + active fill) and line (underline/side indicator), horizontal + vertical; value per id_salt or controlled &mut String; egui arrows/Enter/Space |
 | 41 | breadcrumb | ✅ done | D | | Breadcrumb/List/Item/Link/Page/Separator/Ellipsis; muted text-sm trail, hover-brighten links, ChevronRight 14px separators, MoreHorizontal ellipsis (nova size-5) |
-| 42 | pagination | ⬜ todo | D | | content/previous/next/ellipsis/links |
+| 42 | pagination | ✅ done | D | | Pagination/Content/Item/Link/Previous/Next/Ellipsis; reuses Button (active=Outline, rest=Ghost per source buttonVariants, links size=icon); disabled prev/next at ends; ellipsis nova size-8 |
 | 43 | dialog | ⬜ todo | E | | modal, backdrop, Esc close, sizes |
 | 44 | alert-dialog | ⬜ todo | E | | confirm flow, footer actions |
 | 45 | sheet | ⬜ todo | E | | side drawers (top/right/bottom/left) |

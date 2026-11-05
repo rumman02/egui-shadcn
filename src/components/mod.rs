@@ -21,6 +21,7 @@ pub mod kbd;
 pub mod label;
 pub mod marker;
 pub mod native_select;
+pub mod pagination;
 pub mod progress;
 pub mod radio_group;
 pub mod resizable;
@@ -82,6 +83,10 @@ pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
 pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};
 pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
+pub use pagination::{
+    Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink,
+    PaginationNext, PaginationPrevious, PAGINATION_ELLIPSIS_SIZE,
+};
 pub use progress::Progress;
 pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, RADIO_SIZE};
 pub use resizable::{ResizableHandle, ResizableOrientation, ResizablePanel, ResizablePanelGroup};
