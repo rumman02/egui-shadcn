@@ -1694,3 +1694,60 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     ui.small("URI images load through the context's texture loaders and fall back to initials until resolved.");
 }
+
+pub fn progress_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("progress_demo_value");
+    let mut value: f32 = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(30.0));
+
+    ui.label("Default");
+    ui.add_space(4.0);
+    let resp = ui
+        .horizontal(|ui| {
+            let r = Progress::new(value).show(ui);
+            ui.small(format!("{:.0}%", value));
+            r
+        })
+        .inner;
+    let _ = resp;
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if Button::new("-10").size(ButtonSize::Sm).show(ui).clicked() {
+            value = (value - 10.0).max(0.0);
+        }
+        if Button::new("+10").size(ButtonSize::Sm).show(ui).clicked() {
+            value = (value + 10.0).min(100.0);
+        }
+        if Button::new("Reset")
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Outline)
+            .show(ui)
+            .clicked()
+        {
+            value = 30.0;
+        }
+    });
+
+    ui.add_space(12.0);
+    ui.label("Values");
+    ui.add_space(4.0);
+    for v in [0.0, 25.0, 50.0, 75.0, 100.0] {
+        ui.horizontal(|ui| {
+            Progress::new(v).show(ui);
+            ui.small(format!("{:.0}%", v));
+        });
+    }
+
+    ui.add_space(12.0);
+    ui.label("Clamped and fixed width");
+    ui.add_space(4.0);
+    Progress::new(250.0).width(200.0).show(ui);
+    Progress::new(-5.0).width(200.0).show(ui);
+    ui.add_space(4.0);
+    Progress::new(40.0).width(120.0).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("The fill animates over 150ms (shadcn transition-all).");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, value));
+}

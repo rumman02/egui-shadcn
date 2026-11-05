@@ -248,7 +248,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "progress",
-            show: None,
+            show: Some(demos::progress_demo),
         },
         DemoPage {
             name: "table",
