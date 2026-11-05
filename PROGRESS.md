@@ -41,7 +41,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 24 | toggle-group | ✅ done | B | 69d0eb7 | single (deselectable) + multiple modes, spacing 0 fusing via group protocol |
 | 25 | input-otp | ✅ done | B | b65d9c9 | groups/separators, digit+backspace+arrows+paste, caret blink, numeric filter |
 | 26 | native-select | ✅ done | B | 1f8bb2e | Popup-based dropdown, sm/default, chevron, hover/invalid/disabled, option rows |
-| 27 | field | ✅ done | B | TBD-F | Field/Label/Title/Description/Error/Content/Group/Set/Legend/Separator, horizontal+responsive |
+| 27 | field | ✅ done | B | 31fb810 | Field/Label/Title/Description/Error/Content/Group/Set/Legend/Separator, horizontal+responsive |
 | 28 | input-group | ⬜ todo | B | | input + addons/icons/inputs |
 | 29 | card | ⬜ todo | C | | Header/Title/Description/Content/Footer/Action |
 | 30 | alert | ⬜ todo | C | | default/destructive, icon/title/description/action |
