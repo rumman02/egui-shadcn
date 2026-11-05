@@ -6,6 +6,7 @@ pub mod button;
 pub mod button_group;
 pub mod checkbox;
 pub mod input;
+pub mod input_otp;
 pub mod kbd;
 pub mod label;
 pub mod marker;
@@ -26,6 +27,10 @@ pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosit
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use input::{Input, INPUT_HEIGHT};
+pub use input_otp::{
+    InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot, OtpOutput, OTP_CARET_HEIGHT,
+    OTP_SLOT_SIZE,
+};
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
 pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};

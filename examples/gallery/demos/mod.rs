@@ -1103,3 +1103,80 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         d.insert_temp(multi_store, multi);
     });
 }
+
+pub fn input_otp_demo(ui: &mut egui::Ui) {
+    let simple_store = egui::Id::unique("otp_demo_simple");
+    let custom_store = egui::Id::unique("otp_demo_custom");
+    let disabled_store = egui::Id::unique("otp_demo_disabled");
+    let mut code: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(simple_store).unwrap_or_default());
+    let mut custom: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(custom_store).unwrap_or_default());
+    let mut frozen: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(disabled_store).unwrap_or_default());
+
+    ui.label("Default (single group, numeric)");
+    ui.add_space(4.0);
+    let out = InputOTP::new(&mut code)
+        .length(6)
+        .numeric(true)
+        .id_salt("otp_demo_simple")
+        .show(ui);
+    if out.changed {
+        ui.ctx().request_repaint();
+    }
+    ui.small(format!("code: {:?}", code));
+
+    ui.add_space(12.0);
+    ui.label("Pattern with separator (3+3)");
+    ui.add_space(4.0);
+    InputOTP::new(&mut custom)
+        .length(6)
+        .numeric(true)
+        .id_salt("otp_demo_custom")
+        .show_with(ui, |ui| {
+            InputOTPGroup::new().show(ui, |ui| {
+                InputOTPSlot::new(0).show(ui);
+                InputOTPSlot::new(1).show(ui);
+                InputOTPSlot::new(2).show(ui);
+            });
+            InputOTPSeparator::new().show(ui);
+            InputOTPGroup::new().show(ui, |ui| {
+                InputOTPSlot::new(3).show(ui);
+                InputOTPSlot::new(4).show(ui);
+                InputOTPSlot::new(5).show(ui);
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Disabled and invalid");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        InputOTP::new(&mut frozen)
+            .length(4)
+            .numeric(true)
+            .disabled(true)
+            .id_salt("otp_demo_disabled")
+            .show(ui);
+        InputOTP::new(&mut frozen)
+            .length(4)
+            .numeric(true)
+            .invalid(true)
+            .id_salt("otp_demo_invalid")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label(
+        "Keyboard: digits fill the focused slot, Backspace clears, Arrow keys move, paste spreads.",
+    );
+
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(simple_store, code);
+        d.insert_temp(custom_store, custom);
+        d.insert_temp(disabled_store, frozen);
+    });
+}

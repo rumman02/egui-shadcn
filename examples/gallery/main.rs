@@ -220,7 +220,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "input-otp",
-            show: None,
+            show: Some(demos::input_otp_demo),
         },
         DemoPage {
             name: "native-select",
