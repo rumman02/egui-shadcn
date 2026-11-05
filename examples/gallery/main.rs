@@ -196,7 +196,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "checkbox",
-            show: None,
+            show: Some(demos::checkbox_demo),
         },
         DemoPage {
             name: "radio-group",

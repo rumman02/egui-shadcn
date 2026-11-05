@@ -680,3 +680,59 @@ pub fn textarea_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn checkbox_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("checkbox_demo_values");
+    let mut values: [bool; 5] = ui.ctx().data_mut(|d| {
+        d.get_temp(store)
+            .unwrap_or([true, false, false, false, false])
+    });
+
+    ui.label("Default");
+    ui.add_space(4.0);
+    Checkbox::new(&mut values[0]).id_salt("cb_demo_1").show(ui);
+
+    ui.add_space(12.0);
+    ui.label("With a bound label (click the text to toggle)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let id = egui::Id::unique("cb_demo_2");
+        Checkbox::new(&mut values[1])
+            .id_salt("cb_demo_2")
+            .show(ui);
+        Label::new("Enable notifications").for_id(id).show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Indeterminate");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Checkbox::new(&mut values[2])
+            .indeterminate(true)
+            .id_salt("cb_demo_3")
+            .show(ui);
+        ui.label("Select all (mixed state)");
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Checkbox::new(&mut values[3]).disabled(true).show(ui);
+        Checkbox::new(&mut values[4])
+            .disabled(true)
+            .id_salt("cb_demo_5")
+            .show(ui);
+        ui.label("Disabled unchecked");
+    });
+
+    ui.add_space(12.0);
+    ui.label("Invalid");
+    ui.add_space(4.0);
+    Checkbox::new(&mut values[4]).invalid(true).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a checkbox, press Space or Enter to toggle.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}
