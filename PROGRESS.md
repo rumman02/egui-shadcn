@@ -31,7 +31,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 14 | aspect-ratio | ✅ done | A | 03f3b3b | ratio container with child ui; max_width builder |
 | 15 | marker | ✅ done | A | c99c5c5 | default/separator/border variants, MarkerIcon + MarkerContent |
 | 16 | button-group | ✅ done | A | 5afcbf2 | horizontal/vertical, fused corners/borders via group plumbing; ButtonGroupText + ButtonGroupSeparator; nested groups lay out with 0 gap (no extra gap-2 like source) |
-| 17 | input | ✅ done | B | TBD-INPUT | invalid/disabled/password, w-full default, ButtonGroup fusing |
+| 17 | input | ✅ done | B | d035ace | invalid/disabled/password, w-full default, ButtonGroup fusing |
 | 18 | textarea | ⬜ todo | B | | |
 | 19 | checkbox | ⬜ todo | B | | checked/indeterminate, disabled |
 | 20 | radio-group | ⬜ todo | B | | |
