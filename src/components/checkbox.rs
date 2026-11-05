@@ -150,7 +150,9 @@ impl<'a> Checkbox<'a> {
         };
 
         let checked_before = *self.checked;
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(CHECKBOX_SIZE), sense);
+        // Reserve space without an auto-id widget so egui's built-in
+        // spatial arrow navigation only sees the explicit widget id.
+        let (_, rect) = ui.allocate_space(Vec2::splat(CHECKBOX_SIZE));
         let mut response = ui.interact(rect, id, sense);
 
         let clicked = response.clicked() && !self.disabled;
