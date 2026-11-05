@@ -52,7 +52,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 35 | item | ✅ done | C | 972c575 | Item/Media(icon|image)/Content/Actions/Group/Header/Footer/Separator; variants default/outline/muted, sizes default/sm/xs(nova); actions flex via 2-frame width reservation + right-align in header/footer |
 | 36 | scroll-area | ✅ done | C | e50bb85 | egui ScrollArea wrapper; scoped ScrollStyle::solid (10px track, p-px) + extreme_bg_color=border thumb; vertical/horizontal/both; viewport focus-ring gap (egui SA not focusable) |
 | 37 | resizable | ✅ done | C | 0725a5e | PanelGroup(h/v, length builder) + Panel(min/max fractions) + Handle(drag, arrow-key resize, grip chip, focus ring); fractions persist per group id; grip glyph drawn inline (no Icon::GripVertical in foundation) |
-| 38 | accordion | ⬜ todo | D | | single/multiple, animated |
+| 38 | accordion | ✅ done | D | | Item/Trigger/Content; single (collapsible opt) + multiple; chevron rotates 180°, animated height (shared helper w/ collapsible); egui built-in Tab/arrows focus + Enter/Space activate (no Radix arrow auto-activation) |
 | 39 | collapsible | ✅ done | D | | Collapsible(root)/Trigger/Content; state persisted per id_salt or controlled &mut bool; animated height clip (open_progress, 150ms open / 75ms close) |
 | 40 | tabs | ⬜ todo | D | | list/trigger/content, vertical |
 | 41 | breadcrumb | ⬜ todo | D | | list/item/link/page/ellipsis/separator |

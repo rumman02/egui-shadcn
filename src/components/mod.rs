@@ -1,5 +1,6 @@
 //! Components are added here as they are ported.
 
+pub mod accordion;
 pub mod alert;
 pub mod aspect_ratio;
 pub mod avatar;
@@ -34,6 +35,10 @@ pub mod toggle;
 pub mod toggle_group;
 pub mod typography;
 
+pub use accordion::{
+    Accordion, AccordionContent, AccordionItem, AccordionTrigger, AccordionType,
+    ACCORDION_TRIGGER_HEIGHT,
+};
 pub use alert::{Alert, AlertAction, AlertDescription, AlertTitle, AlertVariant};
 pub use aspect_ratio::AspectRatio;
 pub use avatar::{
