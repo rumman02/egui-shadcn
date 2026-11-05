@@ -2072,3 +2072,63 @@ pub fn item_demo(ui: &mut egui::Ui) {
             });
     });
 }
+
+pub fn scroll_area_demo(ui: &mut egui::Ui) {
+    ui.label("Vertical (fixed height, themed 10px scrollbar)");
+    ui.add_space(4.0);
+    ScrollArea::new()
+        .height(160.0)
+        .id_salt("scroll_demo_vertical")
+        .show(ui, |ui| {
+            for i in 1..=40 {
+                ui.label(format!("Item {i:02} — scroll me"));
+            }
+        });
+
+    ui.add_space(12.0);
+    ui.label("Horizontal");
+    ui.add_space(4.0);
+    ScrollArea::new()
+        .vertical(false)
+        .horizontal(true)
+        .height(64.0)
+        .id_salt("scroll_demo_horizontal")
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for i in 1..=30 {
+                    Button::new(format!("Tag {i}"))
+                        .variant(ButtonVariant::Outline)
+                        .show(ui);
+                }
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Both axes");
+    ui.add_space(4.0);
+    ScrollArea::new()
+        .horizontal(true)
+        .height(140.0)
+        .width(420.0)
+        .id_salt("scroll_demo_both")
+        .show(ui, |ui| {
+            for row in 1..=20 {
+                ui.horizontal(|ui| {
+                    for col in 1..=20 {
+                        ui.label(format!("{row}×{col}"));
+                    }
+                });
+            }
+        });
+
+    ui.add_space(12.0);
+    ui.label("Short content (no scrollbar needed)");
+    ui.add_space(4.0);
+    ScrollArea::new()
+        .height(80.0)
+        .id_salt("scroll_demo_short")
+        .show(ui, |ui| {
+            ui.label("Just a couple of lines — the scrollbar only appears when needed.");
+            ui.label("Second line.");
+        });
+}
