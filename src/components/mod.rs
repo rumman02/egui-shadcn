@@ -13,6 +13,7 @@ pub mod radio_group;
 pub mod separator;
 pub mod skeleton;
 pub mod spinner;
+pub mod switch;
 pub mod textarea;
 pub mod typography;
 
@@ -29,6 +30,7 @@ pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, R
 pub use separator::{Separator, SeparatorOrientation};
 pub use skeleton::Skeleton;
 pub use spinner::Spinner;
+pub use switch::{Switch, SwitchSize};
 pub use textarea::{Textarea, TEXTAREA_MIN_HEIGHT};
 pub use typography::{
     Blockquote, CodeBlock, InlineCode, Large, Lead, ListMarker, Muted, Ol, Small, TableCaption, Ul,

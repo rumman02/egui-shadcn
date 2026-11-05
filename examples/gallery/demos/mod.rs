@@ -810,3 +810,59 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn switch_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("switch_demo_values");
+    let mut values: [bool; 4] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or([false, true, false, true]));
+
+    ui.label("Default");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Switch::new(&mut values[0]).id_salt("sw_demo_1").show(ui);
+        Switch::new(&mut values[1]).id_salt("sw_demo_2").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Small");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Switch::new(&mut values[0])
+            .size(SwitchSize::Sm)
+            .id_salt("sw_demo_sm_1")
+            .show(ui);
+        Switch::new(&mut values[1])
+            .size(SwitchSize::Sm)
+            .id_salt("sw_demo_sm_2")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("With label");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Switch::new(&mut values[2])
+            .id_salt("sw_demo_airplane")
+            .show(ui);
+        ui.label("Airplane Mode");
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Switch::new(&mut values[2]).disabled(true).show(ui);
+        Switch::new(&mut values[3]).disabled(true).show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Invalid");
+    ui.add_space(4.0);
+    Switch::new(&mut values[3]).invalid(true).show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a switch, press Space or Enter to toggle.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}

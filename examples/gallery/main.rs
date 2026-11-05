@@ -204,7 +204,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "switch",
-            show: None,
+            show: Some(demos::switch_demo),
         },
         DemoPage {
             name: "slider",
