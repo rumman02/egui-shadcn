@@ -13,6 +13,7 @@ pub mod field;
 pub mod input;
 pub mod input_group;
 pub mod input_otp;
+pub mod item;
 pub mod kbd;
 pub mod label;
 pub mod marker;
@@ -56,6 +57,11 @@ pub use input_group::{
 pub use input_otp::{
     InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot, OtpOutput, OTP_CARET_HEIGHT,
     OTP_SLOT_SIZE,
+};
+pub use item::{
+    Item, ItemActions, ItemContent, ItemDescription, ItemFooter, ItemGroup, ItemHeader, ItemMedia,
+    ItemSeparator, ItemSize, ItemTitle, ItemVariant, ITEM_MEDIA_ICON, ITEM_MEDIA_ICON_BOX,
+    ITEM_MEDIA_IMAGE_SIZE,
 };
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;

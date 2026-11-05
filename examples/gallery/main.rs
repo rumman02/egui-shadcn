@@ -260,7 +260,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "item",
-            show: None,
+            show: Some(demos::item_demo),
         },
         DemoPage {
             name: "scroll-area",

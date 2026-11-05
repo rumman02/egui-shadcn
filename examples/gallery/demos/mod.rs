@@ -1927,3 +1927,148 @@ pub fn empty_demo(ui: &mut egui::Ui) {
         });
     });
 }
+
+pub fn item_demo(ui: &mut egui::Ui) {
+    // A generated texture for image media.
+    let tex_store = egui::Id::unique("item_demo_texture");
+    let tex_id = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_store));
+    let texture = tex_id.unwrap_or_else(|| {
+        let size = 64;
+        let mut pixels = Vec::with_capacity(size * size);
+        for y in 0..size {
+            for x in 0..size {
+                let t = (x as f32 / size as f32 + y as f32 / size as f32) * 0.5;
+                pixels.push(egui::Color32::from_rgb(
+                    (40.0 + 180.0 * t) as u8,
+                    (160.0 - 60.0 * t) as u8,
+                    (200.0 - 80.0 * t) as u8,
+                ));
+            }
+        }
+        let image = egui::ColorImage::new([size, size], pixels);
+        ui.ctx()
+            .load_texture("item_demo_gradient", image, egui::TextureOptions::default())
+    });
+    let src: egui::ImageSource<'static> = egui::ImageSource::Texture(
+        egui::load::SizedTexture::new(texture.id(), texture.size_vec2()),
+    );
+
+    ui.label("Outline items in a group (media/content/actions)");
+    ui.add_space(4.0);
+    ItemGroup::new().show(ui, |ui| {
+        Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+            ItemMedia::image(src.clone()).show(ui);
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Morning Ritual").show(ui);
+                ItemDescription::new("Lofi meditation — 3:24").show(ui);
+            });
+            ItemActions::new().show(ui, |ui| {
+                Button::new("")
+                    .size(ButtonSize::IconSm)
+                    .variant(ButtonVariant::Ghost)
+                    .icon_start(Icon::MoreHorizontal)
+                    .show(ui);
+            });
+        });
+        Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+            ItemMedia::icon(Icon::User).show(ui);
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Ada Lovelace").show(ui);
+                ItemDescription::new("Engineer — writing the first programs.").show(ui);
+            });
+            ItemActions::new().show(ui, |ui| {
+                Button::new("Follow").size(ButtonSize::Sm).show(ui);
+            });
+        });
+        Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Server credits due").show(ui);
+                ItemDescription::new("Payment for server credits will be charged on the 14th.")
+                    .show(ui);
+            });
+            ItemActions::new().show(ui, |ui| {
+                Button::new("Pay")
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Outline)
+                    .show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Muted and default variants");
+    ui.add_space(4.0);
+    ItemGroup::new().show(ui, |ui| {
+        Item::new().variant(ItemVariant::Muted).show(ui, |ui| {
+            ItemMedia::icon(Icon::CircleCheck).show(ui);
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Deployment passed").show(ui);
+                ItemDescription::new("All checks green on main.").show(ui);
+            });
+        });
+        Item::new().show(ui, |ui| {
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Transparent item").show(ui);
+                ItemDescription::new("No fill, no border.").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Header and footer rows (actions right-aligned)");
+    ui.add_space(4.0);
+    Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        ItemHeader::new().show(ui, |ui| {
+            ItemTitle::new("Team settings").show(ui);
+            ItemActions::new().show(ui, |ui| {
+                Badge::new("Admin").show(ui);
+            });
+        });
+        ItemContent::new().show(ui, |ui| {
+            ItemDescription::new("Invite members and manage roles for this workspace.").show(ui);
+        });
+        ItemFooter::new().show(ui, |ui| {
+            ui.label("12 members");
+            ItemActions::new().show(ui, |ui| {
+                Button::new("Manage").size(ButtonSize::Sm).show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Separator between items (nova my-2)");
+    ui.add_space(4.0);
+    Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Above").show(ui);
+        });
+    });
+    ItemSeparator::new().show(ui);
+    Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Below").show(ui);
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Sizes (group data-size inheritance)");
+    ui.add_space(4.0);
+    ItemGroup::new().size(ItemSize::Sm).show(ui, |ui| {
+        Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+            ItemMedia::icon(Icon::Sparkles).show(ui);
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Small item").show(ui);
+            });
+        });
+        Item::new()
+            .variant(ItemVariant::Outline)
+            .size(ItemSize::Xs)
+            .show(ui, |ui| {
+                ItemContent::new().show(ui, |ui| {
+                    ItemTitle::new("Extra small item").show(ui);
+                });
+            });
+    });
+}
