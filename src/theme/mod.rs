@@ -276,6 +276,7 @@ impl ShadcnTheme {
 
         visuals.dark_mode = dark;
         visuals.override_text_color = Some(p.foreground);
+        visuals.weak_text_color = Some(p.muted_foreground); // placeholder/hint text
         visuals.panel_fill = p.background;
         visuals.window_fill = p.popover;
         visuals.extreme_bg_color = p.muted;

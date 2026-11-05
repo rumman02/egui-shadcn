@@ -27,6 +27,8 @@ egui 0.37 changed several APIs vs older docs/examples you may remember:
 - **Spacing lives on `Style`, not `Visuals`**: `ctx.all_styles_mut(|s| s.spacing.item_spacing = …)`.
 - **`painter.rect_stroke(rect, corner_radius, stroke, StrokeKind::Inside|Outside)`** (StrokeKind arg is required).
 - **`egui::Shape::line(points, stroke)`**, `painter.circle_stroke(center, radius, stroke)`, `painter.circle_filled(center, r, color)`.
+- **Do not use `ui.allocate_exact_size(...)` for interactive custom widgets** — it registers an auto-id focusable response that competes in egui's spatial arrow-key navigation and can misdirect keyboard focus. Use `ui.allocate_space(size)` (or `ui.allocate_rect` only for non-interactive painting) plus `ui.interact(rect, id, sense)` with an explicit `Id::unique(...)` id for the interactive part (see checkbox.rs for the pattern).
+- **egui temp data keys include the value type** (`RawKey::new::<T>(id)`): switching the stored type for the same Id leaves the old entry behind. Keep the stored type per id stable across frames.
 - **Animations:** `ctx.animate_value_with_time(id, target, secs)`; helpers in `crate::utils::animation` (`open_progress`, `overlay_progress`, `Duration::{Fast,Default,Slow}`).
 
 ## Theme access
