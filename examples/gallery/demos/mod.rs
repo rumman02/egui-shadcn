@@ -155,9 +155,10 @@ pub fn label_demo(ui: &mut egui::Ui) {
     let id = egui::Id::unique("demo_email_field");
     let store = egui::Id::unique("demo_email_value");
     Label::new("Email").for_id(id).show(ui);
-    let mut email: String = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(store).unwrap_or_else(|| "m@example.com".to_owned()));
+    let mut email: String = ui.ctx().data_mut(|d| {
+        d.get_temp(store)
+            .unwrap_or_else(|| "m@example.com".to_owned())
+    });
     let resp = egui::TextEdit::singleline(&mut email)
         .id_salt(id)
         .desired_width(280.0)
@@ -165,11 +166,37 @@ pub fn label_demo(ui: &mut egui::Ui) {
     if resp.response.has_focus() {
         ui.label("(focused via label click)");
     }
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(store, email));
+    ui.ctx().data_mut(|d| d.insert_temp(store, email));
 
     ui.add_space(12.0);
     ui.label("Disabled");
     ui.add_space(4.0);
     Label::new("Disabled label").disabled(true).show(ui);
+}
+
+pub fn separator_demo(ui: &mut egui::Ui) {
+    ui.label("Horizontal");
+    ui.add_space(4.0);
+    Separator::new().show(ui);
+    ui.add_space(8.0);
+    ui.label("Content below the separator.");
+    ui.add_space(4.0);
+    Separator::new().show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Vertical (in a row)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.set_min_height(36.0);
+        ui.label("Left");
+        Separator::new().vertical(true).length(36.0).show(ui);
+        ui.label("Middle");
+        Separator::new().vertical(true).length(36.0).show(ui);
+        ui.label("Right");
+    });
+
+    ui.add_space(12.0);
+    ui.label("Fixed length");
+    ui.add_space(4.0);
+    Separator::new().length(160.0).show(ui);
 }

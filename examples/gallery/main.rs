@@ -156,7 +156,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "separator",
-            show: None,
+            show: Some(demos::separator_demo),
         },
         DemoPage {
             name: "kbd",
