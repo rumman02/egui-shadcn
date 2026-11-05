@@ -1,6 +1,7 @@
 //! The egui-shadcn-ui crate prelude: import this to get every component,
 //! theme type and helper.
 
+pub use crate::components::*;
 pub use crate::icons::icons::*;
 pub use crate::theme::tokens::spacing;
 pub use crate::theme::tokens::type_scale;

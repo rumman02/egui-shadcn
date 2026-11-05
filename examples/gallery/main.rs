@@ -6,6 +6,8 @@
 use eframe::egui;
 use egui_shadcn_ui::prelude::*;
 
+mod demos;
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -142,7 +144,7 @@ fn demo_pages() -> Vec<DemoPage> {
     vec![
         DemoPage {
             name: "button",
-            show: None,
+            show: Some(demos::button_demo),
         },
         DemoPage {
             name: "badge",
