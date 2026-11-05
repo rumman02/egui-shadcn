@@ -97,3 +97,47 @@ pub fn button_demo(ui: &mut egui::Ui) {
     ui.add_space(12.0);
     ui.label("Keyboard: Tab to a button, press Enter or Space to activate.");
 }
+
+pub fn badge_demo(ui: &mut egui::Ui) {
+    ui.label("Variants");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Badge::new("Badge").show(ui);
+        Badge::new("Secondary")
+            .variant(BadgeVariant::Secondary)
+            .show(ui);
+        Badge::new("Destructive")
+            .variant(BadgeVariant::Destructive)
+            .show(ui);
+        Badge::new("Outline")
+            .variant(BadgeVariant::Outline)
+            .show(ui);
+        Badge::new("Ghost").variant(BadgeVariant::Ghost).show(ui);
+        Badge::new("Link").variant(BadgeVariant::Link).show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Inline with text");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Build status:");
+        Badge::new("Passing").show(ui);
+        ui.label("Version:");
+        Badge::new("v2.0.0")
+            .variant(BadgeVariant::Secondary)
+            .show(ui);
+        ui.label("Coverage:");
+        Badge::new("98%").variant(BadgeVariant::Outline).show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Badge::new("Disabled").disabled(true).show(ui);
+        Badge::new("Disabled outline")
+            .variant(BadgeVariant::Outline)
+            .disabled(true)
+            .show(ui);
+    });
+}

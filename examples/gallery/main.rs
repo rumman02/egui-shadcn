@@ -148,7 +148,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "badge",
-            show: None,
+            show: Some(demos::badge_demo),
         },
         DemoPage {
             name: "label",
