@@ -924,3 +924,90 @@ pub fn slider_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
+
+pub fn toggle_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("toggle_demo_values");
+    let mut values: [bool; 3] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(store).unwrap_or([true, false, false]));
+
+    ui.label("Default variant (on / off)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Toggle::new(&mut values[0]).text("Bold").show(ui);
+        Toggle::new(&mut values[1]).text("Italic").show(ui);
+        Toggle::new(&mut values[2]).text("Underline").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Outline variant");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Toggle::new(&mut values[0])
+            .variant(ToggleVariant::Outline)
+            .text("Bold")
+            .show(ui);
+        Toggle::new(&mut values[1])
+            .variant(ToggleVariant::Outline)
+            .text("Italic")
+            .show(ui);
+        Toggle::new(&mut values[2])
+            .variant(ToggleVariant::Outline)
+            .text("Underline")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Sizes");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Toggle::new(&mut values[0])
+            .size(ToggleSize::Sm)
+            .text("Small")
+            .show(ui);
+        Toggle::new(&mut values[0]).text("Default").show(ui);
+        Toggle::new(&mut values[0])
+            .size(ToggleSize::Lg)
+            .text("Large")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("With icons");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Toggle::new(&mut values[0])
+            .variant(ToggleVariant::Outline)
+            .icon(Icon::Search)
+            .show(ui);
+        Toggle::new(&mut values[1])
+            .icon(Icon::Sparkles)
+            .text("Starred")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled and invalid");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Toggle::new(&mut values[2])
+            .disabled(true)
+            .text("Disabled")
+            .show(ui);
+        Toggle::new(&mut values[2])
+            .variant(ToggleVariant::Outline)
+            .disabled(true)
+            .text("Disabled outline")
+            .show(ui);
+        Toggle::new(&mut values[2])
+            .variant(ToggleVariant::Outline)
+            .invalid(true)
+            .text("Invalid")
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a toggle, press Space or Enter to press it.");
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+}

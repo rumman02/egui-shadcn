@@ -212,7 +212,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "toggle",
-            show: None,
+            show: Some(demos::toggle_demo),
         },
         DemoPage {
             name: "toggle-group",

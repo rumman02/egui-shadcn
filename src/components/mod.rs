@@ -16,6 +16,7 @@ pub mod slider;
 pub mod spinner;
 pub mod switch;
 pub mod textarea;
+pub mod toggle;
 pub mod typography;
 
 pub use aspect_ratio::AspectRatio;
@@ -34,6 +35,7 @@ pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
 pub use spinner::Spinner;
 pub use switch::{Switch, SwitchSize};
 pub use textarea::{Textarea, TEXTAREA_MIN_HEIGHT};
+pub use toggle::{Toggle, ToggleSize, ToggleVariant};
 pub use typography::{
     Blockquote, CodeBlock, InlineCode, Large, Lead, ListMarker, Muted, Ol, Small, TableCaption, Ul,
     H1, H2, H3, H4, P,
