@@ -23,6 +23,7 @@ pub mod skeleton;
 pub mod slider;
 pub mod spinner;
 pub mod switch;
+pub mod table;
 pub mod textarea;
 pub mod toggle;
 pub mod toggle_group;
@@ -62,6 +63,10 @@ pub use skeleton::Skeleton;
 pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
 pub use spinner::Spinner;
 pub use switch::{Switch, SwitchSize};
+pub use table::{
+    Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow, TABLE_CELL_PADDING,
+    TABLE_HEAD_HEIGHT,
+};
 pub use textarea::{Textarea, TEXTAREA_MIN_HEIGHT};
 pub use toggle::{Toggle, ToggleSize, ToggleVariant};
 pub use toggle_group::{GroupItem, GroupMode, ToggleGroup};

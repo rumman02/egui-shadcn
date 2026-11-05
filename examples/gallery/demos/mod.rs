@@ -1751,3 +1751,109 @@ pub fn progress_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, value));
 }
+
+pub fn table_demo(ui: &mut egui::Ui) {
+    ui.label("Invoices table (hover rows, one selected row, footer totals)");
+    ui.add_space(4.0);
+    Table::new().show(ui, |ui| {
+        TableHeader::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                TableHead::new("Invoice").show(ui);
+                TableHead::new("Status").width(110.0).show(ui);
+                TableHead::new("Method").width(130.0).show(ui);
+                TableHead::new("Amount").width(90.0).show(ui);
+            });
+        });
+        TableBody::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                TableCell::text("INV-0041").show_text(ui);
+                TableCell::new().width(110.0).show(ui, |ui| {
+                    Badge::new("Paid").show(ui);
+                });
+                TableCell::text("Credit Card").width(130.0).show_text(ui);
+                TableCell::text("$250.00").width(90.0).show_text(ui);
+            });
+            TableRow::new().show(ui, |ui| {
+                TableCell::text("INV-0042").show_text(ui);
+                TableCell::new().width(110.0).show(ui, |ui| {
+                    Badge::new("Pending")
+                        .variant(BadgeVariant::Secondary)
+                        .show(ui);
+                });
+                TableCell::text("PayPal").width(130.0).show_text(ui);
+                TableCell::text("$150.00").width(90.0).show_text(ui);
+            });
+            TableRow::new().selected(true).show(ui, |ui| {
+                TableCell::text("INV-0043").show_text(ui);
+                TableCell::new().width(110.0).show(ui, |ui| {
+                    Badge::new("Unpaid").variant(BadgeVariant::Outline).show(ui);
+                });
+                TableCell::text("Bank Transfer").width(130.0).show_text(ui);
+                TableCell::text("$300.00").width(90.0).show_text(ui);
+            });
+            TableRow::new().show(ui, |ui| {
+                TableCell::text("INV-0044").show_text(ui);
+                TableCell::new().width(110.0).show(ui, |ui| {
+                    Badge::new("Paid").show(ui);
+                });
+                TableCell::text("Credit Card").width(130.0).show_text(ui);
+                TableCell::text("$125.00").width(90.0).show_text(ui);
+            });
+        });
+        TableFooter::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                TableCell::text("Total").show_text(ui);
+                TableCell::text("").width(110.0).show_text(ui);
+                TableCell::text("").width(130.0).show_text(ui);
+                TableCell::text("$825.00").width(90.0).show_text(ui);
+            });
+        });
+    });
+    TableCaption::new("A list of your recent invoices.").show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Selection state demo (click rows)");
+    ui.add_space(4.0);
+    let sel_store = egui::Id::unique("table_demo_selected");
+    let mut selected: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(sel_store).unwrap_or(None));
+    Table::new().show(ui, |ui| {
+        TableHeader::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                TableHead::new("Name").show(ui);
+                TableHead::new("Role").width(140.0).show(ui);
+            });
+        });
+        TableBody::new().show(ui, |ui| {
+            for (i, (name, role)) in [
+                ("Ada Lovelace", "Engineer"),
+                ("Grace Hopper", "Admiral"),
+                ("Katherine Johnson", "Mathematician"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut selected_row = selected == Some(i);
+                let resp = TableRow::new()
+                    .selected(selected_row)
+                    .id_salt(format!("table_demo_row_{i}"))
+                    .show(ui, |ui| {
+                        TableCell::text(name).show_text(ui);
+                        TableCell::text(role).width(140.0).show_text(ui);
+                    });
+                if resp.response.clicked() {
+                    selected_row = !selected_row;
+                }
+                selected = if selected_row {
+                    Some(i)
+                } else if selected == Some(i) {
+                    None
+                } else {
+                    selected
+                };
+            }
+        });
+    });
+    ui.small(format!("selected row: {selected:?}"));
+
+    ui.ctx().data_mut(|d| d.insert_temp(sel_store, selected));
+}
