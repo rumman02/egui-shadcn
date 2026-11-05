@@ -42,7 +42,6 @@ impl Default for ScrollArea {
     }
 }
 
-
 impl ScrollArea {
     /// Creates a vertical scroll area (the source default orientation).
     pub fn new() -> Self {
@@ -115,8 +114,8 @@ impl ScrollArea {
             // to the scrollbar token (`bg-border`).
             ui.style_mut().visuals.extreme_bg_color = p.border;
 
-            let mut area = egui::ScrollArea::new([self.vertical, self.horizontal])
-                .auto_shrink([false, false]);
+            let mut area =
+                egui::ScrollArea::new([self.vertical, self.horizontal]).auto_shrink([false, false]);
             if let Some(h) = self.height {
                 area = area.max_height(h);
             }

@@ -660,7 +660,8 @@ mod tests {
                             TableCell::text("$675.00").width(90.0).show_text(ui);
                         });
                     });
-                    crate::components::typography::TableCaption::new("A list of recent invoices.").show(ui);
+                    crate::components::typography::TableCaption::new("A list of recent invoices.")
+                        .show(ui);
                 });
             });
             out.textures_delta.clear();
