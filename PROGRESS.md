@@ -37,7 +37,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 20 | radio-group | ✅ done | B | 09929bd | RadioGroup+Item, arrow roving focus via egui spatial nav (no wrap), disabled/invalid |
 | 21 | switch | ✅ done | B | bb81ad0 | default+sm sizes, animated thumb, dark thumb tokens, Space toggle |
 | 22 | slider | ✅ done | B | b144941 | single + range thumbs, step, arrow/home/end keys, track click, disabled |
-| 23 | toggle | ✅ done | B | TBD-TG | default/outline variants, sm/default/lg sizes, icon+text, group fusing |
+| 23 | toggle | ✅ done | B | d4eee72 | default/outline variants, sm/default/lg sizes, icon+text, group fusing |
 | 24 | toggle-group | ⬜ todo | B | | single/multiple |
 | 25 | input-otp | ⬜ todo | B | | N-slot OTP input |
 | 26 | native-select | ⬜ todo | B | | egui ComboBox-based |
