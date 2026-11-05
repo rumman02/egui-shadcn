@@ -291,6 +291,10 @@ fn demo_pages() -> Vec<DemoPage> {
             show: Some(demos::pagination_demo),
         },
         DemoPage {
+            name: "popover",
+            show: Some(demos::popover_demo::popover_demo),
+        },
+        DemoPage {
             name: "dialog",
             show: None,
         },

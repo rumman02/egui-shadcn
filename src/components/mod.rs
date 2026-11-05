@@ -22,6 +22,7 @@ pub mod label;
 pub mod marker;
 pub mod native_select;
 pub mod pagination;
+pub mod popover;
 pub mod progress;
 pub mod radio_group;
 pub mod resizable;
@@ -86,6 +87,10 @@ pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
 pub use pagination::{
     Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink,
     PaginationNext, PaginationPrevious, PAGINATION_ELLIPSIS_SIZE,
+};
+pub use popover::{
+    Popover, PopoverAlign, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle,
+    PopoverTrigger, POPOVER_DEFAULT_WIDTH, POPOVER_SIDE_OFFSET,
 };
 pub use progress::Progress;
 pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, RADIO_SIZE};

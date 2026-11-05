@@ -1,5 +1,7 @@
 //! One demo module per ported component.
 
+pub mod popover_demo;
+
 use egui_shadcn_ui::prelude::*;
 
 pub fn button_demo(ui: &mut egui::Ui) {
