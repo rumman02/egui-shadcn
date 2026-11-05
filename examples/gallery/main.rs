@@ -236,7 +236,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "card",
-            show: None,
+            show: Some(demos::card_demo),
         },
         DemoPage {
             name: "alert",

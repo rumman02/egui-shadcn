@@ -4,6 +4,7 @@ pub mod aspect_ratio;
 pub mod badge;
 pub mod button;
 pub mod button_group;
+pub mod card;
 pub mod checkbox;
 pub mod field;
 pub mod input;
@@ -28,6 +29,7 @@ pub use aspect_ratio::AspectRatio;
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
+pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use field::{
     Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend,

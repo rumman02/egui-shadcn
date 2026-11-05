@@ -1443,3 +1443,67 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
         d.insert_temp(invalid_store, bad);
     });
 }
+
+pub fn card_demo(ui: &mut egui::Ui) {
+    ui.label("Default (display-only card)");
+    ui.add_space(4.0);
+    Card::new().show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Create project").show(ui);
+            CardDescription::new("Deploy your new project in one-click.").show(ui);
+        });
+        CardContent::new().show(ui, |ui| {
+            Label::new("Name").show(ui);
+            let store = egui::Id::unique("card_demo_name");
+            let mut name: String = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or_default());
+            Input::new(&mut name)
+                .placeholder("Name of your project")
+                .show(ui);
+            ui.ctx().data_mut(|d| d.insert_temp(store, name));
+        });
+        CardFooter::new().show(ui, |ui| {
+            Button::new("Create").show(ui);
+            Button::new("Cancel")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.label("With a header action (top-right slot)");
+    ui.add_space(4.0);
+    Card::new().show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Notifications").show(ui);
+            CardDescription::new("Control how you receive updates.").show(ui);
+            CardAction::new().show(ui, |ui| {
+                Button::new("")
+                    .size(ButtonSize::IconSm)
+                    .variant(ButtonVariant::Outline)
+                    .icon_start(Icon::MoreHorizontal)
+                    .show(ui);
+            });
+        });
+        CardContent::new().show(ui, |ui| {
+            ui.label("You have 3 unread notifications.");
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.label("Destructive alert inside a card");
+    ui.add_space(4.0);
+    Card::new().show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Danger zone").show(ui);
+            CardDescription::new("Deleting a project is permanent.").show(ui);
+        });
+        CardContent::new().show(ui, |ui| {
+            ui.label("All resources will be removed immediately.");
+        });
+        CardFooter::new().show(ui, |ui| {
+            Button::new("Delete project")
+                .variant(ButtonVariant::Destructive)
+                .show(ui);
+        });
+    });
+}
