@@ -13,6 +13,7 @@ pub mod card;
 pub mod checkbox;
 pub mod collapsible;
 pub mod dialog;
+pub mod drawer;
 pub mod empty;
 pub mod field;
 pub mod hover_card;
@@ -71,6 +72,10 @@ pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
 pub use dialog::{
     Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
     DialogTrigger, DIALOG_MAX_WIDTH,
+};
+pub use drawer::{
+    Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle,
+    DrawerTrigger,
 };
 pub use empty::{
     Empty, EmptyContent, EmptyDescription, EmptyFooter, EmptyHeader, EmptyMedia, EmptyMediaVariant,
