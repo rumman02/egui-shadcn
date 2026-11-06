@@ -328,7 +328,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "sonner",
-            show: None,
+            show: Some(demos::sonner_demo::sonner_demo),
         },
         DemoPage {
             name: "dropdown-menu",

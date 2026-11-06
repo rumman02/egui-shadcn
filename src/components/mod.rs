@@ -35,6 +35,7 @@ pub mod separator;
 pub mod sheet;
 pub mod skeleton;
 pub mod slider;
+pub mod sonner;
 pub mod spinner;
 pub mod switch;
 pub mod table;
@@ -126,6 +127,9 @@ pub use sheet::{
 };
 pub use skeleton::Skeleton;
 pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
+pub use sonner::{
+    Sonner, Toast, ToastVariant, SONNER_DEFAULT_DURATION_SECS, SONNER_GAP, SONNER_TOAST_WIDTH,
+};
 pub use spinner::Spinner;
 pub use switch::{Switch, SwitchSize};
 pub use table::{

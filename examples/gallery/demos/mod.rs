@@ -6,6 +6,7 @@ pub mod drawer_demo;
 pub mod hover_card_demo;
 pub mod popover_demo;
 pub mod sheet_demo;
+pub mod sonner_demo;
 pub mod tooltip_demo;
 
 use egui_shadcn_ui::prelude::*;
