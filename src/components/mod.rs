@@ -2,6 +2,7 @@
 
 pub mod accordion;
 pub mod alert;
+pub mod alert_dialog;
 pub mod aspect_ratio;
 pub mod avatar;
 pub mod badge;
@@ -47,6 +48,11 @@ pub use accordion::{
     ACCORDION_TRIGGER_HEIGHT,
 };
 pub use alert::{Alert, AlertAction, AlertDescription, AlertTitle, AlertVariant};
+pub use alert_dialog::{
+    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+    AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogSize, AlertDialogTitle,
+    AlertDialogTrigger, ALERT_DIALOG_MAX_WIDTH, ALERT_DIALOG_SM_WIDTH,
+};
 pub use aspect_ratio::AspectRatio;
 pub use avatar::{
     initials_from_name, Avatar, AvatarBadge, AvatarGroup, AvatarGroupCount, AvatarSize,

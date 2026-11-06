@@ -300,7 +300,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "alert-dialog",
-            show: None,
+            show: Some(demos::alert_dialog_demo::alert_dialog_demo),
         },
         DemoPage {
             name: "sheet",

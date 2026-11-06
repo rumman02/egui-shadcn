@@ -780,8 +780,7 @@ mod tests {
 
         h.click(trigger_rect.center(), |ui| {
             Dialog::new().id_salt("d1").show(ui, |ui| {
-                let r = DialogTrigger::new("Open").show(ui);
-                println!("dbg trigger clicked={} rect={:?}", r.clicked(), r.rect);
+                DialogTrigger::new("Open").show(ui);
                 DialogContent::new().show(ui, |ui| {
                     DialogTitle::new("Title").show(ui);
                 });
@@ -789,7 +788,22 @@ mod tests {
         });
         assert!(h.state("d1").open, "trigger click opens the dialog");
 
-        h.click(trigger_rect.center(), |ui| {
+        // Warm up: the modal's backdrop only starts blocking clicks a couple
+        // of frames after it appears.
+        for _ in 0..3 {
+            h.run(|ui| {
+                Dialog::new().id_salt("d1").show(ui, |ui| {
+                    DialogTrigger::new("Open").show(ui);
+                    DialogContent::new().show(ui, |ui| {
+                        DialogTitle::new("Title").show(ui);
+                    });
+                });
+            });
+        }
+
+        // A click away from any widget lands on the backdrop and dismisses
+        // the dialog, like Radix's dismiss-on-interact-outside.
+        h.click(egui::Pos2::new(750.0, 550.0), |ui| {
             Dialog::new().id_salt("d1").show(ui, |ui| {
                 DialogTrigger::new("Open").show(ui);
                 DialogContent::new().show(ui, |ui| {
@@ -797,8 +811,6 @@ mod tests {
                 });
             });
         });
-        // The modal covers the trigger, so this click lands on the backdrop
-        // and dismisses the dialog, like Radix's dismiss-on-interact-outside.
         assert!(
             !h.state("d1").open,
             "backdrop click must dismiss the dialog"
