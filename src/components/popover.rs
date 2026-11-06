@@ -537,8 +537,8 @@ impl PopoverDescription {
 mod tests {
     use super::*;
     use crate::components::button::Button;
-    use egui::Vec2;
     use crate::theme::{Mode, Preset};
+    use egui::Vec2;
 
     /// Advances time so animations make progress across frames.
     struct Harness {

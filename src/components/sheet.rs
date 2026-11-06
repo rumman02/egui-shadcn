@@ -759,13 +759,6 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-
-        fn state(&self, salt: &str) -> SheetState {
-            let id = Id::unique("sheet_test_ui").with(salt);
-            self.ctx
-                .data_mut(|d| d.get_temp::<SheetState>(id))
-                .unwrap_or_default()
-        }
     }
 
     #[test]
