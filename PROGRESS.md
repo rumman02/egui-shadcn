@@ -57,14 +57,14 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 40 | tabs | ✅ done | D | | Tabs/List/Trigger/Content; variants default (bg-muted pill + active fill) and line (underline/side indicator), horizontal + vertical; value per id_salt or controlled &mut String; egui arrows/Enter/Space |
 | 41 | breadcrumb | ✅ done | D | | Breadcrumb/List/Item/Link/Page/Separator/Ellipsis; muted text-sm trail, hover-brighten links, ChevronRight 14px separators, MoreHorizontal ellipsis (nova size-5) |
 | 42 | pagination | ✅ done | D | | Pagination/Content/Item/Link/Previous/Next/Ellipsis; reuses Button (active=Outline, rest=Ghost per source buttonVariants, links size=icon); disabled prev/next at ends; ellipsis nova size-8 |
-| 43 | dialog | ⬜ todo | E | | modal, backdrop, Esc close, sizes |
-| 44 | alert-dialog | ⬜ todo | E | | confirm flow, footer actions |
-| 45 | sheet | ⬜ todo | E | | side drawers (top/right/bottom/left) |
-| 46 | drawer | ⬜ todo | E | | bottom sheet (vaul-style) |
-| 47 | popover | ⬜ todo | E | | anchored, click-outside, Esc |
-| 48 | tooltip | ⬜ todo | E | | delayed hover popup |
-| 49 | hover-card | ⬜ todo | E | | rich hover preview |
-| 50 | sonner | ⬜ todo | E | | toast manager + toaster, positions, variants |
+| 43 | dialog | ✅ done | E | e83de4e | nova recipe; zoom-in-95 approximated by fade+slide |
+| 44 | alert-dialog | ✅ done | E | eaa51f4 | backdrop click does not dismiss (Radix); Esc closes without action |
+| 45 | sheet | ✅ done | E | 8602bba | all 4 sides, slide 500/300ms; backdrop blur not reproducible |
+| 46 | drawer | ✅ done | E | 4e28c84 | drag-to-dismiss with grab-point tracking + snap-back; no multi snap points (source default is dismissible only) |
+| 47 | popover | ✅ done | E | 4c8857c | uncontrolled (id_salt) + controlled; auto side-flip via RectAlign |
+| 48 | tooltip | ✅ done | E | 6a2a050 | 300ms delay default, rotated-square arrow, 4 sides |
+| 49 | hover-card | ✅ done | E | 607dbfc | Radix delays (700ms open / 300ms close), interactive content |
+| 50 | sonner | ✅ done | E | ca28588 | bottom-right stack, 4s auto-dismiss, click-to-dismiss, 6 variants; swipe-dismiss + visibleToasts collapse not ported |
 | 51 | dropdown-menu | ⬜ todo | F | | items/checkbox/radio/label/separator/sub, kbd shortcuts |
 | 52 | context-menu | ⬜ todo | F | | right-click menu |
 | 53 | menubar | ⬜ todo | F | | app menu bar |
