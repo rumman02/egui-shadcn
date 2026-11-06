@@ -304,7 +304,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "sheet",
-            show: None,
+            show: Some(demos::sheet_demo::sheet_demo),
         },
         DemoPage {
             name: "drawer",

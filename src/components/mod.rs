@@ -31,6 +31,7 @@ pub mod radio_group;
 pub mod resizable;
 pub mod scroll_area;
 pub mod separator;
+pub mod sheet;
 pub mod skeleton;
 pub mod slider;
 pub mod spinner;
@@ -114,6 +115,10 @@ pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, R
 pub use resizable::{ResizableHandle, ResizableOrientation, ResizablePanel, ResizablePanelGroup};
 pub use scroll_area::{ScrollArea, SCROLLBAR_WIDTH};
 pub use separator::{Separator, SeparatorOrientation};
+pub use sheet::{
+    Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetSide,
+    SheetTitle, SheetTrigger, SHEET_MAX_WIDTH,
+};
 pub use skeleton::Skeleton;
 pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
 pub use spinner::Spinner;
