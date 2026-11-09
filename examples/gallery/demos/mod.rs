@@ -144,6 +144,26 @@ pub fn badge_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("With icons (12px, gap-1)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Badge::new("New").icon_start(Icon::Plus).show(ui);
+        Badge::new("Notification")
+            .variant(BadgeVariant::Secondary)
+            .icon_end(Icon::X)
+            .show(ui);
+        Badge::new("Failed")
+            .variant(BadgeVariant::Destructive)
+            .icon_start(Icon::CircleAlert)
+            .show(ui);
+        Badge::new("Open")
+            .variant(BadgeVariant::Outline)
+            .icon_start(Icon::Plus)
+            .icon_end(Icon::ArrowRight)
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
     ui.label("Disabled");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -153,6 +173,9 @@ pub fn badge_demo(ui: &mut egui::Ui) {
             .disabled(true)
             .show(ui);
     });
+
+    ui.add_space(12.0);
+    ui.label("Hover the ghost and link badges (nova: muted fill / underline).");
 }
 
 pub fn label_demo(ui: &mut egui::Ui) {
@@ -1503,7 +1526,7 @@ pub fn card_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(16.0);
-    ui.label("Destructive alert inside a card");
+    ui.label("Destructive action in a card");
     ui.add_space(4.0);
     Card::new().show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
@@ -1519,6 +1542,66 @@ pub fn card_demo(ui: &mut egui::Ui) {
                 .show(ui);
         });
     });
+
+    ui.add_space(16.0);
+    ui.label("Compact (size=sm) card");
+    ui.add_space(4.0);
+    Card::new().size(CardSize::Sm).show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Compact card").show(ui);
+            CardDescription::new("Tighter spacing and a smaller title.").show(ui);
+        });
+        CardContent::new().show(ui, |ui| {
+            ui.label("Nova shrinks --card-spacing to 12px and the title to 14px.");
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.label("Card with a top image slot");
+    ui.add_space(4.0);
+    Card::new()
+        .image_top(card_demo_texture(ui))
+        .show(ui, |ui| {
+            CardHeader::new().show(ui, |ui| {
+                CardTitle::new("Landscape").show(ui);
+                CardDescription::new("The image bleeds to the rounded top corners.").show(ui);
+            });
+            CardContent::new().show(ui, |ui| {
+                ui.label("The media slot removes the card's top padding.");
+            });
+        });
+}
+
+/// A generated gradient texture for the card demo's image slot (cached in
+/// temp storage like the avatar demo's).
+fn card_demo_texture(ui: &mut egui::Ui) -> egui::ImageSource<'static> {
+    let tex_store = egui::Id::unique("card_demo_texture");
+    let tex_id = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_store));
+    let texture = tex_id.unwrap_or_else(|| {
+        let size = 128;
+        let mut pixels = Vec::with_capacity(size * size);
+        for y in 0..size {
+            for x in 0..size {
+                let t = (x as f32 / size as f32) * 0.6 + (y as f32 / size as f32) * 0.4;
+                let r = (40.0 + 160.0 * t) as u8;
+                let g = (70.0 + 60.0 * (1.0 - t)) as u8;
+                let b = (180.0 + 60.0 * t) as u8;
+                pixels.push(egui::Color32::from_rgb(r, g, b));
+            }
+        }
+        let image = egui::ColorImage::new([size, size], pixels);
+        ui.ctx().load_texture(
+            "card_demo_gradient",
+            image,
+            egui::TextureOptions::default(),
+        )
+    });
+    egui::ImageSource::Texture(egui::load::SizedTexture::new(
+        texture.id(),
+        texture.size_vec2(),
+    ))
 }
 
 pub fn alert_demo(ui: &mut egui::Ui) {
