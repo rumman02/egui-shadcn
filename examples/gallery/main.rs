@@ -388,7 +388,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "data-table",
-            show: None,
+            show: Some(demos::data_table_demo::run),
         },
         DemoPage {
             name: "form",

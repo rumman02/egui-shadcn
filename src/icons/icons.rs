@@ -54,6 +54,7 @@ pub enum Icon {
     MoreVertical,
     ArrowDown,
     ArrowUp,
+    ArrowUpDown,
     ArrowLeft,
     ArrowRight,
     PanelLeft,
@@ -157,6 +158,12 @@ impl Icon {
             Icon::ArrowUp => vec![
                 El::Line([12.0, 19.0], [12.0, 5.0]),
                 El::Poly(&[[5.0, 12.0], [12.0, 5.0], [19.0, 12.0]]),
+            ],
+            Icon::ArrowUpDown => vec![
+                El::Line([5.0, 8.0], [5.0, 16.0]),
+                El::Poly(&[[2.0, 11.0], [5.0, 8.0], [8.0, 11.0]]),
+                El::Line([19.0, 16.0], [19.0, 8.0]),
+                El::Poly(&[[16.0, 13.0], [19.0, 16.0], [22.0, 13.0]]),
             ],
             Icon::ArrowLeft => vec![
                 El::Line([19.0, 12.0], [5.0, 12.0]),
@@ -376,7 +383,7 @@ fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 38] = [
+    const ALL: [Icon; 39] = [
         Icon::Check,
         Icon::ChevronDown,
         Icon::ChevronUp,
@@ -399,6 +406,7 @@ mod tests {
         Icon::MoreVertical,
         Icon::ArrowDown,
         Icon::ArrowUp,
+        Icon::ArrowUpDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::PanelLeft,

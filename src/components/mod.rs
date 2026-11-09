@@ -18,6 +18,7 @@ pub mod collapsible;
 pub mod combobox;
 pub mod command;
 pub mod context_menu;
+pub mod data_table;
 pub mod date_picker;
 pub mod dialog;
 pub mod drawer;
@@ -100,6 +101,9 @@ pub use command::{
     COMMAND_INPUT_HEIGHT, COMMAND_ITEM_HEIGHT, COMMAND_LIST_MAX_HEIGHT,
 };
 pub use context_menu::{ContextMenu, ContextMenuResponse, CONTEXT_MENU_MIN_WIDTH};
+pub use data_table::{
+    DataTable, DataTableCellAlign, DataTableColumn, DataTableResponse, SortDirection, SortValue,
+};
 pub use date_picker::{
     DatePicker, DATE_PICKER_PLACEHOLDER, DATE_PICKER_SIDE_OFFSET, DATE_PICKER_WIDTH,
 };
