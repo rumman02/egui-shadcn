@@ -3516,3 +3516,88 @@ pub fn date_picker_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, state));
 }
+
+pub fn carousel_demo(ui: &mut egui::Ui) {
+    let store = egui::Id::unique("carousel_demo_values");
+    let mut selected: usize = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<usize>(store).unwrap_or(0));
+
+    ui.label("Horizontal (drag, arrows, dots, ArrowLeft/Right)");
+    ui.add_space(4.0);
+    let res = Carousel::new().id_salt("demo").show(ui, |ui| {
+        for i in 0..5 {
+            CarouselItem::new().show(ui, |ui| {
+                ui.add_space(4.0);
+                Card::new().show(ui, |ui| {
+                    CardContent::new().show(ui, |ui| {
+                        ui.allocate_ui(egui::Vec2::new(ui.available_width(), 160.0), |ui| {
+                            ui.with_layout(
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", i + 1))
+                                            .size(32.0)
+                                            .strong(),
+                                    );
+                                },
+                            );
+                        });
+                    });
+                });
+            });
+        }
+    });
+    if res.changed {
+        selected = res.selected;
+    }
+    ui.add_space(4.0);
+    ui.label(format!("Slide {} of 5", selected + 1));
+
+    ui.add_space(16.0);
+    ui.label("Vertical (drag or ArrowUp/ArrowDown)");
+    ui.add_space(4.0);
+    Carousel::new()
+        .id_salt("demo_vertical")
+        .orientation(CarouselOrientation::Vertical)
+        .show(ui, |ui| {
+            for i in 0..3 {
+                CarouselItem::new().show(ui, |ui| {
+                    Card::new().show(ui, |ui| {
+                        CardContent::new().show(ui, |ui| {
+                            ui.set_min_height(72.0);
+                            ui.set_min_width(ui.available_width());
+                            ui.vertical_centered(|ui| {
+                                ui.label(format!("Vertical slide {}", i + 1));
+                            });
+                        });
+                    });
+                });
+            }
+        });
+
+    ui.add_space(16.0);
+    ui.label("Without arrows or dots");
+    ui.add_space(4.0);
+    Carousel::new()
+        .id_salt("demo_plain")
+        .show_arrows(false)
+        .show_dots(false)
+        .show(ui, |ui| {
+            for i in 0..3 {
+                CarouselItem::new().show(ui, |ui| {
+                    Card::new().show(ui, |ui| {
+                        CardContent::new().show(ui, |ui| {
+                            ui.set_min_height(72.0);
+                            ui.set_min_width(ui.available_width());
+                            ui.vertical_centered(|ui| {
+                                ui.label(format!("Plain slide {}", i + 1));
+                            });
+                        });
+                    });
+                });
+            }
+        });
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, selected));
+}

@@ -380,7 +380,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "carousel",
-            show: None,
+            show: Some(demos::carousel_demo),
         },
         DemoPage {
             name: "chart",

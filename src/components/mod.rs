@@ -11,6 +11,7 @@ pub mod button;
 pub mod button_group;
 pub mod calendar;
 pub mod card;
+pub mod carousel;
 pub mod checkbox;
 pub mod collapsible;
 pub mod combobox;
@@ -81,6 +82,10 @@ pub use calendar::{
     CALENDAR_CELL_SIZE, CALENDAR_GRID_WIDTH, CALENDAR_PADDING, MONTH_NAMES, WEEKDAY_SHORT,
 };
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
+pub use carousel::{
+    Carousel, CarouselItem, CarouselOrientation, CarouselResponse, CAROUSEL_ARROW_GUTTER,
+    CAROUSEL_ARROW_SIZE, CAROUSEL_DOT_SIZE, CAROUSEL_ITEM_GAP,
+};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
 pub use combobox::{
