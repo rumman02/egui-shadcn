@@ -10,6 +10,11 @@
 //! ring-ring/50` and a blinking 1px caret (`animate-caret-blink
 //! bg-foreground h-4 w-px`).
 //!
+//! The nova style (`.cn-input-otp-slot`) shrinks the slots to `size-8`
+//! (32px) with `rounded-l-lg`/`rounded-r-lg` group ends, and rings the
+//! whole group with `ring-3 ring-destructive/20` (dark /40) when any slot
+//! is `aria-invalid`; `has-disabled:opacity-50` fades borders and fills.
+//!
 //! Keyboard (per the source's `input-otp` behavior): characters fill the
 //! focused slot and advance the caret, Backspace clears and moves back,
 //! ArrowLeft/ArrowRight move the caret, and paste distributes across slots.
@@ -44,13 +49,23 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{color_alpha, ShadcnTheme};
+use crate::theme::{color_alpha, ShadcnTheme, Style};
 use egui::{Align2, CornerRadius, Event, Id, Key, Rect, Response, Sense, Stroke, Ui, Vec2};
 
-/// `h-9 w-9` — the slot square side.
+/// `h-9 w-9` — the slot square side in the base recipe. The nova style is
+/// 32px (`size-8`).
 pub const OTP_SLOT_SIZE: f32 = 36.0;
 /// `h-4` — the caret height.
 pub const OTP_CARET_HEIGHT: f32 = 16.0;
+
+/// Slot square side (`h-9 w-9` base recipe; nova `.cn-input-otp-slot`
+/// `size-8`).
+pub(crate) fn slot_size(style: Style) -> f32 {
+    match style {
+        Style::Nova => 32.0, // size-8
+        _ => OTP_SLOT_SIZE,  // h-9 w-9
+    }
+}
 
 /// Shared OTP context passed to slots through the temp stack.
 #[derive(Clone, Copy, Debug)]
@@ -330,6 +345,26 @@ impl InputOTPGroup {
             content(ui)
         });
 
+        // nova `.cn-input-otp-group`: `has-aria-invalid:ring-3
+        // ring-destructive/20 dark:ring-destructive/40` around the whole
+        // group when any slot is invalid.
+        if ctx.invalid {
+            let theme = ShadcnTheme::of_ui(ui);
+            if theme.style == Style::Nova && ui.is_rect_visible(inner.response.rect) {
+                let ring_color = color_alpha(
+                    theme.palette.destructive,
+                    if theme.mode.is_dark() { 0.4 } else { 0.2 },
+                );
+                crate::utils::focus::paint_ring(
+                    ui.painter(),
+                    inner.response.rect.expand2(egui::vec2(1.0, 1.0)),
+                    ring_color,
+                    3.0,
+                    theme.radius.lg_u8() as f32,
+                );
+            }
+        }
+
         let mut stack: Vec<Id> = ui
             .ctx()
             .data_mut(|d| d.get_temp(group_stack_id()).unwrap_or_default());
@@ -399,10 +434,10 @@ impl InputOTPSlot {
     pub fn show(self, ui: &mut Ui) -> Response {
         let Some(ctx) = current_ctx(ui) else {
             // Rendered outside an InputOTP container: plain static box.
+            let theme = ShadcnTheme::of_ui(ui);
             let (rect, response) =
-                ui.allocate_exact_size(Vec2::splat(OTP_SLOT_SIZE), Sense::hover());
+                ui.allocate_exact_size(Vec2::splat(slot_size(theme.style)), Sense::hover());
             if ui.is_rect_visible(rect) {
-                let theme = ShadcnTheme::of_ui(ui);
                 ui.painter().rect_stroke(
                     rect,
                     theme.radius.md_u8(),
@@ -447,7 +482,7 @@ impl InputOTPSlot {
         } else {
             Sense::click()
         };
-        let (_, rect) = ui.allocate_space(Vec2::splat(OTP_SLOT_SIZE));
+        let (_, rect) = ui.allocate_space(Vec2::splat(slot_size(theme.style)));
         let response = ui.interact(rect, id, sense);
 
         let chars: Vec<char> = ui.ctx().data_mut(|d| {
@@ -569,7 +604,17 @@ impl InputOTPSlot {
             } else {
                 Stroke::new(1.0, p.input)
             };
-            let radius = theme.radius.md_u8();
+            // `has-disabled:opacity-50` fades the border with the container.
+            let stroke = if disabled {
+                Stroke::new(1.0, color_alpha(stroke.color, 0.5))
+            } else {
+                stroke
+            };
+            let radius = if theme.style == Style::Nova {
+                theme.radius.lg_u8()
+            } else {
+                theme.radius.md_u8()
+            };
             let mut corner = CornerRadius {
                 nw: 0,
                 ne: 0,
@@ -598,9 +643,10 @@ impl InputOTPSlot {
                     .with_blur_width(2.0),
                 );
             }
-            // `dark:bg-input/30`
+            // `dark:bg-input/30`; `has-disabled:opacity-50` fades the fill.
             if dark {
-                painter.rect_filled(rect, corner, color_alpha(p.input, 0.3));
+                let fill_alpha = if disabled { 0.15 } else { 0.3 };
+                painter.rect_filled(rect, corner, color_alpha(p.input, fill_alpha));
             }
             painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
 
@@ -672,11 +718,13 @@ impl InputOTPSeparator {
             Sense::hover(),
         );
         if ui.is_rect_visible(rect) {
+            // The source separator has no color class, so the icon inherits
+            // the foreground color.
             let theme = ShadcnTheme::of_ui(ui);
             Icon::Minus.paint(
                 ui.painter(),
                 rect,
-                theme.palette.muted_foreground,
+                theme.palette.foreground,
                 2.0 * crate::theme::tokens::spacing::LG / 24.0,
             );
         }
@@ -696,7 +744,9 @@ mod tests {
 
     #[test]
     fn slot_geometry_matches_source() {
-        assert_eq!(OTP_SLOT_SIZE, 36.0); // h-9 w-9
+        assert_eq!(OTP_SLOT_SIZE, 36.0); // h-9 w-9 (base recipe)
+        assert_eq!(slot_size(Style::Vega), 36.0);
+        assert_eq!(slot_size(Style::Nova), 32.0); // nova size-8
         assert_eq!(OTP_CARET_HEIGHT, 16.0); // h-4
     }
 
