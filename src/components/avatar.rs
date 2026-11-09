@@ -241,11 +241,12 @@ impl<'a> Avatar<'a> {
         }
 
         // `AvatarBadge`: `bg-primary` circle at the bottom-right corner,
-        // with a 2px background ring; the icon is hidden on sm avatars.
+        // with a 2px `ring-2 ring-background` ring; the icon is hidden on
+        // sm avatars.
         if let Some(badge) = self.badge.as_ref() {
             let bs = self.size.badge_size();
             let center = Pos2::new(rect.right() - bs * 0.5, rect.bottom() - bs * 0.5);
-            painter.circle_filled(center, bs * 0.5 + 1.0, p.background);
+            painter.circle_filled(center, bs * 0.5 + 2.0, p.background);
             painter.circle_filled(center, bs * 0.5, p.primary);
             if let Some(icon) = badge.icon {
                 let icon_size = self.size.badge_icon_size();
