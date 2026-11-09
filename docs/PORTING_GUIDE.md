@@ -34,6 +34,9 @@ egui 0.37 changed several APIs vs older docs/examples you may remember:
 - **`egui::Frame::none()` is gone in 0.37 — use `Frame::new()`. `WidgetType` is deprecated in favor of `egui::Role`.**
 - **egui temp data keys include the value type** (`RawKey::new::<T>(id)`): switching the stored type for the same Id leaves the old entry behind. Keep the stored type per id stable across frames.
 - **Animations:** `ctx.animate_value_with_time(id, target, secs)`; helpers in `crate::utils::animation` (`open_progress`, `overlay_progress`, `Duration::{Fast,Default,Slow}`).
+- **Popup hit-testing lags one pass:** popups hit-test against the previous pass's widget rects, and a popup's first pass is sizing-only — so a simulated click one frame after a popup opens cannot hit its rows. Interaction tests need a settling frame first (see the `dropdown_menu.rs` tests).
+- **Set `PopupCloseBehavior::CloseOnClickOutside` on component-managed menu popups** (dropdown-menu, select, …) so egui's built-in close-on-click logic doesn't fight the component's own dismissal.
+- **egui 0.37 does not mark a response disabled for you:** a disabled widget must produce that state explicitly — interact through a disabled child Ui (`UiBuilder::new().disabled()`) so `Response::enabled()` is false and egui suppresses hover, clicks and focus (see `button.rs`). A `Sense::hover()` response alone still reports `enabled() == true`.
 
 ## Theme access
 
