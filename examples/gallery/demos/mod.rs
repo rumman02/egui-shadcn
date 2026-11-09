@@ -2971,3 +2971,128 @@ pub fn context_menu_demo(ui: &mut egui::Ui) {
         d.insert_temp(action_store, last_action);
     });
 }
+
+pub fn menubar_demo(ui: &mut egui::Ui) {
+    let state = egui::Id::unique("menubar_demo_state");
+    let action_store = egui::Id::unique("menubar_demo_action");
+    let ctrl_store = egui::Id::unique("menubar_demo_controlled");
+    let (mut bookmarks, mut full_urls, mut theme, mut zoom): (
+        bool,
+        bool,
+        Option<usize>,
+        Option<usize>,
+    ) = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(state).unwrap_or((true, false, Some(0), Some(1))));
+    let mut last_action: Option<String> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
+
+    ui.label("Click a menu to open it. Hovering another menu switches while one is open. ArrowLeft/Right switch menus, ArrowUp/Down navigate items, Enter activates, Escape closes.");
+    ui.add_space(8.0);
+
+    let res = Menubar::new().id_salt("menubar_demo").show(ui, |bar| {
+        bar.menu("File", |m| {
+            m.item(MenuItem::new("New Tab").shortcut("⌘T"));
+            m.item(MenuItem::new("New Window").shortcut("⌘N"));
+            m.item(MenuItem::new("New Incognito Window").disabled(true));
+            m.separator();
+            m.sub_menu("Share", |m| {
+                m.item(MenuItem::new("Email link"));
+                m.item(MenuItem::new("Messages"));
+                m.item(MenuItem::new("Notes"));
+            });
+            m.separator();
+            m.item(MenuItem::new("Print…").shortcut("⌘P"));
+        });
+        bar.menu("Edit", |m| {
+            m.item(MenuItem::new("Undo").shortcut("⌘Z"));
+            m.item(MenuItem::new("Redo").shortcut("⇧⌘Z"));
+            m.separator();
+            m.sub_menu("Find", |m| {
+                m.item(MenuItem::new("Search the web"));
+                m.separator();
+                m.item(MenuItem::new("Find…"));
+                m.item(MenuItem::new("Find Next"));
+                m.item(MenuItem::new("Find Previous"));
+            });
+            m.separator();
+            m.item(MenuItem::new("Cut"));
+            m.item(MenuItem::new("Copy"));
+            m.item(MenuItem::new("Paste"));
+        });
+        bar.menu("View", |m| {
+            m.checkbox_item(CheckboxItem::new(
+                "Always Show Bookmarks Bar",
+                &mut bookmarks,
+            ));
+            m.checkbox_item(
+                CheckboxItem::new("Always Show Full URLs", &mut full_urls).disabled(true),
+            );
+            m.separator();
+            m.label_inset("Theme");
+            m.radio_group(&mut theme, |g| {
+                g.radio_items([
+                    RadioItem::new("Light").inset(true),
+                    RadioItem::new("Dark").inset(true),
+                    RadioItem::new("System").inset(true),
+                ]);
+            });
+            m.separator();
+            m.item(MenuItem::new("Reload").shortcut("⌘R").inset(true));
+        });
+        bar.menu("Zoom", |m| {
+            m.radio_group(&mut zoom, |g| {
+                g.radio_items([
+                    RadioItem::new("100%").shortcut("⌘0"),
+                    RadioItem::new("125%"),
+                    RadioItem::new("150%"),
+                ]);
+            });
+            m.separator();
+            m.item(MenuItem::new("Reset zoom").destructive(true));
+            m.item(MenuItem::new("Zoom In").shortcut("⌘+"));
+            m.item(MenuItem::new("Zoom Out").shortcut("⌘-"));
+        });
+    });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    let mut open_index: Option<usize> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(ctrl_store).unwrap_or(None));
+    ui.label("Controlled (open menu index owned by the app):");
+    ui.add_space(4.0);
+    let res = Menubar::controlled(&mut open_index)
+        .id_salt("menubar_demo_controlled")
+        .show(ui, |bar| {
+            bar.menu("Actions", |m| {
+                m.item(MenuItem::new("Refresh").shortcut("⌘R"));
+                m.item(MenuItem::new("Duplicate").shortcut("⌘D").disabled(true));
+            });
+            bar.menu("Help", |m| {
+                m.item(MenuItem::new("Docs"));
+                m.item(MenuItem::new("Changelog"));
+                m.separator();
+                m.item(MenuItem::new("Report issue").destructive(true));
+            });
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+    if let Some(i) = open_index {
+        ui.label(format!("Open menu: {i}"));
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(ctrl_store, open_index));
+
+    ui.add_space(12.0);
+    if let Some(action) = &last_action {
+        ui.label(format!("Last activated item: {action}"));
+    }
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(state, (bookmarks, full_urls, theme, zoom));
+        d.insert_temp(action_store, last_action);
+    });
+}

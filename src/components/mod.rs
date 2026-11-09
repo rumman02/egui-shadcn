@@ -26,6 +26,7 @@ pub mod item;
 pub mod kbd;
 pub mod label;
 pub mod marker;
+pub mod menubar;
 pub mod native_select;
 pub mod pagination;
 pub mod popover;
@@ -115,6 +116,11 @@ pub use item::{
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
 pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};
+pub use menubar::{
+    Menubar, MenubarBuilder, MenubarResponse, MENUBAR_ALIGN_OFFSET, MENUBAR_GAP, MENUBAR_HEIGHT,
+    MENUBAR_MIN_WIDTH, MENUBAR_PADDING, MENUBAR_SIDE_OFFSET, MENUBAR_TRIGGER_HEIGHT,
+    MENUBAR_TRIGGER_PAD_X,
+};
 pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
 pub use pagination::{
     Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink,

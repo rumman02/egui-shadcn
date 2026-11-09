@@ -303,6 +303,10 @@ fn demo_pages() -> Vec<DemoPage> {
             show: Some(demos::context_menu_demo),
         },
         DemoPage {
+            name: "menubar",
+            show: Some(demos::menubar_demo),
+        },
+        DemoPage {
             name: "dialog",
             show: Some(demos::dialog_demo::dialog_demo),
         },
