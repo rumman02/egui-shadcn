@@ -6,8 +6,15 @@
 //! focus-visible:ring-ring/50`, `aria-invalid` destructive styling and
 //! `disabled:opacity-50`. Dark mode uses the `dark:bg-input/30` fill.
 //!
+//! The nova style (`.cn-input`) tightens the geometry to
+//! `h-8 rounded-lg px-2.5` and adds disabled fills
+//! (`disabled:bg-input/50 dark:disabled:bg-input/80`); the border fades to
+//! 50% like the base `disabled:opacity-50`.
+//!
 //! The underlying widget is a restyled [`egui::TextEdit`]; the shadcn frame
-//! (border, shadow, focus ring) is drawn by this component.
+//! (border, shadow, focus ring) is drawn by this component. Hint text
+//! renders in `muted-foreground` via the theme's weak text color
+//! (`placeholder:text-muted-foreground`).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -23,13 +30,38 @@
 
 use crate::components::button::group;
 use crate::components::button::{fuse_radius, GroupOrientation, GroupPosition};
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{
     Align2, Color32, CornerRadius, FontId, Margin, Rect, Response, Stroke, TextEdit, Ui, Vec2,
 };
 
-/// Height of the input (`h-9`).
+/// Height of the input in the base recipe (`h-9`). The nova style is 32pt
+/// (`h-8`).
 pub const INPUT_HEIGHT: f32 = crate::theme::tokens::spacing::CONTROL;
+
+/// Outer height (`h-9` base recipe; nova `.cn-input` `h-8`).
+pub(crate) fn input_height(style: Style) -> f32 {
+    match style {
+        Style::Nova => 32.0, // h-8
+        _ => INPUT_HEIGHT,   // h-9
+    }
+}
+
+/// Horizontal padding (`px-3` base recipe; nova `.cn-input` `px-2.5`).
+pub(crate) fn padding_x(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0, // px-2.5
+        _ => 12.0,           // px-3
+    }
+}
+
+/// Corner radius (`rounded-md` base recipe; nova `.cn-input` `rounded-lg`).
+pub(crate) fn corner_radius(style: Style, radius: &RadiusTokens) -> u8 {
+    match style {
+        Style::Nova => radius.lg_u8(),
+        _ => radius.md_u8(),
+    }
+}
 
 /// Resolved frame colors for one input state (pure, unit-testable).
 #[derive(Clone, Copy, Debug)]
@@ -45,14 +77,32 @@ pub(crate) struct InputColors {
 /// Mirrors the base recipe (`border-input`, `dark:bg-input/30`,
 /// `focus-visible:border-ring focus-visible:ring-ring/50`,
 /// `aria-invalid:border-destructive aria-invalid:ring-destructive/20
-/// dark:aria-invalid:ring-destructive/40`).
+/// dark:aria-invalid:ring-destructive/40`, `disabled:opacity-50`). The nova
+/// style replaces the disabled fill with `disabled:bg-input/50
+/// dark:disabled:bg-input/80`.
 pub(crate) fn resolve_input_colors(
     p: &Palette,
     dark: bool,
     focused: bool,
     invalid: bool,
+    disabled: bool,
+    style: Style,
 ) -> InputColors {
-    let fill = if dark {
+    let fill = if disabled {
+        // nova `disabled:bg-input/50 dark:disabled:bg-input/80`. The base
+        // recipe keeps its fill but `disabled:opacity-50` fades it.
+        match style {
+            Style::Nova => color_alpha(p.input, if dark { 0.8 } else { 0.5 }),
+            _ => {
+                let base = if dark {
+                    color_alpha(p.input, 0.3)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                color_alpha(base, 0.5)
+            }
+        }
+    } else if dark {
         color_alpha(p.input, 0.3)
     } else {
         Color32::TRANSPARENT
@@ -63,6 +113,12 @@ pub(crate) fn resolve_input_colors(
         p.ring
     } else {
         p.input
+    };
+    // `disabled:opacity-50` fades the border with the rest of the element.
+    let stroke_color = if disabled {
+        color_alpha(stroke_color, 0.5)
+    } else {
+        stroke_color
     };
     let ring = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
@@ -154,6 +210,7 @@ impl<'a> Input<'a> {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
         let p = theme.palette;
+        let style = theme.style;
 
         let width = match self.width {
             Some(w) => w,
@@ -191,12 +248,9 @@ impl<'a> Input<'a> {
             .font(font)
             .text_color(text_color)
             .desired_width(width)
-            .min_size(Vec2::new(width, INPUT_HEIGHT))
+            .min_size(Vec2::new(width, input_height(style)))
             .align(Align2::LEFT_CENTER)
-            .margin(Margin::symmetric(
-                crate::theme::tokens::spacing::MD as i8,
-                0,
-            ))
+            .margin(Margin::symmetric(padding_x(style) as i8, 0))
             .password(self.password);
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             if is_empty {
@@ -218,15 +272,20 @@ impl<'a> Input<'a> {
             edit
         };
 
-        // Colors depend on focus, so resolve after the TextEdit ran.
-        let out = edit.show(ui);
-        let response = out.response.response;
+        // Colors depend on focus, so resolve after the TextEdit ran. The
+        // scoped spacing keeps the theme's `interact_size` floor (36pt) from
+        // overriding the nova `h-8` (32pt) geometry.
+        let out = ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = input_height(style);
+            edit.show(ui)
+        });
+        let response = out.inner.response.response;
         let rect = response.rect;
 
         if ui.is_rect_visible(rect) {
             let focused = response.has_focus() && !self.disabled;
-            let c = resolve_input_colors(&p, dark, focused, self.invalid);
-            let radius = theme.radius.md_u8();
+            let c = resolve_input_colors(&p, dark, focused, self.invalid, self.disabled, style);
+            let radius = corner_radius(style, &theme.radius);
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
 
             let painter = ui.painter();
@@ -291,50 +350,95 @@ mod tests {
     }
 
     #[test]
-    fn input_is_36pt_tall_and_text_is_vertically_centered() {
+    fn input_height_follows_style() {
+        // Base recipe `h-9`; nova `.cn-input` `h-8`.
+        assert_eq!(input_height(Style::Vega), 36.0);
+        assert_eq!(input_height(Style::Nova), 32.0);
+        assert_eq!(INPUT_HEIGHT, 36.0);
+        assert_eq!(padding_x(Style::Nova), 10.0);
+        assert_eq!(padding_x(Style::Vega), 12.0);
+    }
+
+    #[test]
+    fn input_is_control_height_and_text_is_vertically_centered() {
+        // The default preset is nova: `h-8` (32pt).
+        let (rect_h, rect_w) = {
+            let ctx = egui::Context::default();
+            Preset::default().install(&ctx);
+            let mut text = String::from("hello");
+            let mut h = 0.0;
+            let mut w = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("input_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let r = Input::new(&mut text).show(ui);
+                h = r.rect.height();
+                w = r.rect.width();
+            });
+            out.textures_delta.clear();
+            (h, w)
+        };
+        assert!((rect_h - 32.0).abs() < 1.0, "nova h-8: {}", rect_h);
+        assert!((rect_w - 400.0).abs() < 1.0, "w-full: {}", rect_w);
+        // A non-nova (base recipe) theme keeps `h-9`.
         let ctx = egui::Context::default();
-        Preset::default().install(&ctx);
-        let mut text = String::from("hello");
-        let mut rect = Rect::NOTHING;
+        Preset::default().with_style(Style::Vega).install(&ctx);
+        let mut text = String::new();
+        let mut base_h = 0.0;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
             let ui = &mut egui::Ui::new(
                 ctx.clone(),
-                egui::Id::unique("input_test"),
+                egui::Id::unique("input_test_base"),
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
             );
-            rect = Input::new(&mut text).show(ui).rect;
+            base_h = Input::new(&mut text).show(ui).rect.height();
         });
         out.textures_delta.clear();
-        assert!(
-            (rect.height() - INPUT_HEIGHT).abs() < 1.0,
-            "h-9: {}",
-            rect.height()
-        );
-        assert!(
-            (rect.width() - 400.0).abs() < 1.0,
-            "w-full: {}",
-            rect.width()
-        );
+        assert!((base_h - INPUT_HEIGHT).abs() < 1.0, "base h-9: {}", base_h);
     }
 
     #[test]
     fn frame_colors_follow_state() {
         let p = palette(Mode::Light);
-        let c = resolve_input_colors(&p, false, false, false);
+        let c = resolve_input_colors(&p, false, false, false, false, Style::Vega);
         assert_eq!(c.fill, Color32::TRANSPARENT);
         assert_eq!(c.stroke.color, p.input);
-        let f = resolve_input_colors(&p, false, true, false);
+        let f = resolve_input_colors(&p, false, true, false, false, Style::Vega);
         assert_eq!(f.stroke.color, p.ring);
         assert_eq!(f.ring, color_alpha(p.ring, 0.5));
-        let i = resolve_input_colors(&p, false, false, true);
+        let i = resolve_input_colors(&p, false, false, true, false, Style::Vega);
         assert_eq!(i.stroke.color, p.destructive);
         assert_eq!(i.ring, color_alpha(p.destructive, 0.2));
         let dark = palette(Mode::Dark);
-        let dc = resolve_input_colors(&dark, true, false, false);
+        let dc = resolve_input_colors(&dark, true, false, false, false, Style::Vega);
         assert_eq!(dc.fill, color_alpha(dark.input, 0.3));
-        let di = resolve_input_colors(&dark, true, false, true);
+        let di = resolve_input_colors(&dark, true, false, true, false, Style::Vega);
         assert_eq!(di.ring, color_alpha(dark.destructive, 0.4));
+    }
+
+    #[test]
+    fn disabled_fades_border_and_fills() {
+        let p = palette(Mode::Light);
+        // Nova light: `disabled:bg-input/50`, border at 50%.
+        let nd = resolve_input_colors(&p, false, false, false, true, Style::Nova);
+        assert_eq!(nd.fill, color_alpha(p.input, 0.5));
+        assert_eq!(nd.stroke.color, color_alpha(p.input, 0.5));
+        // Nova dark: `dark:disabled:bg-input/80`.
+        let dark = palette(Mode::Dark);
+        let ndd = resolve_input_colors(&dark, true, false, false, true, Style::Nova);
+        assert_eq!(ndd.fill, color_alpha(dark.input, 0.8));
+        assert_eq!(ndd.stroke.color, color_alpha(dark.input, 0.5));
+        // Base light keeps the transparent fill; base dark fades input/30.
+        let bd = resolve_input_colors(&p, false, false, false, true, Style::Vega);
+        assert_eq!(bd.fill, Color32::TRANSPARENT);
+        assert_eq!(bd.stroke.color, color_alpha(p.input, 0.5));
+        let bdd = resolve_input_colors(&dark, true, false, false, true, Style::Vega);
+        assert_eq!(bdd.fill, color_alpha(color_alpha(dark.input, 0.3), 0.5));
     }
 
     #[test]
