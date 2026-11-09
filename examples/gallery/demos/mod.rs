@@ -2857,3 +2857,117 @@ pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
         d.insert_temp(action_store, last_action);
     });
 }
+
+pub fn context_menu_demo(ui: &mut egui::Ui) {
+    let state = egui::Id::unique("context_menu_demo_state");
+    let action_store = egui::Id::unique("context_menu_demo_action");
+    let ctrl_store = egui::Id::unique("context_menu_demo_controlled");
+    let (mut show_bookmarks, mut show_full_urls, mut people): (bool, bool, Option<usize>) = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(state).unwrap_or((true, false, Some(1))));
+    let mut last_action: Option<String> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
+
+    ui.label("Right-click inside a box to open its menu. Escape closes, Arrow keys navigate, Enter activates.");
+    ui.add_space(8.0);
+
+    ui.label("Basic");
+    ui.add_space(4.0);
+    ui.group(|ui| {
+        ui.set_min_size(egui::vec2(280.0, 64.0));
+        ui.label("Right-click here");
+        ui.label("Back / Forward / Save / Print…");
+    });
+    let res = ContextMenu::new()
+        .id_salt("context_menu_demo_basic")
+        .show(ui, |m| {
+            m.item(MenuItem::new("Back").shortcut("⌘[").icon(Icon::ArrowLeft));
+            m.item(MenuItem::new("Forward").shortcut("⌘]").disabled(true));
+            m.separator();
+            m.sub_menu("Share", |m| {
+                m.item(MenuItem::new("Email").icon(Icon::Send));
+                m.item(MenuItem::new("Message"));
+                m.separator();
+                m.item(MenuItem::new("More…"));
+            });
+            m.separator();
+            m.item(MenuItem::new("Save").shortcut("⌘S"));
+            m.item(MenuItem::new("Print…").shortcut("⌘P"));
+            m.separator();
+            m.item(
+                MenuItem::new("Delete")
+                    .shortcut("⌘⌫")
+                    .destructive(true)
+                    .icon(Icon::Trash),
+            );
+            m.item(MenuItem::new("Disabled entry").disabled(true));
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Checkbox + radio items (menus stay open while toggling is on-screen via re-open)");
+    ui.add_space(4.0);
+    ui.group(|ui| {
+        ui.set_min_size(egui::vec2(280.0, 64.0));
+        ui.label("Right-click here for checkboxes and a radio group");
+    });
+    let res = ContextMenu::new()
+        .id_salt("context_menu_demo_checks")
+        .show(ui, |m| {
+            m.label("Appearance");
+            m.separator();
+            m.checkbox_item(CheckboxItem::new("Show Bookmarks Bar", &mut show_bookmarks));
+            m.checkbox_item(
+                CheckboxItem::new("Always Show Full URLs", &mut show_full_urls).disabled(true),
+            );
+            m.separator();
+            m.label_inset("People");
+            m.radio_group(&mut people, |g| {
+                g.radio_items([
+                    RadioItem::new("Eduardo Lavaque").inset(true),
+                    RadioItem::new("Shadcn").inset(true),
+                    RadioItem::new("Egui").disabled(true),
+                ]);
+            });
+            m.separator();
+            m.item(MenuItem::new("Reset").destructive(true));
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    let mut open: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(ctrl_store).unwrap_or(false));
+    ui.horizontal(|ui| {
+        ui.label("Controlled open state:");
+        ui.label(format!("open = {open}"));
+    });
+    ui.group(|ui| {
+        ui.set_min_size(egui::vec2(280.0, 48.0));
+        ui.label("Right-click here (controlled)");
+    });
+    let res = ContextMenu::controlled(&mut open)
+        .id_salt("context_menu_demo_controlled")
+        .show(ui, |m| {
+            m.item(MenuItem::new("Refresh").shortcut("⌘R"));
+            m.item(MenuItem::new("Copy location").shortcut("⌥⌘C"));
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(ctrl_store, open));
+
+    ui.add_space(12.0);
+    if let Some(action) = &last_action {
+        ui.label(format!("Last activated item: {action}"));
+    }
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(state, (show_bookmarks, show_full_urls, people));
+        d.insert_temp(action_store, last_action);
+    });
+}

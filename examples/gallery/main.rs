@@ -299,6 +299,10 @@ fn demo_pages() -> Vec<DemoPage> {
             show: Some(demos::dropdown_menu_demo),
         },
         DemoPage {
+            name: "context-menu",
+            show: Some(demos::context_menu_demo),
+        },
+        DemoPage {
             name: "dialog",
             show: Some(demos::dialog_demo::dialog_demo),
         },

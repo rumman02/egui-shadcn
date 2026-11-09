@@ -66,7 +66,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 49 | hover-card | ✅ done | E | 607dbfc | Radix delays (700ms open / 300ms close), interactive content |
 | 50 | sonner | ✅ done | E | ca28588 | bottom-right stack, 4s auto-dismiss, click-to-dismiss, 6 variants; swipe-dismiss + visibleToasts collapse not ported |
 | 51 | dropdown-menu | ✅ done | F | c5df08a | declarative builder (MenuBuilder); checkbox/radio/label/separator/sub-menus/shortcuts/icons/destructive/disabled; full Radix keyboard nav (arrows/Home/End/Enter/Escape, skip-disabled, wrap); hover-open subs; controlled+uncontrolled; nova recipe (min-w-32, indicator right) |
-| 52 | context-menu | ⬜ todo | F | | right-click menu |
+| 52 | context-menu | ✅ done | F | 86f782d | right-click region = Ui.min_rect(); menu at pointer; shares dropdown items/keyboard/checkbox/radio/sub-menus; controlled+uncontrolled; nova min-w-36 |
 | 53 | menubar | ⬜ todo | F | | app menu bar |
 | 54 | navigation-menu | ⬜ todo | F | | horizontal/vertical, viewport panels |
 | 55 | select | ⬜ todo | F | | trigger + content, scroll up/down |
