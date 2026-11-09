@@ -249,6 +249,15 @@ pub fn kbd_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("With a 12px icon (gap-1)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Kbd::new("M").icon(Icon::ChevronLeft).show(ui);
+        Kbd::new("M").icon(Icon::ChevronRight).show(ui);
+        Kbd::new("").icon(Icon::ChevronDown).show(ui);
+    });
+
+    ui.add_space(12.0);
     ui.label("Groups (gap-1)");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -580,9 +589,7 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
     ui.add_space(12.0);
     ui.label("Nested group (outer gap-2, items stretch to the tallest member)");
     ui.add_space(4.0);
-    ButtonGroup::new()
-        .gap(crate::theme::tokens::spacing::SM)
-        .show(ui, |ui| {
+    ButtonGroup::new().gap(spacing::SM).show(ui, |ui| {
             ButtonGroup::new().show(ui, |ui| {
                 Button::new("Left").show(ui);
                 Button::new("Right").show(ui);
