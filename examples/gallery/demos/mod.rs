@@ -1687,6 +1687,9 @@ pub fn alert_demo(ui: &mut egui::Ui) {
     ui.add_space(12.0);
     ui.label("Success and info icons");
     ui.add_space(4.0);
+    // These use the default variant: the source's `[&>svg]:text-current`
+    // keeps icons foreground-colored unless the variant overrides it, so do
+    // not recolor them per semantic.
     Alert::new()
         .id_salt("alert_demo_success")
         .icon(Icon::CircleCheck)
