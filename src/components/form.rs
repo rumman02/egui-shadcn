@@ -359,7 +359,9 @@ mod tests {
         assert_eq!(errors[0].0, "email");
         assert_eq!(errors[0].1, "Enter a valid email.");
 
-        let value = Signup { email: "a@b.c".into() };
+        let value = Signup {
+            email: "a@b.c".into(),
+        };
         assert!(run_validators(&validators, &value).is_empty());
     }
 
@@ -584,7 +586,9 @@ mod tests {
     #[test]
     fn valid_submit_runs_callback_once() {
         let h = Harness::new();
-        let mut value = Signup { email: "a@b.c".into() };
+        let mut value = Signup {
+            email: "a@b.c".into(),
+        };
         let called = Rc::new(Cell::new(false));
         {
             let mut out = h.ctx.run_ui(egui::RawInput::default(), |ctx| {
@@ -618,7 +622,9 @@ mod tests {
     #[test]
     fn valid_submit_response_reports_valid() {
         let h = Harness::new();
-        let mut value = Signup { email: "a@b.c".into() };
+        let mut value = Signup {
+            email: "a@b.c".into(),
+        };
         let mut res = FormResponse::default();
         let mut out = h.ctx.run_ui(egui::RawInput::default(), |ctx| {
             let ui = &mut egui::Ui::new(

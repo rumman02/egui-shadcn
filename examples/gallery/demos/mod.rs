@@ -9,6 +9,7 @@ pub mod form_demo;
 pub mod hover_card_demo;
 pub mod popover_demo;
 pub mod sheet_demo;
+pub mod sidebar_demo;
 pub mod sonner_demo;
 pub mod tooltip_demo;
 

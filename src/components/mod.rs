@@ -46,6 +46,7 @@ pub mod scroll_area;
 pub mod select;
 pub mod separator;
 pub mod sheet;
+pub mod sidebar;
 pub mod skeleton;
 pub mod slider;
 pub mod sonner;
@@ -178,6 +179,13 @@ pub use separator::{Separator, SeparatorOrientation};
 pub use sheet::{
     Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetSide,
     SheetTitle, SheetTrigger, SHEET_MAX_WIDTH,
+};
+pub use sidebar::{
+    Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
+    SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
+    SidebarMenuButtonSize, SidebarMenuButtonVariant, SidebarMenuItem, SidebarMenuSub,
+    SidebarMenuSubButton, SidebarMenuSubSize, SidebarRail, SidebarResponse, SidebarSeparator,
+    SidebarSide, SidebarTrigger, SidebarVariant, SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON,
 };
 pub use skeleton::Skeleton;
 pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
