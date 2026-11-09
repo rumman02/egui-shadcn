@@ -368,7 +368,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "command",
-            show: None,
+            show: Some(demos::command_demo),
         },
         DemoPage {
             name: "calendar",

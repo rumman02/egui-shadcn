@@ -12,6 +12,7 @@ pub mod button_group;
 pub mod card;
 pub mod checkbox;
 pub mod collapsible;
+pub mod command;
 pub mod context_menu;
 pub mod dialog;
 pub mod drawer;
@@ -74,6 +75,11 @@ pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
+pub use command::{
+    filter_matches, Command, CommandActivated, CommandBuilder, CommandDialog,
+    CommandDialogResponse, CommandInput, CommandItem, CommandResponse, COMMAND_DEFAULT_WIDTH,
+    COMMAND_INPUT_HEIGHT, COMMAND_ITEM_HEIGHT, COMMAND_LIST_MAX_HEIGHT,
+};
 pub use context_menu::{ContextMenu, ContextMenuResponse, CONTEXT_MENU_MIN_WIDTH};
 pub use dialog::{
     Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,

@@ -3186,3 +3186,74 @@ pub fn select_demo(ui: &mut egui::Ui) {
     ui.ctx()
         .data_mut(|d| d.insert_temp(store, (framework, small, default, prefilled)));
 }
+
+pub fn command_demo(ui: &mut egui::Ui) {
+    ui.heading("Command");
+    ui.add_space(8.0);
+
+    // Standalone palette with groups, icons, shortcuts, disabled items.
+    let state_id = egui::Id::unique("command_demo_state");
+    let (mut activated, mut open) = ui.ctx().data_mut(|d| {
+        d.get_temp::<(Option<String>, bool)>(state_id)
+            .unwrap_or((None, false))
+    });
+    let res = Command::new().id_salt("command_demo").show(ui, |c| {
+        c.input(CommandInput::new().placeholder("Type a command or search..."));
+        c.group("Suggestions", |g| {
+            g.item(
+                CommandItem::new("Calendar")
+                    .icon(Icon::Calendar)
+                    .shortcut("⌘E"),
+            );
+            g.item(CommandItem::new("Search Emoji"));
+            g.item(CommandItem::new("Calculator").disabled(true));
+        });
+        c.separator();
+        c.group("Settings", |g| {
+            g.item(CommandItem::new("Theme").shortcut("⌘T"));
+            g.item(CommandItem::new("Profile").shortcut("⌘P"));
+        });
+    });
+    if res.activated.is_some() {
+        activated = res.activated.as_ref().map(|a| a.label.clone());
+    }
+    ui.add_space(4.0);
+    ui.label(format!(
+        "Query: {:?} · Last activated: {}",
+        res.query,
+        activated.as_deref().unwrap_or("(none)")
+    ));
+
+    ui.add_space(12.0);
+    ui.label("Dialog palette (⌘K style)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if Button::new("Open palette")
+            .variant(ButtonVariant::Outline)
+            .show(ui)
+            .clicked()
+        {
+            open = true;
+        }
+        ui.label("(or press the button — Escape and backdrop close it)");
+    });
+    let dlg = CommandDialog::controlled(&mut open)
+        .id_salt("command_demo_dialog")
+        .show(ui, |c| {
+            c.input(CommandInput::new().placeholder("Type a command or search..."));
+            c.group("Actions", |g| {
+                g.item(CommandItem::new("Log out").shortcut("⇧⌘Q"));
+                g.item(CommandItem::new("Delete account").disabled(true));
+            });
+            c.group("Search", |g| {
+                g.item(CommandItem::new("Docs"));
+                g.item(CommandItem::new("Changelog"));
+            });
+        });
+    if let Some(a) = dlg.activated {
+        activated = Some(a.label);
+    }
+
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(state_id, (activated, open)));
+}

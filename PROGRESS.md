@@ -71,7 +71,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 54 | navigation-menu | ⬜ todo | F | | horizontal/vertical, viewport panels |
 | 55 | select | ✅ done | F | d9f75b9 | controlled (&mut Option<String>/&mut String) + uncontrolled via id_salt; h-9/h-8 trigger, placeholder/invalid/disabled; ScrollArea popup; labels/separators/disabled items; check indicator; keyboard nav (arrows/home/end/enter/space/escape, opens on selection highlight); no typeahead |
 | 56 | combobox | ⬜ todo | F | | popover + command filter |
-| 57 | command | ⬜ todo | F | | ⌘K palette: groups, items, kbd |
+| 57 | command | ✅ done | F | 2469e26 | cmdk palette: builder groups/items/separators/shortcuts/icons, case-insensitive filter + should_filter pin, ScrollArea list, empty state, arrows/home/end/enter + hover/click select; CommandDialog via crate Dialog (autofocus, force keyboard, close on select/Escape/backdrop) |
 | 58 | calendar | ⬜ todo | G | | month grid, nav, presets, multiple/range |
 | 59 | date-picker | ⬜ todo | G | | popover + calendar + input |
 | 60 | carousel | ⬜ todo | G | | pannable slides + dots + prev/next |
