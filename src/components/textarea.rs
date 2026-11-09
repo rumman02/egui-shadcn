@@ -3,7 +3,11 @@
 //! Ported from `apps/v4/registry/new-york-v4/ui/textarea.tsx`:
 //! `min-h-16 rounded-md border border-input bg-transparent px-3 py-2 text-sm
 //! shadow-xs` with the shared focus/invalid/disabled styles and the
-//! `dark:bg-input/30` fill.
+//! `dark:bg-input/30` fill. The nova style (`.cn-textarea`) widens the
+//! corners to `rounded-lg`, narrows the padding to `px-2.5` and adds the
+//! disabled fills (`disabled:bg-input/50 dark:disabled:bg-input/80`); the
+//! border fades to 50% like the base `disabled:opacity-50`. Body lines
+//! render at Tailwind's `text-sm` 20px line height.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -15,22 +19,55 @@
 //!     .show(ui);
 //! ```
 
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, FontId, Margin, Response, Stroke, TextEdit, Ui, Vec2};
 
 /// `min-h-16` — the smallest textarea height (64px).
 pub const TEXTAREA_MIN_HEIGHT: f32 = 64.0;
 
+/// Horizontal padding (`px-3` base recipe; nova `.cn-textarea` `px-2.5`).
+pub(crate) fn padding_x(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0, // px-2.5
+        _ => 12.0,           // px-3
+    }
+}
+
+/// Corner radius (`rounded-md` base recipe; nova `.cn-textarea` `rounded-lg`).
+pub(crate) fn corner_radius(style: Style, radius: &RadiusTokens) -> u8 {
+    match style {
+        Style::Nova => radius.lg_u8(),
+        _ => radius.md_u8(),
+    }
+}
+
 /// Resolved frame colors for one textarea state (pure, unit-testable).
 ///
-/// Identical recipe to [`crate::components::input`].
+/// Identical recipe to [`crate::components::input`] (including the nova
+/// disabled fills and the 50% disabled border fade).
 pub(crate) fn resolve_textarea_colors(
     p: &Palette,
     dark: bool,
     focused: bool,
     invalid: bool,
+    disabled: bool,
+    style: Style,
 ) -> (Color32, Stroke, Color32) {
-    let fill = if dark {
+    let fill = if disabled {
+        // nova `disabled:bg-input/50 dark:disabled:bg-input/80`. The base
+        // recipe keeps its fill but `disabled:opacity-50` fades it.
+        match style {
+            Style::Nova => color_alpha(p.input, if dark { 0.8 } else { 0.5 }),
+            _ => {
+                let base = if dark {
+                    color_alpha(p.input, 0.3)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                color_alpha(base, 0.5)
+            }
+        }
+    } else if dark {
         color_alpha(p.input, 0.3)
     } else {
         Color32::TRANSPARENT
@@ -41,6 +78,12 @@ pub(crate) fn resolve_textarea_colors(
         p.ring
     } else {
         p.input
+    };
+    // `disabled:opacity-50` fades the border with the rest of the element.
+    let stroke_color = if disabled {
+        color_alpha(stroke_color, 0.5)
+    } else {
+        stroke_color
     };
     let ring = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
@@ -120,6 +163,7 @@ impl<'a> Textarea<'a> {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
         let p = theme.palette;
+        let style = theme.style;
 
         let width = match self.width {
             Some(w) => w,
@@ -145,14 +189,11 @@ impl<'a> Textarea<'a> {
             p.foreground
         };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        // `px-3 py-2`
-        let margin = Margin::symmetric(
-            crate::theme::tokens::spacing::MD as i8,
-            crate::theme::tokens::spacing::SM as i8,
-        );
+        // `px-3 py-2` base recipe; nova `.cn-textarea` `px-2.5 py-2`.
+        let margin = Margin::symmetric(padding_x(style) as i8, 8);
         let edit = TextEdit::multiline(self.text)
             .id_salt(id)
-            .font(font)
+            .font(font.clone())
             .text_color(text_color)
             .desired_width(width)
             .desired_rows(self.rows)
@@ -173,14 +214,22 @@ impl<'a> Textarea<'a> {
             edit
         };
 
-        let out = edit.show(ui);
-        let response = out.response.response;
+        // Body lines at Tailwind `text-sm` 20px line height: widen the
+        // layouter's row height inside a scoped Ui so no sibling is affected.
+        let row_height = ui.fonts_mut(|f| f.row_height(&font));
+        let extra = (20.0 - row_height).max(0.0);
+        let out = ui.scope(|ui| {
+            ui.spacing_mut().extra_text_line_spacing = extra;
+            edit.show(ui)
+        });
+        let response = out.inner.response.response;
         let rect = response.rect;
 
         if ui.is_rect_visible(rect) {
             let focused = response.has_focus() && !self.disabled;
-            let (fill, stroke, ring) = resolve_textarea_colors(&p, dark, focused, self.invalid);
-            let corner = CornerRadius::same(theme.radius.md_u8());
+            let (fill, stroke, ring) =
+                resolve_textarea_colors(&p, dark, focused, self.invalid, self.disabled, style);
+            let corner = CornerRadius::same(corner_radius(style, &theme.radius));
             let painter = ui.painter();
 
             // `shadow-xs`
@@ -222,6 +271,12 @@ mod tests {
     }
 
     #[test]
+    fn textarea_metrics_follow_style() {
+        assert_eq!(padding_x(Style::Nova), 10.0); // px-2.5
+        assert_eq!(padding_x(Style::Vega), 12.0); // px-3
+    }
+
+    #[test]
     fn textarea_is_at_least_64pt_tall() {
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
@@ -247,17 +302,38 @@ mod tests {
     #[test]
     fn frame_colors_follow_state() {
         let p = palette(Mode::Light);
-        let (fill, stroke, _) = resolve_textarea_colors(&p, false, false, false);
+        let (fill, stroke, _) =
+            resolve_textarea_colors(&p, false, false, false, false, Style::Vega);
         assert_eq!(fill, Color32::TRANSPARENT);
         assert_eq!(stroke.color, p.input);
-        let (_, stroke, ring) = resolve_textarea_colors(&p, false, true, false);
+        let (_, stroke, ring) = resolve_textarea_colors(&p, false, true, false, false, Style::Vega);
         assert_eq!(stroke.color, p.ring);
         assert_eq!(ring, color_alpha(p.ring, 0.5));
-        let (_, stroke, ring) = resolve_textarea_colors(&p, false, false, true);
+        let (_, stroke, ring) = resolve_textarea_colors(&p, false, false, true, false, Style::Vega);
         assert_eq!(stroke.color, p.destructive);
         assert_eq!(ring, color_alpha(p.destructive, 0.2));
-        let (fill, _, _) = resolve_textarea_colors(&palette(Mode::Dark), true, false, false);
+        let (fill, _, _) =
+            resolve_textarea_colors(&palette(Mode::Dark), true, false, false, false, Style::Vega);
         assert_eq!(fill, color_alpha(palette(Mode::Dark).input, 0.3));
+    }
+
+    #[test]
+    fn disabled_fades_border_and_fills() {
+        let p = palette(Mode::Light);
+        // Nova light: `disabled:bg-input/50`, border at 50%.
+        let nd = resolve_textarea_colors(&p, false, false, false, true, Style::Nova);
+        assert_eq!(nd.0, color_alpha(p.input, 0.5));
+        assert_eq!(nd.1.color, color_alpha(p.input, 0.5));
+        // Nova dark: `dark:disabled:bg-input/80`.
+        let dark = palette(Mode::Dark);
+        let ndd = resolve_textarea_colors(&dark, true, false, false, true, Style::Nova);
+        assert_eq!(ndd.0, color_alpha(dark.input, 0.8));
+        // Base keeps its fill (transparent light) with the border fade.
+        let bd = resolve_textarea_colors(&p, false, false, false, true, Style::Vega);
+        assert_eq!(bd.0, Color32::TRANSPARENT);
+        assert_eq!(bd.1.color, color_alpha(p.input, 0.5));
+        let bdd = resolve_textarea_colors(&dark, true, false, false, true, Style::Vega);
+        assert_eq!(bdd.0, color_alpha(color_alpha(dark.input, 0.3), 0.5));
     }
 
     #[test]
