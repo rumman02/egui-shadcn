@@ -5,7 +5,19 @@
 //! `border-l-0`; here [`Button`], [`ButtonGroupText`] and
 //! [`ButtonGroupSeparator`] read their position from the active group
 //! (plumbing in `crate::components::button::group`) and adjust their own
-//! corners and borders automatically.
+//! corners and borders automatically. Nova (`style-nova.css`) only restyles
+//! the text slot (`rounded-lg px-2.5`) and forces `rounded-lg` on the last
+//! child's outer corners — both follow from the per-widget nova metrics, so
+//! no extra code is needed here.
+//!
+//! The source row is `flex items-stretch` (all members grow to the tallest
+//! one) and gains `gap-2` when it contains a nested
+//! [`ButtonGroup`] (`has-[>[data-slot=button-group]]:gap-2`). Call
+//! `ButtonGroup::gap(crate::theme::tokens::spacing::SM)` on the outer group
+//! for the nested case; the group tracks the tallest natural member height
+//! and stretches [`ButtonGroupText`] and [`ButtonGroupSeparator`] up to it.
+//! (`Button` members follow their own per-size metrics and are not
+//! stretched yet — that needs shared group plumbing in `button.rs`.)
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -20,19 +32,28 @@
 //!     ButtonGroupText::new("https://example.com").show(ui);
 //!     Button::new("").size(ButtonSize::Icon).icon_start(Icon::Copy).show(ui);
 //! });
+//!
+//! // Outer group around a nested group: gap-2 between the two slots.
+//! ButtonGroup::new().gap(crate::theme::tokens::spacing::SM).show(ui, |ui| {
+//!     ButtonGroup::new().show(ui, |ui| { /* ... */ });
+//!     Button::new("Submit").show(ui);
+//! });
 //! ```
 
 use crate::components::button::group;
 use crate::components::button::{GroupOrientation, GroupPosition};
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::icons::Icon;
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use egui::{
-    Align2, Color32, CornerRadius, FontId, InnerResponse, Response, Sense, Stroke, Ui, Vec2, Widget,
+    Align2, Color32, Context, CornerRadius, FontId, Id, InnerResponse, Pos2, Rect, Response, Sense,
+    Stroke, Ui, Vec2, Widget,
 };
 
 /// A shadcn button group. See the [module docs](self) for an example.
 #[derive(Clone, Debug)]
 pub struct ButtonGroup {
     orientation: GroupOrientation,
+    gap: f32,
     id_salt: Option<String>,
 }
 
@@ -47,6 +68,7 @@ impl ButtonGroup {
     pub fn new() -> Self {
         Self {
             orientation: GroupOrientation::Horizontal,
+            gap: 0.0,
             id_salt: None,
         }
     }
@@ -57,6 +79,15 @@ impl ButtonGroup {
         self
     }
 
+    /// Sets extra spacing between the group's children. The source keeps the
+    /// members fused (zero gap) and only widens to `gap-2` (8px) when the
+    /// group contains a nested [`ButtonGroup`]:
+    /// `has-[>[data-slot=button-group]]:gap-2`.
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap;
+        self
+    }
+
     /// Sets a stable id salt. Groups without one derive their id from the
     /// parent ui's widget counter, which is stable for static layouts.
     pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
@@ -64,24 +95,27 @@ impl ButtonGroup {
         self
     }
 
-    /// Renders the group around its children with zero item spacing, so the
-    /// children's borders fuse like the source.
+    /// Renders the group around its children with zero item spacing (or
+    /// [`ButtonGroup::gap`]), so the children's borders fuse like the source.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => ui.next_auto_id(),
         };
         group::begin(ui, id, self.orientation);
+        begin_stretch(ui, id);
+        let gap = self.gap;
         let response = match self.orientation {
-            GroupOrientation::Horizontal => ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
+            GroupOrientation::Horizontal => ui.horizontal(move |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
                 content(ui)
             }),
-            GroupOrientation::Vertical => ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
+            GroupOrientation::Vertical => ui.vertical(move |ui| {
+                ui.spacing_mut().item_spacing.y = gap;
                 content(ui)
             }),
         };
+        end_stretch(ui);
         group::end(ui, id);
         response
     }
@@ -117,11 +151,23 @@ pub(crate) fn text_colors(p: &Palette) -> (Color32, Color32, Stroke) {
     (p.muted, p.foreground, Stroke::new(1.0, p.border))
 }
 
+/// [`ButtonGroupText`] padding and corner radius per style: the base recipe
+/// is `px-4 rounded-md`; nova overrides to `px-2.5 rounded-lg`
+/// (`style-nova.css` `.cn-button-group-text`).
+pub(crate) fn text_metrics(style: Style, radius: &crate::theme::RadiusTokens) -> (f32, u8) {
+    match style {
+        Style::Nova => (10.0, radius.lg_u8()), // px-2.5, rounded-lg
+        _ => (crate::theme::tokens::spacing::LG, radius.md_u8()), // px-4, rounded-md
+    }
+}
+
 /// `flex items-center gap-2 rounded-md border bg-muted px-4 text-sm
-/// font-medium shadow-xs` — the non-interactive group slot.
+/// font-medium shadow-xs` — the non-interactive group slot. Nova restyles it
+/// to `rounded-lg px-2.5`.
 #[derive(Clone, Debug)]
 pub struct ButtonGroupText {
     text: String,
+    icon_start: Option<Icon>,
     height: f32,
     disabled: bool,
     id_salt: Option<String>,
@@ -132,10 +178,18 @@ impl ButtonGroupText {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            icon_start: None,
             height: crate::theme::tokens::spacing::CONTROL,
             disabled: false,
             id_salt: None,
         }
+    }
+
+    /// Shows a 16px icon before the text (`[&_svg:not([class*='size-'])]:
+    /// size-4` slot with `gap-2`).
+    pub fn icon_start(mut self, icon: Icon) -> Self {
+        self.icon_start = Some(icon);
+        self
     }
 
     /// Overrides the slot height.
@@ -168,15 +222,31 @@ impl ButtonGroupText {
             .map(|(o, _)| o)
             .unwrap_or(GroupOrientation::Horizontal);
 
+        // `items-stretch`: adopt last frame's tallest member height, and
+        // report this slot's natural height for the next frame.
+        let group_id = current_group_id(ui);
+        let stretch = group_id
+            .map(|gid| stretch_height(ui.ctx(), gid))
+            .unwrap_or(0.0);
+        let natural = self.height;
+        if let Some(gid) = group_id {
+            report_member_height(ui.ctx(), gid, natural);
+        }
+        let height = natural.max(stretch);
+
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let galley = ui
             .painter()
             .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE);
-        // px-4 on both sides; gap-2 slack so leading icons can be added.
-        let desired = Vec2::new(
-            galley.size().x + 2.0 * crate::theme::tokens::spacing::LG,
-            self.height,
-        );
+
+        let (pad_x, corner_radius) = text_metrics(theme.style, &theme.radius);
+        let icon_size = 16.0; // [&_svg:not([class*='size-'])]:size-4
+        let icon_gap = 8.0; // gap-2
+        let has_icon = self.icon_start.is_some();
+        let icon_w = if has_icon { icon_size } else { 0.0 };
+        let icon_gap_w = if has_icon { icon_gap } else { 0.0 };
+        // px-4 (base) / px-2.5 (nova) on both sides.
+        let desired = Vec2::new(2.0 * pad_x + icon_w + icon_gap_w + galley.size().x, height);
 
         let (rect, response) = match self.id_salt.as_deref() {
             Some(salt) => {
@@ -197,7 +267,7 @@ impl ButtonGroupText {
             let (corner, draw_rect) = group_adjustments(
                 orientation,
                 position,
-                CornerRadius::same(theme.radius.md_u8()),
+                CornerRadius::same(corner_radius),
                 rect,
             );
             let painter = ui.painter();
@@ -215,8 +285,21 @@ impl ButtonGroupText {
             }
             painter.rect_filled(draw_rect, corner, fill);
             painter.rect_stroke(draw_rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+
+            // Content: [icon] gap [text], centered.
+            let content_w = icon_w + icon_gap_w + galley.size().x;
+            let mut cursor = draw_rect.center().x - content_w * 0.5;
+            let cy = draw_rect.center().y;
+            if let Some(icon) = self.icon_start {
+                let r = Rect::from_center_size(
+                    Pos2::new(cursor + icon_size * 0.5, cy),
+                    Vec2::splat(icon_size),
+                );
+                icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
+                cursor += icon_size + icon_gap;
+            }
             painter.text(
-                draw_rect.center(),
+                Pos2::new(cursor + galley.size().x * 0.5, cy),
                 Align2::CENTER_CENTER,
                 self.text,
                 font,
@@ -235,7 +318,8 @@ impl Widget for ButtonGroupText {
 }
 
 /// `bg-input self-stretch w-px` — the divider inside a group. Counts toward
-/// the group's child positions like any other member.
+/// the group's child positions like any other member, and stretches to the
+/// row height in horizontal groups (`self-stretch`).
 #[derive(Clone, Debug)]
 pub struct ButtonGroupSeparator {
     orientation: GroupOrientation,
@@ -287,8 +371,19 @@ impl ButtonGroupSeparator {
         // The divider's own axis is perpendicular to the group axis: a
         // vertical rule in a horizontal group, a horizontal rule in a
         // vertical group.
+        let group_id = current_group_id(ui);
         let size = match self.orientation {
-            GroupOrientation::Horizontal => Vec2::new(1.0, self.length),
+            GroupOrientation::Horizontal => {
+                // `self-stretch`: grow to the row height when the group is
+                // taller, and report this divider's natural length.
+                let stretch = group_id
+                    .map(|gid| stretch_height(ui.ctx(), gid))
+                    .unwrap_or(0.0);
+                if let Some(gid) = group_id {
+                    report_member_height(ui.ctx(), gid, self.length);
+                }
+                Vec2::new(1.0, self.length.max(stretch))
+            }
             GroupOrientation::Vertical => Vec2::new(self.length, 1.0),
         };
         let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
@@ -305,11 +400,99 @@ impl Widget for ButtonGroupSeparator {
     }
 }
 
+/// Cross-frame `items-stretch` state for one group: the tallest natural
+/// member height reported last frame ([`ButtonGroupText`],
+/// [`ButtonGroupSeparator`]) plus this frame's running max.
+#[derive(Clone, Copy, Debug)]
+struct StretchState {
+    frame: u64,
+    /// Max natural member height reported last frame.
+    stretch: f32,
+    /// Max natural member height reported this frame.
+    current: f32,
+}
+
+fn stretch_store_id() -> Id {
+    Id::unique("shadcn_button_group_stretch")
+}
+
+fn group_stack_id() -> Id {
+    Id::unique("shadcn_button_group_stack")
+}
+
+/// The innermost active [`ButtonGroup`], if any.
+fn current_group_id(ui: &Ui) -> Option<Id> {
+    let ctx = ui.ctx().clone();
+    ctx.data_mut(|d| d.get_temp::<Vec<Id>>(group_stack_id()))
+        .and_then(|stack| stack.last().copied())
+}
+
+/// Last frame's tallest natural member height for the group (0.0 if none).
+fn stretch_height(ctx: &Context, group_id: Id) -> f32 {
+    ctx.data_mut(|d| d.get_temp::<Vec<(Id, StretchState)>>(stretch_store_id()))
+        .and_then(|all| {
+            all.into_iter()
+                .find(|(id, _)| *id == group_id)
+                .map(|(_, s)| s.stretch)
+        })
+        .unwrap_or(0.0)
+}
+
+/// Records a member's natural (un-stretched) height into the group's
+/// running max for this frame.
+fn report_member_height(ctx: &Context, group_id: Id, natural: f32) {
+    ctx.data_mut(|d| {
+        let mut all: Vec<(Id, StretchState)> = d.get_temp(stretch_store_id()).unwrap_or_default();
+        if let Some(slot) = all.iter_mut().find(|(id, _)| *id == group_id) {
+            slot.1.current = slot.1.current.max(natural);
+        }
+        d.insert_temp(stretch_store_id(), all);
+    });
+}
+
+/// Called by [`ButtonGroup::show`] before the children: rolls the per-frame
+/// stretch state over and pushes the group onto the nesting stack.
+fn begin_stretch(ui: &Ui, id: Id) {
+    let ctx = ui.ctx().clone();
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| {
+        let mut all: Vec<(Id, StretchState)> = d.get_temp(stretch_store_id()).unwrap_or_default();
+        if let Some(slot) = all.iter_mut().find(|(i, _)| *i == id) {
+            if slot.1.frame != frame {
+                slot.1.stretch = slot.1.current;
+                slot.1.current = 0.0;
+                slot.1.frame = frame;
+            }
+        } else {
+            all.push((
+                id,
+                StretchState {
+                    frame,
+                    stretch: 0.0,
+                    current: 0.0,
+                },
+            ));
+        }
+        d.insert_temp(stretch_store_id(), all);
+    });
+    let mut stack: Vec<Id> = ctx.data_mut(|d| d.get_temp(group_stack_id()).unwrap_or_default());
+    stack.push(id);
+    ctx.data_mut(|d| d.insert_temp(group_stack_id(), stack));
+}
+
+/// Called by [`ButtonGroup::show`] after the children.
+fn end_stretch(ui: &Ui) {
+    let ctx = ui.ctx().clone();
+    let mut stack: Vec<Id> = ctx.data_mut(|d| d.get_temp(group_stack_id()).unwrap_or_default());
+    stack.pop();
+    ctx.data_mut(|d| d.insert_temp(group_stack_id(), stack));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::{Mode, Preset};
-    use egui::{Pos2, Rect};
+    use egui::{Pos2, Rect, UiBuilder};
 
     fn palette(mode: Mode) -> Palette {
         Preset::default().build(mode).palette
@@ -325,17 +508,33 @@ mod tests {
     }
 
     #[test]
+    fn nova_text_slot_uses_lg_radius_and_px_2_5() {
+        let theme = Preset::default().build(Mode::Light);
+        let (pad, corner) = text_metrics(Style::Nova, &theme.radius);
+        assert_eq!(pad, 10.0); // px-2.5
+        assert_eq!(corner, theme.radius.lg_u8()); // rounded-lg
+        let (pad, corner) = text_metrics(Style::Vega, &theme.radius);
+        assert_eq!(pad, 16.0); // px-4
+        assert_eq!(corner, theme.radius.md_u8()); // rounded-md
+    }
+
+    #[test]
     fn builders_keep_fields() {
         let g = ButtonGroup::new()
             .orientation(GroupOrientation::Vertical)
+            .gap(crate::theme::tokens::spacing::SM)
             .id_salt("g");
         assert_eq!(g.orientation, GroupOrientation::Vertical);
+        assert_eq!(g.gap, 8.0);
         assert_eq!(g.id_salt.as_deref(), Some("g"));
+        assert_eq!(ButtonGroup::new().gap, 0.0);
         let t = ButtonGroupText::new("x")
             .height(32.0)
+            .icon_start(Icon::Copy)
             .disabled(true)
             .id_salt("t");
         assert_eq!(t.height, 32.0);
+        assert!(t.icon_start.is_some());
         assert!(t.disabled);
         let s = ButtonGroupSeparator::new().length(24.0).id_salt("s");
         assert_eq!(s.length, 24.0);
@@ -365,5 +564,39 @@ mod tests {
             group_adjustments(GroupOrientation::Vertical, GroupPosition::Only, base, rect);
         assert_eq!(corner, base);
         assert_eq!(draw, rect);
+    }
+
+    #[test]
+    fn members_stretch_to_the_tallest() {
+        // `items-stretch`: a 36pt slot next to a 48pt slot adopts 48pt from
+        // the second frame on (the stretch state converges over frames).
+        let ctx = egui::Context::default();
+        let mut frames: Vec<Vec<f32>> = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("stretch_test"),
+                    UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let mut heights = Vec::new();
+                ButtonGroup::new().show(ui, |ui| {
+                    let a = ButtonGroupText::new("a").height(36.0).show(ui);
+                    heights.push(a.rect.height());
+                    let b = ButtonGroupText::new("b").height(48.0).show(ui);
+                    heights.push(b.rect.height());
+                });
+                frames.push(heights);
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(
+            frames[0],
+            vec![36.0, 48.0],
+            "first frame has no stretch data"
+        );
+        assert_eq!(frames[1], vec![48.0, 48.0], "both members stretch");
+        assert_eq!(frames[2], vec![48.0, 48.0], "stable across frames");
     }
 }

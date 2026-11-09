@@ -566,7 +566,9 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ButtonGroup::new().show(ui, |ui| {
-            ButtonGroupText::new("https://example.com").show(ui);
+            ButtonGroupText::new("https://example.com")
+                .icon_start(Icon::Paperclip)
+                .show(ui);
             Button::new("")
                 .size(ButtonSize::Icon)
                 .variant(ButtonVariant::Outline)
@@ -574,6 +576,19 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
                 .show(ui);
         });
     });
+
+    ui.add_space(12.0);
+    ui.label("Nested group (outer gap-2, items stretch to the tallest member)");
+    ui.add_space(4.0);
+    ButtonGroup::new()
+        .gap(crate::theme::tokens::spacing::SM)
+        .show(ui, |ui| {
+            ButtonGroup::new().show(ui, |ui| {
+                Button::new("Left").show(ui);
+                Button::new("Right").show(ui);
+            });
+            Button::new("Submit").show(ui);
+        });
 
     ui.add_space(12.0);
     ui.label("Vertical");
@@ -1470,6 +1485,24 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
                 .placeholder("Disabled")
                 .show(ui);
         });
+
+    ui.add_space(12.0);
+    ui.label("Button sizes (xs chip and sm action)");
+    ui.add_space(4.0);
+    InputGroup::new().id_salt("ig_demo_sizes").show(ui, |ui| {
+        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+            InputGroupText::new("").icon(Icon::Search).show(ui);
+        });
+        InputGroupInput::new(&mut search)
+            .placeholder("Find a workspace…")
+            .show(ui);
+        InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+            InputGroupButton::new("Search")
+                .size(InputGroupButtonSize::Sm)
+                .show(ui);
+            InputGroupButton::icon(Icon::Copy).show(ui);
+        });
+    });
 
     ui.add_space(12.0);
     ui.label("Fused inside a ButtonGroup");
