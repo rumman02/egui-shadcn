@@ -3257,3 +3257,73 @@ pub fn command_demo(ui: &mut egui::Ui) {
     ui.ctx()
         .data_mut(|d| d.insert_temp(state_id, (activated, open)));
 }
+
+pub fn combobox_demo(ui: &mut egui::Ui) {
+    ui.heading("Combobox");
+    ui.add_space(8.0);
+
+    let store = egui::Id::unique("combobox_demo_state");
+    let (mut framework, mut picked, mut fruit) = ui.ctx().data_mut(|d| {
+        d.get_temp::<(Option<String>, Vec<String>, String)>(store)
+            .unwrap_or((None, Vec::new(), String::new()))
+    });
+
+    ui.label("Single select");
+    ui.add_space(4.0);
+    let res = Combobox::new(&mut framework)
+        .placeholder("Select a framework...")
+        .id_salt("combobox_demo_single")
+        .options(["Next.js", "SvelteKit", "Nuxt.js", "Remix", "Astro"])
+        .show_seeded(ui);
+    ui.add_space(4.0);
+    ui.label(format!(
+        "Value: {}{}",
+        res.value.as_deref().unwrap_or("(none)"),
+        if res.changed { " (changed)" } else { "" }
+    ));
+
+    ui.add_space(12.0);
+    ui.label("Multi select (chips, removable)");
+    ui.add_space(4.0);
+    Combobox::multi(&mut picked)
+        .placeholder("Frameworks...")
+        .id_salt("combobox_demo_multi")
+        .options(["Next.js", "SvelteKit", "Nuxt.js", "Remix", "Astro"])
+        .show_seeded(ui);
+
+    ui.add_space(12.0);
+    ui.label("States");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Combobox::uncontrolled()
+            .placeholder("Disabled")
+            .disabled(true)
+            .id_salt("combobox_demo_disabled")
+            .options(["A", "B"])
+            .show_seeded(ui);
+        Combobox::uncontrolled()
+            .placeholder("Invalid")
+            .invalid(true)
+            .id_salt("combobox_demo_invalid")
+            .options(["A", "B"])
+            .show_seeded(ui);
+        Combobox::bind(&mut fruit)
+            .placeholder("String-bound")
+            .id_salt("combobox_demo_string")
+            .options(["Apple", "Pear", "Cherry"])
+            .show_seeded(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("With disabled options and wide list");
+    ui.add_space(4.0);
+    Combobox::uncontrolled()
+        .placeholder("Pick a number")
+        .id_salt("combobox_demo_scroll")
+        .width(260.0)
+        .options((1..=40).map(|i| format!("Option {i}")))
+        .show_seeded(ui);
+
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(store, (framework, picked, fruit)));
+}

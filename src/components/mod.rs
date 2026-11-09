@@ -12,6 +12,7 @@ pub mod button_group;
 pub mod card;
 pub mod checkbox;
 pub mod collapsible;
+pub mod combobox;
 pub mod command;
 pub mod context_menu;
 pub mod dialog;
@@ -75,6 +76,10 @@ pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
+pub use combobox::{
+    Combobox, ComboboxBuilder, ComboboxOption, ComboboxResponse, COMBOBOX_DEFAULT_WIDTH,
+    COMBOBOX_LIST_MAX_HEIGHT, COMBOBOX_TRIGGER_HEIGHT,
+};
 pub use command::{
     filter_matches, Command, CommandActivated, CommandBuilder, CommandDialog,
     CommandDialogResponse, CommandInput, CommandItem, CommandResponse, COMMAND_DEFAULT_WIDTH,

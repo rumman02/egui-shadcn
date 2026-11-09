@@ -92,6 +92,8 @@ pub struct CommandItem {
     /// `true` (default) hides the row while it does not match the query;
     /// `false` keeps it always visible (cmdk `forceMount`).
     pub(crate) should_filter: bool,
+    /// Trailing check indicator (combobox-style items).
+    pub(crate) checked: bool,
 }
 
 impl Default for CommandItem {
@@ -103,6 +105,7 @@ impl Default for CommandItem {
             shortcut: None,
             disabled: false,
             should_filter: true,
+            checked: false,
         }
     }
 }
@@ -146,6 +149,12 @@ impl CommandItem {
     /// `false` pins the row visible, cmdk `forceMount`).
     pub fn should_filter(mut self, should_filter: bool) -> Self {
         self.should_filter = should_filter;
+        self
+    }
+
+    /// Trailing check indicator (combobox items mark the selected value).
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
         self
     }
 }
@@ -1002,11 +1011,22 @@ fn paint_row(
             colors.text,
         );
 
+        // Trailing check indicator (combobox items).
+        let mut right_pad = ITEM_PAD_X;
+        if item.checked {
+            let check_rect = Rect::from_center_size(
+                Pos2::new(rect.max.x - ITEM_PAD_X - ICON_SIZE * 0.5, rect.center().y),
+                Vec2::splat(ICON_SIZE),
+            );
+            Icon::Check.paint(painter, check_rect, colors.text, 2.0 * ICON_SIZE / 24.0);
+            right_pad += ICON_SIZE;
+        }
+
         // Shortcut: `ml-auto text-xs tracking-widest`.
         if let Some(shortcut) = &item.shortcut {
             let sfont = FontId::proportional(crate::theme::tokens::type_scale::XS);
             painter.text(
-                Pos2::new(rect.max.x - ITEM_PAD_X, rect.center().y),
+                Pos2::new(rect.max.x - right_pad, rect.center().y),
                 Align2::RIGHT_CENTER,
                 shortcut,
                 sfont,
