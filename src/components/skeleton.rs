@@ -1,8 +1,11 @@
 //! shadcn `skeleton.tsx` — a pulsing placeholder for loading content.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/skeleton.tsx`:
-//! `animate-pulse rounded-md bg-accent` (the nova style overrides the fill
-//! to `bg-muted`).
+//! `animate-pulse rounded-md bg-accent`. Every registry style overrides
+//! `.cn-skeleton` to `bg-muted` (nova, vega, maia, lyra, mira, luma, sera,
+//! rhea all `@apply bg-muted`), so the fill is the muted token everywhere;
+//! the corner radius follows the active style (`rounded-md` nova/vega/mira/
+//! sera, `rounded-2xl` luma/rhea, `rounded-xl` maia, `rounded-none` lyra).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -21,11 +24,18 @@ pub(crate) fn pulse_alpha(elapsed_secs: f64) -> f32 {
     0.75 + 0.25 * (std::f32::consts::PI * phase).cos()
 }
 
-/// The skeleton fill: base recipe `bg-accent`, nova overrides to `bg-muted`.
-pub(crate) fn fill_color(p: &Palette, style: Style) -> Color32 {
+/// The skeleton fill: `bg-muted` in every registry style.
+pub(crate) fn fill_color(p: &Palette) -> Color32 {
+    p.muted
+}
+
+/// The per-style corner radius (`rounded-md` base; style overrides).
+pub(crate) fn style_radius(style: Style, radius: &crate::theme::RadiusTokens) -> u8 {
     match style {
-        Style::Nova => p.muted,
-        _ => p.accent,
+        Style::Luma | Style::Rhea => radius.x2l_u8(), // rounded-2xl
+        Style::Maia => radius.xl_u8(),                // rounded-xl
+        Style::Lyra => 0,                             // rounded-none
+        _ => radius.md_u8(),                          // rounded-md (nova, vega, mira, sera)
     }
 }
 
@@ -89,12 +99,14 @@ impl Skeleton {
         }
 
         if ui.is_rect_visible(rect) {
-            let mut fill = fill_color(&theme.palette, theme.style);
+            let mut fill = fill_color(&theme.palette);
             if self.animate {
                 let t = ui.input(|i| i.time);
                 fill = crate::theme::color_alpha(fill, pulse_alpha(t));
             }
-            let radius = self.corner_radius.unwrap_or_else(|| theme.radius.md_u8());
+            let radius = self
+                .corner_radius
+                .unwrap_or_else(|| style_radius(theme.style, &theme.radius));
             ui.painter().rect_filled(rect, radius, fill);
         }
 
@@ -125,10 +137,36 @@ mod tests {
     }
 
     #[test]
-    fn fill_is_accent_outside_nova_and_muted_in_nova() {
+    fn fill_is_muted_for_every_style() {
+        // All 8 style files override `.cn-skeleton` to `bg-muted`.
         let p = Preset::default().build(Mode::Light).palette;
-        assert_eq!(fill_color(&p, Style::Nova), p.muted);
-        assert_eq!(fill_color(&p, Style::Vega), p.accent);
+        for style in [
+            Style::Nova,
+            Style::Vega,
+            Style::Maia,
+            Style::Lyra,
+            Style::Mira,
+            Style::Luma,
+            Style::Sera,
+            Style::Rhea,
+        ] {
+            assert_eq!(fill_color(&p), p.muted, "style {style:?} must use muted");
+        }
+    }
+
+    #[test]
+    fn radius_follows_the_style_overrides() {
+        let r = Preset::default().build(Mode::Light).radius;
+        // nova/vega/mira/sera: rounded-md
+        assert_eq!(style_radius(Style::Nova, &r), r.md_u8());
+        assert_eq!(style_radius(Style::Vega, &r), r.md_u8());
+        assert_eq!(style_radius(Style::Mira, &r), r.md_u8());
+        assert_eq!(style_radius(Style::Sera, &r), r.md_u8());
+        // luma/rhea: rounded-2xl; maia: rounded-xl; lyra: rounded-none
+        assert_eq!(style_radius(Style::Luma, &r), r.x2l_u8());
+        assert_eq!(style_radius(Style::Rhea, &r), r.x2l_u8());
+        assert_eq!(style_radius(Style::Maia, &r), r.xl_u8());
+        assert_eq!(style_radius(Style::Lyra, &r), 0);
     }
 
     #[test]
