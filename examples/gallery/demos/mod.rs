@@ -3818,3 +3818,61 @@ pub fn bubble_demo(ui: &mut egui::Ui) {
             .show(ui);
     });
 }
+pub fn message_demo(ui: &mut egui::Ui) {
+    ui.label("Grouped transcript (avatars bottom-aligned, headers/footers)");
+    ui.add_space(4.0);
+    MessageGroup::new().show(ui, |ui| {
+        Message::new().show(ui, |ui| {
+            MessageAvatar::new().show(ui, |ui| {
+                Avatar::new().fallback("RB").show(ui);
+            });
+            MessageContent::new().show(ui, |ui| {
+                MessageHeader::new("Rabbit").show(ui);
+                Bubble::new().variant(BubbleVariant::Muted).show(ui, |ui| {
+                    BubbleContent::new("It's 4:55 PM. On a Friday.").show(ui);
+                });
+                MessageFooter::new("9:55 AM").show(ui);
+            });
+        });
+        Message::new().align(MessageAlign::End).show(ui, |ui| {
+            MessageAvatar::new().show(ui, |ui| {
+                Avatar::new().fallback("ME").show(ui);
+            });
+            MessageContent::new().show(ui, |ui| {
+                Bubble::new().show(ui, |ui| {
+                    BubbleContent::new("Deploying to prod real quick.").show(ui);
+                });
+                MessageFooter::new("Delivered").show(ui);
+            });
+        });
+        Message::new().show(ui, |ui| {
+            MessageAvatar::new().show(ui, |ui| {
+                Avatar::new().fallback("RB").show(ui);
+            });
+            MessageContent::new().show(ui, |ui| {
+                Bubble::new().variant(BubbleVariant::Muted).show(ui, |ui| {
+                    BubbleContent::new("It's always a one-line change.").show(ui);
+                });
+                Bubble::new().variant(BubbleVariant::Muted).show(ui, |ui| {
+                    BubbleContent::new("Alright, let me take a look.").show(ui);
+                });
+            });
+        });
+        Message::new().show(ui, |ui| {
+            MessageAvatar::new().show(ui, |ui| {
+                Avatar::new().fallback_icon(Icon::User).show(ui);
+            });
+            MessageContent::new().show(ui, |ui| {
+                Bubble::new().variant(BubbleVariant::Ghost).show(ui, |ui| {
+                    BubbleContent::new(
+                        "Ghost bubbles take the full width with no frame and no padding.",
+                    )
+                    .show(ui);
+                });
+                MessageFooter::new("flush footer (group-has-ghost:px-0)")
+                    .flush(true)
+                    .show(ui);
+            });
+        });
+    });
+}

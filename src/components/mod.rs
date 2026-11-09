@@ -37,6 +37,7 @@ pub mod kbd;
 pub mod label;
 pub mod marker;
 pub mod menubar;
+pub mod message;
 pub mod native_select;
 pub mod navigation_menu;
 pub mod pagination;
@@ -167,6 +168,10 @@ pub use menubar::{
     Menubar, MenubarBuilder, MenubarResponse, MENUBAR_ALIGN_OFFSET, MENUBAR_GAP, MENUBAR_HEIGHT,
     MENUBAR_MIN_WIDTH, MENUBAR_PADDING, MENUBAR_SIDE_OFFSET, MENUBAR_TRIGGER_HEIGHT,
     MENUBAR_TRIGGER_PAD_X,
+};
+pub use message::{
+    Message, MessageAlign, MessageAvatar, MessageContent, MessageFooter, MessageGroup,
+    MessageHeader,
 };
 pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
 pub use navigation_menu::{
