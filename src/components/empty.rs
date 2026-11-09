@@ -8,6 +8,10 @@
 //! actions. The nova style tightens the gap to `gap-4`, the media icon box
 //! to `size-8` with a `size-4` icon and the title to `text-sm`.
 //!
+//! Scope notes: the source pads to 48px at the `md` breakpoint
+//! (`md:p-12`); the port uses the fixed nova `p-6` = 24px. [`EmptyFooter`]
+//! is an invented extension (see its docs).
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -79,13 +83,19 @@ fn centered_text(
     size: f32,
     color: Color32,
     max_width: f32,
+    line_height: Option<f32>,
 ) -> egui::Response {
     let width = max_width.min(ui.available_width());
     let mut job = egui::text::LayoutJob::default();
     job.append(
         text,
         0.0,
-        egui::TextFormat::simple(FontId::proportional(size), color),
+        egui::TextFormat {
+            font_id: FontId::proportional(size),
+            color,
+            line_height,
+            ..egui::TextFormat::default()
+        },
     );
     job.halign = Align::Center;
     job.wrap.max_width = width;
@@ -311,9 +321,7 @@ impl EmptyMedia {
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        // `mb-2` below the media.
-        ui.add_space(8.0);
-        if self.variant == EmptyMediaVariant::Icon {
+        let response = if self.variant == EmptyMediaVariant::Icon {
             let box_size = media_icon_box(theme.style);
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::splat(box_size), egui::Sense::hover());
@@ -331,12 +339,14 @@ impl EmptyMedia {
             // Free-form media has no intrinsic size; paint it yourself with
             // [`Self::show_with`].
             ui.allocate_exact_size(Vec2::ZERO, egui::Sense::hover()).1
-        }
+        };
+        // `mb-2` *below* the media (the source class is on the media div).
+        ui.add_space(8.0);
+        response
     }
 
     /// Renders free-form media content (images, custom glyphs) centered.
     pub fn show_with<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
-        ui.add_space(8.0); // mb-2
         let inner = ui.allocate_ui(
             Vec2::new(EMPTY_MAX_WIDTH.min(ui.available_width()), 0.0),
             |ui| {
@@ -344,6 +354,8 @@ impl EmptyMedia {
                     .inner
             },
         );
+        // `mb-2` below the media.
+        ui.add_space(8.0);
         InnerResponse::new(inner.inner, inner.response)
     }
 }
@@ -370,11 +382,13 @@ impl EmptyTitle {
             title_size(theme.style),
             p.foreground,
             EMPTY_MAX_WIDTH,
+            None,
         )
     }
 }
 
-/// `EmptyDescription` — `text-sm text-muted-foreground`.
+/// `EmptyDescription` — `text-sm/relaxed text-muted-foreground` (14px text,
+/// 20px line height).
 #[derive(Clone, Debug)]
 pub struct EmptyDescription {
     text: String,
@@ -396,6 +410,7 @@ impl EmptyDescription {
             crate::theme::tokens::type_scale::SM,
             p.muted_foreground,
             EMPTY_MAX_WIDTH,
+            Some(crate::components::typography::line_heights::SMALL),
         )
     }
 }
@@ -439,8 +454,9 @@ impl EmptyContent {
     }
 }
 
-/// `EmptyFooter` — bottom slot mirroring EmptyContent (docs use flex-row
-/// actions there); kept for API parity with the task list.
+/// `EmptyFooter` — bottom slot mirroring EmptyContent. This slot is a Rust
+/// port extension: `empty.tsx` exports no footer (its docs pages wrap
+/// actions in the content slot), so prefer [`EmptyContent`] for new code.
 #[derive(Clone, Debug, Default)]
 pub struct EmptyFooter {
     id_salt: Option<String>,
