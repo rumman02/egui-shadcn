@@ -3,12 +3,14 @@
 //! Ported from `apps/v4/registry/new-york-v4/ui/kbd.tsx`:
 //! `h-5 min-w-5 rounded-sm bg-muted px-1 text-xs font-medium
 //! text-muted-foreground`, with a [`KbdGroup`] wrapper that lays out
-//! several keys with `gap-1`.
+//! several keys with `gap-1`. The `[&_svg:not([class*='size-'])]:size-3`
+//! slot is exposed as [`Kbd::icon`] (a 12px glyph separated by `gap-1`).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
 //! Kbd::new("K").show(ui);
+//! Kbd::new("M").icon(Icon::ChevronLeft).show(ui);
 //! KbdGroup::new().show(ui, |ui| {
 //!     Kbd::new("⌘").show(ui);
 //!     Kbd::new("⇧").show(ui);
@@ -16,8 +18,9 @@
 //! });
 //! ```
 
+use crate::icons::Icon;
 use crate::theme::{Palette, ShadcnTheme};
-use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Ui, Vec2, Widget};
+use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Ui, Vec2, Widget};
 
 /// The chip background/text colors (`bg-muted text-muted-foreground`).
 pub(crate) fn colors(p: &Palette) -> (Color32, Color32) {
@@ -34,6 +37,7 @@ pub(crate) fn chip_width(text_width: f32) -> f32 {
 #[derive(Clone, Debug)]
 pub struct Kbd {
     label: String,
+    icon: Option<Icon>,
     id_salt: Option<String>,
 }
 
@@ -42,8 +46,16 @@ impl Kbd {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            icon: None,
             id_salt: None,
         }
+    }
+
+    /// Shows a 12px icon before the label (`[&_svg:not([class*='size-'])]:
+    /// size-3` slot, separated by `gap-1`).
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// Sets a stable id salt (Kbd keeps no state).
@@ -66,7 +78,11 @@ impl Kbd {
 
         // h-5 min-w-5 px-1 → 20px tall, at least 20px wide, 4px side padding.
         let height = crate::theme::tokens::spacing::XS * 5.0;
-        let width = chip_width(galley.size().x);
+        let icon_size = 12.0; // [&_svg:not([class*='size-'])]:size-3
+        let icon_gap = crate::theme::tokens::spacing::XS; // gap-1
+        let has_icon = self.icon.is_some();
+        let content_w = galley.size().x + if has_icon { icon_size + icon_gap } else { 0.0 };
+        let width = chip_width(content_w);
         let (rect, response) = match self.id_salt.as_deref() {
             Some(salt) => {
                 let id = ui.scope_id().with(salt);
@@ -84,7 +100,24 @@ impl Kbd {
                 CornerRadius::same(theme.radius.sm().round() as u8),
                 bg,
             );
-            painter.text(rect.center(), Align2::CENTER_CENTER, self.label, font, fg);
+            // Content: [icon] gap [label], centered.
+            let center = rect.center();
+            let mut cursor = center.x - content_w * 0.5;
+            if let Some(icon) = self.icon {
+                let r = Rect::from_center_size(
+                    Pos2::new(cursor + icon_size * 0.5, center.y),
+                    Vec2::splat(icon_size),
+                );
+                icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
+                cursor += icon_size + icon_gap;
+            }
+            painter.text(
+                Pos2::new(cursor + galley.size().x * 0.5, center.y),
+                Align2::CENTER_CENTER,
+                self.label,
+                font,
+                fg,
+            );
         }
 
         response
@@ -137,8 +170,9 @@ mod tests {
 
     #[test]
     fn kbd_builder_fields() {
-        let k = Kbd::new("⌘").id_salt("meta");
+        let k = Kbd::new("⌘").icon(Icon::ChevronRight).id_salt("meta");
         assert_eq!(k.label, "⌘");
+        assert!(k.icon.is_some());
         assert_eq!(k.id_salt.as_deref(), Some("meta"));
     }
 

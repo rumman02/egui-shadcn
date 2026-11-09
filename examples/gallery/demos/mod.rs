@@ -590,12 +590,12 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
     ui.label("Nested group (outer gap-2, items stretch to the tallest member)");
     ui.add_space(4.0);
     ButtonGroup::new().gap(spacing::SM).show(ui, |ui| {
-            ButtonGroup::new().show(ui, |ui| {
-                Button::new("Left").show(ui);
-                Button::new("Right").show(ui);
-            });
-            Button::new("Submit").show(ui);
+        ButtonGroup::new().show(ui, |ui| {
+            Button::new("Left").show(ui);
+            Button::new("Right").show(ui);
         });
+        Button::new("Submit").show(ui);
+    });
 
     ui.add_space(12.0);
     ui.label("Vertical");
