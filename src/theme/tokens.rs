@@ -78,6 +78,11 @@ impl RadiusTokens {
         self.xl().round() as u8
     }
 
+    /// [`Self::x2l`] rounded for egui's `CornerRadius` (u8 pixels).
+    pub fn x2l_u8(&self) -> u8 {
+        self.x2l().round() as u8
+    }
+
     /// [`Self::full`] rounded for egui's `CornerRadius` (u8 pixels).
     pub fn full_u8(&self) -> u8 {
         u8::MAX
@@ -151,6 +156,9 @@ mod tests {
         assert!((r.md() - 8.0).abs() < 1e-4);
         assert!((r.lg() - 10.0).abs() < 1e-4);
         assert!((r.xl() - 14.0).abs() < 1e-4);
+        // rounded-2xl = 1.8 × 10 (used by nova skeletons/luma-rhea).
+        assert!((r.x2l() - 18.0).abs() < 1e-4);
+        assert_eq!(r.x2l_u8(), 18);
         assert!((r.x4l() - 26.0).abs() < 1e-4);
     }
 }

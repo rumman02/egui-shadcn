@@ -9,6 +9,8 @@ pub enum Duration {
     Fast,
     /// 150ms — the shadcn default.
     Default,
+    /// 200ms — accordion content expand/collapse (`duration-200`).
+    Md,
     /// 300ms — dialogs, sheets.
     Slow,
 }
@@ -19,6 +21,7 @@ impl Duration {
         match self {
             Duration::Fast => 0.075,
             Duration::Default => 0.15,
+            Duration::Md => 0.2,
             Duration::Slow => 0.3,
         }
     }
@@ -47,7 +50,22 @@ pub fn open_progress(ctx: &Context, id: Id, open: bool) -> f32 {
 /// The classic shadcn fade+slide+scale "in" animation factors for overlays:
 /// callers apply `alpha`, `scale` and `offset_y`.
 pub fn overlay_progress(ctx: &Context, id: Id, open: bool) -> OverlayProgress {
-    let t = open_progress(ctx, id, open);
+    overlay_factors(open_progress(ctx, id, open))
+}
+
+/// Nova's overlay timing: the style runs its popup/backdrop transitions at
+/// `duration-100` (100ms) in both directions (`style-nova.css`), so the
+/// fade+slide+scale factors follow `open` faster than the base recipe.
+pub fn nova_overlay_progress(ctx: &Context, id: Id, open: bool) -> OverlayProgress {
+    /// Nova `duration-100` in seconds.
+    const NOVA_OVERLAY_SECS: f32 = 0.1;
+    let target = if open { 1.0 } else { 0.0 };
+    let t = ctx.animate_value_with_time(id, target, NOVA_OVERLAY_SECS);
+    overlay_factors(t)
+}
+
+/// Fade+slide+scale factors for a 0..1 progress value.
+fn overlay_factors(t: f32) -> OverlayProgress {
     OverlayProgress {
         alpha: t,
         scale: 0.95 + 0.05 * t,
@@ -74,6 +92,7 @@ mod tests {
     fn durations_match_source_transitions() {
         assert_eq!(Duration::Fast.secs(), 0.075);
         assert_eq!(Duration::Default.secs(), 0.15);
+        assert_eq!(Duration::Md.secs(), 0.2);
         assert_eq!(Duration::Slow.secs(), 0.3);
     }
 
@@ -84,5 +103,17 @@ mod tests {
         assert!((closed.alpha - 0.0).abs() < 1e-3);
         let open = overlay_progress(&ctx, Id::unique("t2"), true);
         assert!((open.alpha - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn nova_overlay_progress_bounds() {
+        let ctx = egui::Context::default();
+        let closed = nova_overlay_progress(&ctx, Id::unique("t3"), false);
+        assert!((closed.alpha - 0.0).abs() < 1e-3);
+        assert!((closed.scale - 0.95).abs() < 1e-3);
+        let open = nova_overlay_progress(&ctx, Id::unique("t4"), true);
+        assert!((open.alpha - 1.0).abs() < 1e-3);
+        assert!((open.scale - 1.0).abs() < 1e-3);
+        assert!((open.offset_y - 0.0).abs() < 1e-3);
     }
 }
