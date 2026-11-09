@@ -30,6 +30,7 @@ pub mod label;
 pub mod marker;
 pub mod menubar;
 pub mod native_select;
+pub mod navigation_menu;
 pub mod pagination;
 pub mod popover;
 pub mod progress;
@@ -134,6 +135,10 @@ pub use menubar::{
     MENUBAR_TRIGGER_PAD_X,
 };
 pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
+pub use navigation_menu::{
+    NavContentBuilder, NavLink, NavOrientation, NavigationMenu, NavigationMenuBuilder,
+    NavigationMenuResponse, NAV_GAP, NAV_TRIGGER_HEIGHT, NAV_TRIGGER_PAD_X, NAV_VIEWPORT_OFFSET,
+};
 pub use pagination::{
     Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink,
     PaginationNext, PaginationPrevious, PAGINATION_ELLIPSIS_SIZE,

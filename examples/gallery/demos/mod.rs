@@ -3327,3 +3327,79 @@ pub fn combobox_demo(ui: &mut egui::Ui) {
     ui.ctx()
         .data_mut(|d| d.insert_temp(store, (framework, picked, fruit)));
 }
+
+pub fn navigation_menu_demo(ui: &mut egui::Ui) {
+    ui.heading("Navigation Menu");
+    ui.add_space(8.0);
+
+    let store = egui::Id::unique("nav_demo_state");
+    let (mut open_label, mut link_clicked) = ui.ctx().data_mut(|d| {
+        d.get_temp::<(Option<String>, Option<String>)>(store)
+            .unwrap_or_default()
+    });
+
+    ui.label("Horizontal (shared viewport)");
+    ui.add_space(4.0);
+    let res = NavigationMenu::new().id_salt("nav_demo").show(ui, |nav| {
+        nav.link("Introduction");
+        nav.trigger("Learn", |c| {
+            c.link("Library", "Structured access to collection data.");
+            c.link(
+                "Components",
+                "Building blocks for composing interfaces quickly.",
+            );
+        });
+        nav.trigger("Examples", |c| {
+            c.link("Email", "Send and receive email.");
+            c.link_plain("Docs");
+        });
+        nav.trigger_disabled("Enterprise");
+    });
+    if res.open.is_some() {
+        open_label = res.open;
+    }
+    if res.link_clicked.is_some() {
+        link_clicked = res.link_clicked;
+    }
+
+    ui.add_space(12.0);
+    ui.label("Inline panels (viewport = false)");
+    ui.add_space(4.0);
+    NavigationMenu::new()
+        .viewport(false)
+        .id_salt("nav_demo_inline")
+        .show(ui, |nav| {
+            nav.trigger("Playground", |c| {
+                c.link("History", "Browse recent activity.");
+                c.link("Settings", "Tune your workspace.");
+            });
+            nav.trigger("Community", |c| {
+                c.link("Forum", "Ask questions and share work.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Vertical");
+    ui.add_space(4.0);
+    NavigationMenu::new()
+        .orientation(NavOrientation::Vertical)
+        .id_salt("nav_demo_vertical")
+        .show(ui, |nav| {
+            nav.trigger("Learn", |c| {
+                c.link("Library", "Structured access to collection data.");
+            });
+            nav.trigger("Examples", |c| {
+                c.link("Email", "Send and receive email.");
+            });
+            nav.link("Introduction");
+        });
+
+    ui.add_space(12.0);
+    ui.label(format!(
+        "Open: {} · Last link: {}",
+        open_label.as_deref().unwrap_or("(none)"),
+        link_clicked.as_deref().unwrap_or("(none)")
+    ));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(store, (open_label, link_clicked)));
+}

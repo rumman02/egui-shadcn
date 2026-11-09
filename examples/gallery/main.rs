@@ -356,7 +356,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "navigation-menu",
-            show: None,
+            show: Some(demos::navigation_menu_demo),
         },
         DemoPage {
             name: "select",
