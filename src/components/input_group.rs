@@ -5,8 +5,10 @@
 //! (`dark:bg-input/30`) that switches to a column when a block addon or a
 //! textarea is present (`has-[>[data-align=block-start]]:flex-col
 //! has-[>textarea]:h-auto`), grows a 3px ring when any control inside is
-//! focused (`has-[[data-slot=input-group-control]:focus-visible]`), and
-//! turns destructive when any child is `aria-invalid`.
+//! focused (`has-[[data-slot=input-group-control]:focus-visible]`), turns
+//! destructive when any child is `aria-invalid`, and under the nova style
+//! (`.cn-input-group`) tightens to `h-8 rounded-lg` with
+//! `has-disabled:bg-input/50 dark:has-disabled:bg-input/80`.
 //!
 //! The source's slots map as follows:
 //!
@@ -41,12 +43,29 @@
 use crate::components::button::{
     fuse_radius, group, Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition,
 };
+use crate::components::input;
 use crate::icons::Icon;
-use crate::theme::{color_alpha, ShadcnTheme};
+use crate::theme::{color_alpha, RadiusTokens, ShadcnTheme, Style};
 use egui::{
     Align as EguiAlign, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Rect, Response,
     Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
 };
+
+/// Container height (`h-9` base recipe; nova `.cn-input-group` `h-8`).
+pub(crate) fn container_height(style: Style) -> f32 {
+    match style {
+        Style::Nova => 32.0,                         // h-8
+        _ => crate::theme::tokens::spacing::CONTROL, // h-9
+    }
+}
+
+/// Container corner radius (`rounded-md` base recipe; nova `rounded-lg`).
+pub(crate) fn container_radius(style: Style, radius: &RadiusTokens) -> u8 {
+    match style {
+        Style::Nova => radius.lg_u8(),
+        _ => radius.md_u8(),
+    }
+}
 
 /// Alignment slot of an [`InputGroupAddon`] (`data-align`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +106,40 @@ impl From<InputGroupButtonSize> for ButtonSize {
     }
 }
 
+/// Inline addon side padding (`pl-3`/`pr-3` base recipe; nova `pl-2`/`pr-2`).
+fn addon_inline_padding(style: Style) -> f32 {
+    match style {
+        Style::Nova => 8.0, // pl-2 / pr-2
+        _ => 12.0,          // pl-3 / pr-3
+    }
+}
+
+/// Block addon horizontal padding (`px-3` base recipe; nova `px-2.5`).
+fn addon_block_padding_x(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0, // px-2.5
+        _ => 12.0,           // px-3
+    }
+}
+
+/// Block addon vertical padding (`pt-3`/`pb-3` base recipe; nova
+/// `pt-2`/`pb-2`).
+fn addon_block_padding_y(style: Style) -> f32 {
+    match style {
+        Style::Nova => 8.0, // pt-2 / pb-2
+        _ => 12.0,          // pt-3 / pb-3
+    }
+}
+
+/// Control side padding next to an inline addon
+/// (`[&>input]:pl-2`/`pr-2` base recipe; nova `pl-1.5`/`pr-1.5`).
+fn control_inline_padding(style: Style) -> f32 {
+    match style {
+        Style::Nova => 6.0, // pl-1.5 / pr-1.5
+        _ => 8.0,           // pl-2 / pr-2
+    }
+}
+
 /// Flags recorded by the container's children while they render. The
 /// container reads the previous frame's snapshot for its own painting.
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,6 +158,11 @@ pub(crate) struct GroupRecord {
     /// Measured width of the trailing inline addon (for the next frame's
     /// input sizing).
     end_addon_width: f32,
+    /// The group's text control id, for addon click-to-focus.
+    input_id: Option<Id>,
+    /// A button inside the group was clicked this frame (the addon's
+    /// click-to-focus must not steal it).
+    button_clicked: bool,
 }
 
 fn stack_key() -> Id {
@@ -212,6 +270,7 @@ impl InputGroup {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
         let p = theme.palette;
+        let style = theme.style;
 
         let group_id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -240,32 +299,37 @@ impl InputGroup {
         let hint_height = if column && last.height > 0.0 {
             last.height
         } else {
-            crate::theme::tokens::spacing::CONTROL // h-9
+            container_height(style) // h-9 / nova h-8
         };
 
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, hint_height), Sense::hover());
 
         // Background fill + shadow must be painted before the children so
-        // their text stays on top.
+        // their text stays on top. `has-disabled:bg-input/50
+        // dark:has-disabled:bg-input/80`.
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
+            let corner = CornerRadius::same(container_radius(style, &theme.radius));
             if !self.disabled {
                 let sh = crate::utils::shadow::shadow_xs(dark);
                 painter.add(
                     egui::epaint::RectShape::filled(
                         rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                        CornerRadius::same(theme.radius.md_u8()),
+                        corner,
                         sh.color,
                     )
                     .with_blur_width(2.0),
                 );
             }
-            if dark {
-                painter.rect_filled(
-                    rect,
-                    CornerRadius::same(theme.radius.md_u8()),
-                    color_alpha(p.input, 0.3),
-                );
+            let fill = if self.disabled {
+                color_alpha(p.input, if dark { 0.8 } else { 0.5 })
+            } else if dark {
+                color_alpha(p.input, 0.3)
+            } else {
+                Color32::TRANSPARENT
+            };
+            if fill != Color32::TRANSPARENT {
+                painter.rect_filled(rect, corner, fill);
             }
         }
 
@@ -300,7 +364,7 @@ impl InputGroup {
 
         if ui.is_rect_visible(content_rect) {
             let painter = ui.painter();
-            let radius = theme.radius.md_u8();
+            let radius = container_radius(style, &theme.radius);
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
             let draw_rect = match orientation {
                 GroupOrientation::Horizontal
@@ -317,15 +381,25 @@ impl InputGroup {
             };
 
             let invalid = record.invalid;
-            let stroke = if invalid {
-                Stroke::new(1.0, p.destructive)
+            let stroke_color = if invalid {
+                p.destructive
+            } else if record.focus {
+                // `has-[control:focus-visible]:border-ring`
+                p.ring
             } else {
-                Stroke::new(1.0, p.input)
+                p.input
             };
+            // `has-disabled:opacity-50` fades the border too.
+            let stroke_color = if self.disabled {
+                color_alpha(stroke_color, 0.5)
+            } else {
+                stroke_color
+            };
+            let stroke = Stroke::new(1.0, stroke_color);
             painter.rect_stroke(draw_rect, corner, stroke, egui::epaint::StrokeKind::Inside);
 
             // `has-[[data-slot=input-group-control]:focus-visible]:
-            // border-ring ring-[3px] ring-ring/50`
+            // ring-[3px] ring-ring/50`
             if record.focus && !self.disabled {
                 let ring = if invalid {
                     color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
@@ -393,6 +467,7 @@ impl<'a> InputGroupInput<'a> {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
+        let style = theme.style;
 
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
@@ -416,13 +491,19 @@ impl<'a> InputGroupInput<'a> {
             p.foreground
         };
 
-        // `[&>input]:pl-2` when an inline-start addon precedes the control.
+        // `[&>input]:pl-2` when an inline-start addon precedes the control
+        // (nova `pl-1.5`); `[&>input]:pr-2` when an inline-end addon follows
+        // (nova `pr-1.5`, detected from last frame's snapshot).
         let left_pad = if record.inline_start {
-            crate::theme::tokens::spacing::SM
+            control_inline_padding(style)
         } else {
             crate::theme::tokens::spacing::MD
         };
-        let right_pad = crate::theme::tokens::spacing::MD;
+        let right_pad = if snapshot.inline_end {
+            control_inline_padding(style)
+        } else {
+            crate::theme::tokens::spacing::MD
+        };
 
         let disabled = self.disabled || self.disabled_in(ui);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
@@ -431,10 +512,7 @@ impl<'a> InputGroupInput<'a> {
             .font(font)
             .text_color(text_color)
             .desired_width(width.max(1.0))
-            .min_size(Vec2::new(
-                width.max(1.0),
-                crate::theme::tokens::spacing::CONTROL,
-            ))
+            .min_size(Vec2::new(width.max(1.0), input::input_height(style)))
             .align(Align2::LEFT_CENTER)
             .margin(Margin {
                 left: left_pad as i8,
@@ -458,10 +536,16 @@ impl<'a> InputGroupInput<'a> {
             edit
         };
 
-        let out = edit.show(ui);
-        let response = out.response.response;
+        // The scoped spacing keeps the theme's `interact_size` floor (36pt)
+        // from overriding the nova `h-8` (32pt) row.
+        let out = ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = input::input_height(style);
+            edit.show(ui)
+        });
+        let response = out.inner.response.response;
 
         record.focus |= response.has_focus();
+        record.input_id = Some(response.id);
         if let Some(group) = group_id {
             write_record(ui, group, record);
         }
@@ -536,6 +620,7 @@ impl<'a> InputGroupTextarea<'a> {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
+        let style = theme.style;
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
         record.textarea = true;
@@ -555,18 +640,19 @@ impl<'a> InputGroupTextarea<'a> {
             p.foreground
         };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        // `py-3` and full width.
+        // `px-3 py-3` base recipe; nova `.cn-input-group-textarea` `px-2.5 py-2`.
+        let (pad_x, pad_y) = match style {
+            Style::Nova => (10.0, 8.0), // px-2.5 py-2
+            _ => (12.0, 12.0),          // px-3 py-3
+        };
         let edit = TextEdit::multiline(self.text)
             .id_salt(id)
             .font(font)
             .text_color(text_color)
             .desired_width(width)
             .desired_rows(self.rows)
-            .min_size(Vec2::new(width, crate::theme::tokens::spacing::CONTROL))
-            .margin(Margin::symmetric(
-                crate::theme::tokens::spacing::MD as i8,
-                crate::theme::tokens::spacing::MD as i8,
-            ))
+            .min_size(Vec2::new(width, input::input_height(style)))
+            .margin(Margin::symmetric(pad_x as i8, pad_y as i8))
             .background_color(Color32::TRANSPARENT);
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             edit.hint_text(placeholder.to_owned())
@@ -579,10 +665,17 @@ impl<'a> InputGroupTextarea<'a> {
             edit
         };
 
-        let out = edit.show(ui);
-        let response = out.response.response;
+        // Scoped spacing: same `interact_size` floor guard as the input.
+        let out = ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = input::input_height(style);
+            edit.show(ui)
+        });
+        let response = out.inner.response.response;
 
         record.focus |= response.has_focus();
+        if record.input_id.is_none() {
+            record.input_id = Some(response.id);
+        }
         if let Some(group) = group_id {
             write_record(ui, group, record);
         }
@@ -592,8 +685,8 @@ impl<'a> InputGroupTextarea<'a> {
 }
 
 /// `InputGroupAddon` — a slot beside the control for text, icons, kbd or
-/// buttons. Clicking an addon focuses the group's control is approximated by
-/// the addon not consuming clicks outside its buttons.
+/// buttons. Clicking the addon focuses the group's control (the source's
+/// `onClick`), except when the click hit a button inside the addon.
 #[derive(Debug)]
 pub struct InputGroupAddon {
     align: AddonAlign,
@@ -621,6 +714,8 @@ impl InputGroupAddon {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        let theme = ShadcnTheme::of_ui(ui);
+        let style = theme.style;
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
 
@@ -632,9 +727,9 @@ impl InputGroupAddon {
                 }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
-                    ui.set_min_size(Vec2::new(0.0, crate::theme::tokens::spacing::CONTROL));
-                    // `pl-3 py-1.5`
-                    ui.add_space(crate::theme::tokens::spacing::MD);
+                    ui.set_min_size(Vec2::new(0.0, container_height(style)));
+                    // `pl-3 py-1.5` base recipe; nova `pl-2`.
+                    ui.add_space(addon_inline_padding(style));
                     content(ui)
                 })
             }
@@ -642,10 +737,10 @@ impl InputGroupAddon {
                 record.inline_end = true;
                 let inner = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
-                    ui.set_min_size(Vec2::new(0.0, crate::theme::tokens::spacing::CONTROL));
+                    ui.set_min_size(Vec2::new(0.0, container_height(style)));
                     let r = content(ui);
-                    // `pr-3`
-                    ui.add_space(crate::theme::tokens::spacing::MD);
+                    // `pr-3` base recipe; nova `pr-2`.
+                    ui.add_space(addon_inline_padding(style));
                     r
                 });
                 // Record the measured width so the input can reserve room
@@ -661,32 +756,57 @@ impl InputGroupAddon {
                 if let Some(group) = group_id {
                     write_record(ui, group, record);
                 }
-                ui.horizontal(|ui| {
+                // `px-3 pt-3` base recipe; nova `px-2.5 pt-2`.
+                ui.add_space(addon_block_padding_y(style));
+                let inner = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
                     ui.set_min_size(Vec2::new(ui.available_width(), 0.0));
-                    // `px-3 pt-3` (with an input row: pt-2.5)
-                    ui.add_space(crate::theme::tokens::spacing::SM_HALF);
+                    ui.add_space(addon_block_padding_x(style));
                     let r = content(ui);
-                    ui.add_space(crate::theme::tokens::spacing::SM_HALF);
+                    ui.add_space(addon_block_padding_x(style));
                     r
-                })
+                });
+                inner
             }
             AddonAlign::BlockEnd => {
                 record.block = true;
                 let inner = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
                     ui.set_min_size(Vec2::new(ui.available_width(), 0.0));
-                    ui.add_space(crate::theme::tokens::spacing::SM_HALF);
+                    ui.add_space(addon_block_padding_x(style));
                     let r = content(ui);
-                    ui.add_space(crate::theme::tokens::spacing::SM_HALF);
+                    ui.add_space(addon_block_padding_x(style));
                     r
                 });
                 if let Some(group) = group_id {
                     write_record(ui, group, record);
                 }
+                // `px-3 pb-3` base recipe; nova `px-2.5 pb-2`.
+                ui.add_space(addon_block_padding_y(style));
                 inner
             }
         };
+
+        // `onClick`: focus the group's control (unless the click hit a
+        // button inside the addon). The click is resolved from the pointer
+        // state so no click-sense interact steals hits from the buttons.
+        if let Some(group) = group_id {
+            let record = read_record(ui, group);
+            let focus_target = record
+                .input_id
+                .or_else(|| read_snapshot(ui, group).input_id);
+            if let Some(input_id) = focus_target {
+                let clicked = ui.input(|i| {
+                    i.pointer.any_click()
+                        && i.pointer
+                            .press_origin()
+                            .is_some_and(|o| inner.response.rect.contains(o))
+                });
+                if clicked && !record.disabled_container && !record.button_clicked {
+                    ui.memory_mut(|mem| mem.request_focus(input_id));
+                }
+            }
+        }
 
         inner
     }
@@ -754,7 +874,7 @@ impl InputGroupText {
             .map(|_| crate::theme::tokens::spacing::SM)
             .unwrap_or(0.0);
         let width = icon_size * self.icon.is_some() as i32 as f32 + gap + text_w;
-        let desired = Vec2::new(width.max(1.0), crate::theme::tokens::spacing::CONTROL);
+        let desired = Vec2::new(width.max(1.0), container_height(theme.style));
 
         let (rect, response) = match self.id_salt.as_deref() {
             Some(salt) => {
@@ -801,6 +921,7 @@ impl egui::Widget for InputGroupText {
 #[derive(Debug)]
 pub struct InputGroupButton {
     button: Button,
+    size: InputGroupButtonSize,
 }
 
 impl InputGroupButton {
@@ -810,6 +931,7 @@ impl InputGroupButton {
             button: Button::new(label)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Xs),
+            size: InputGroupButtonSize::Xs,
         }
     }
 
@@ -820,11 +942,13 @@ impl InputGroupButton {
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconXs)
                 .icon_start(icon),
+            size: InputGroupButtonSize::IconXs,
         }
     }
 
     /// Sets the size.
     pub fn size(mut self, size: InputGroupButtonSize) -> Self {
+        self.size = size;
         self.button = self.button.size(size.into());
         self
     }
@@ -849,7 +973,25 @@ impl InputGroupButton {
 
     /// Renders the button.
     pub fn show(self, ui: &mut Ui) -> Response {
-        self.button.show(ui)
+        // The `sm` spec (`h-8 px-2.5 gap-1.5`) is identical in both styles,
+        // so the nova style maps it onto the nova `Default` size (also
+        // `h-8 px-2.5`); the base recipe keeps `ButtonSize::Sm` (`h-8`).
+        let style = ShadcnTheme::of_ui(ui).style;
+        let size = match self.size {
+            InputGroupButtonSize::Sm if style == Style::Nova => ButtonSize::Default,
+            _ => self.size.into(),
+        };
+        let response = self.button.size(size).show(ui);
+
+        // Record the click so the addon's click-to-focus does not steal it.
+        if response.clicked() {
+            if let Some(group_id) = current_id(ui) {
+                let mut record = read_record(ui, group_id);
+                record.button_clicked = true;
+                write_record(ui, group_id, record);
+            }
+        }
+        response
     }
 }
 
@@ -900,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn group_renders_36pt_row_and_input_fills() {
+    fn group_renders_row_and_input_fills() {
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut text = String::from("abc");
@@ -913,6 +1055,26 @@ mod tests {
                 egui::UiBuilder::new().max_rect(ui_rect()),
             );
             InputGroup::new().id_salt("ig").show(ui, |ui| {
+                input_rect = InputGroupInput::new(&mut text).show(ui).rect;
+            });
+            container_rect = ui.min_rect();
+        });
+        out.textures_delta.clear();
+        // The default preset is nova (`h-8`).
+        assert!((container_rect.height() - 32.0).abs() < 1.0);
+        assert!((input_rect.height() - 32.0).abs() < 1.0);
+        // A non-nova (base recipe) theme keeps `h-9`.
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(crate::theme::Style::Vega)
+            .install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("ig_size_test_base"),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            InputGroup::new().id_salt("ig_base").show(ui, |ui| {
                 input_rect = InputGroupInput::new(&mut text).show(ui).rect;
             });
             container_rect = ui.min_rect();
