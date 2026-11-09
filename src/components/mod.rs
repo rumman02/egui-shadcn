@@ -34,6 +34,7 @@ pub mod progress;
 pub mod radio_group;
 pub mod resizable;
 pub mod scroll_area;
+pub mod select;
 pub mod separator;
 pub mod sheet;
 pub mod skeleton;
@@ -134,6 +135,7 @@ pub use progress::Progress;
 pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, RADIO_SIZE};
 pub use resizable::{ResizableHandle, ResizableOrientation, ResizablePanel, ResizablePanelGroup};
 pub use scroll_area::{ScrollArea, SCROLLBAR_WIDTH};
+pub use select::{Select, SelectBuilder, SelectItem, SelectResponse, SelectSize, SELECT_MIN_WIDTH};
 pub use separator::{Separator, SeparatorOrientation};
 pub use sheet::{
     Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetSide,

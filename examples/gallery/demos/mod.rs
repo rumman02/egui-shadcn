@@ -3096,3 +3096,93 @@ pub fn menubar_demo(ui: &mut egui::Ui) {
         d.insert_temp(action_store, last_action);
     });
 }
+
+pub fn select_demo(ui: &mut egui::Ui) {
+    ui.heading("Select");
+    ui.add_space(8.0);
+
+    // Controlled Option<String> with labels, separator and a disabled option.
+    // Demos copy values out of ctx state and write them back so bindings
+    // survive frames.
+    let store = egui::Id::unique("select_demo_state");
+    let (mut framework, mut small, mut default, mut prefilled) = ui.ctx().data_mut(|d| {
+        d.get_temp::<(Option<String>, String, String, Option<String>)>(store)
+            .unwrap_or((None, String::new(), String::new(), Some("Fruit".to_owned())))
+    });
+
+    let res = Select::new(&mut framework)
+        .placeholder("Select a framework")
+        .id_salt("select_demo_framework")
+        .width(200.0)
+        .show(ui, |s| {
+            s.label("Frameworks");
+            s.item(SelectItem::new("Next.js"));
+            s.item(SelectItem::new("SvelteKit"));
+            s.item(SelectItem::new("Astro").disabled(true));
+            s.separator();
+            s.item(SelectItem::new("Other").value("other"));
+        });
+    ui.add_space(4.0);
+    ui.label(format!(
+        "Value: {}{}",
+        res.value.as_deref().unwrap_or("(none)"),
+        if res.changed { " (changed)" } else { "" }
+    ));
+
+    ui.add_space(12.0);
+    ui.label("Sizes");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Select::bind(&mut small)
+            .placeholder("Small (h-8)")
+            .size(SelectSize::Sm)
+            .width(140.0)
+            .id_salt("select_demo_sm")
+            .options(["One", "Two", "Three"])
+            .show_seeded(ui);
+        Select::bind(&mut default)
+            .placeholder("Default (h-9)")
+            .width(140.0)
+            .id_salt("select_demo_default")
+            .options(["One", "Two", "Three"])
+            .show_seeded(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("States");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Select::uncontrolled()
+            .placeholder("Disabled")
+            .disabled(true)
+            .id_salt("select_demo_disabled")
+            .width(150.0)
+            .options(["A", "B"])
+            .show_seeded(ui);
+        Select::uncontrolled()
+            .placeholder("Invalid")
+            .invalid(true)
+            .id_salt("select_demo_invalid")
+            .width(150.0)
+            .options(["A", "B"])
+            .show_seeded(ui);
+        Select::new(&mut prefilled)
+            .id_salt("select_demo_prefilled")
+            .width(150.0)
+            .options(["Fruit", "Vegetable"])
+            .show_seeded(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Scrolling (40 options)");
+    ui.add_space(4.0);
+    Select::uncontrolled()
+        .placeholder("Pick a number")
+        .id_salt("select_demo_scroll")
+        .width(200.0)
+        .options((1..=40).map(|i| format!("Option {i}")))
+        .show_seeded(ui);
+
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(store, (framework, small, default, prefilled)));
+}

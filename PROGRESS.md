@@ -69,7 +69,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 52 | context-menu | ✅ done | F | 86f782d | right-click region = Ui.min_rect(); menu at pointer; shares dropdown items/keyboard/checkbox/radio/sub-menus; controlled+uncontrolled; nova min-w-36 |
 | 53 | menubar | ✅ done | F | a6d1c15 | h-8 bar, click/hover-enter switching, ArrowLeft/Right menu switch, shared items (checkbox left-indicator, radio), sub-menus, Escape/outside-click; controlled open index; close fade |
 | 54 | navigation-menu | ⬜ todo | F | | horizontal/vertical, viewport panels |
-| 55 | select | ⬜ todo | F | | trigger + content, scroll up/down |
+| 55 | select | ✅ done | F | d9f75b9 | controlled (&mut Option<String>/&mut String) + uncontrolled via id_salt; h-9/h-8 trigger, placeholder/invalid/disabled; ScrollArea popup; labels/separators/disabled items; check indicator; keyboard nav (arrows/home/end/enter/space/escape, opens on selection highlight); no typeahead |
 | 56 | combobox | ⬜ todo | F | | popover + command filter |
 | 57 | command | ⬜ todo | F | | ⌘K palette: groups, items, kbd |
 | 58 | calendar | ⬜ todo | G | | month grid, nav, presets, multiple/range |
