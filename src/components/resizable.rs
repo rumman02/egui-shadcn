@@ -4,10 +4,16 @@
 //! `react-resizable-panels` wrapper): a [`ResizablePanelGroup`] lays out
 //! [`ResizablePanel`] children separated by [`ResizableHandle`]s. Handles
 //! are `bg-border` 1px lines with an optional `with_handle` grip chip
-//! (`h-4 w-3 rounded-xs border bg-border` + grip glyph); they support
-//! pointer dragging and Arrow-key resizing when focused, with per-panel
-//! `min`/`max` fraction clamps. Fractions persist in the egui context
-//! keyed by the group's id salt.
+//! (base: `h-4 w-3 rounded-xs border bg-border` + grip glyph; nova: a plain
+//! `h-6 w-1 rounded-lg bg-border` pill); they support pointer dragging and
+//! Arrow-key resizing when focused, with per-panel `min`/`max` fraction
+//! clamps. Fractions persist in the egui context keyed by the group's id
+//! salt.
+//!
+//! Scope notes: keyboard resize steps by 5% of the group length (an
+//! approximation of `react-resizable-panels`' keyboard increments); sizes
+//! are fractional — the source's pixel `defaultSize`/`minSize` and
+//! collapsible panels are out of scope.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -22,10 +28,10 @@
 //!     });
 //! ```
 
-use crate::theme::ShadcnTheme;
+use crate::icons::Icon;
+use crate::theme::{ShadcnTheme, Style};
 use egui::{
-    Color32, CornerRadius, CursorIcon, Id, InnerResponse, Pos2, Rect, Response, Sense, Stroke, Ui,
-    Vec2,
+    Color32, CornerRadius, CursorIcon, Id, InnerResponse, Rect, Response, Sense, Stroke, Ui, Vec2,
 };
 
 /// Group orientation, mirroring `aria-orientation`.
@@ -466,11 +472,12 @@ impl ResizableHandle {
         };
         let (_, flow_rect) = ui.allocate_space(desired);
 
-        // Expanded interaction rect (the source's `after:` hit area).
+        // Expanded interaction rect (the source's `after:` hit area, a 4px
+        // band centered on the 1px line).
         let hit = if horizontal_group {
-            flow_rect.expand2(egui::vec2(3.0, 0.0))
+            flow_rect.expand2(egui::vec2(1.5, 0.0))
         } else {
-            flow_rect.expand2(egui::vec2(0.0, 3.0))
+            flow_rect.expand2(egui::vec2(0.0, 1.5))
         };
         let response = ui
             .interact(hit, id, Sense::click_and_drag())
@@ -485,39 +492,43 @@ impl ResizableHandle {
             painter.rect_filled(flow_rect, 0, p.border);
 
             if self.with_handle {
-                // Grip chip: w-3 h-4 rotated for horizontal groups.
-                let (cw, ch) = if horizontal_group {
-                    (12.0, 16.0)
-                } else {
-                    (16.0, 12.0)
-                };
-                let chip = Rect::from_center_size(flow_rect.center(), Vec2::new(cw, ch));
-                painter.rect_filled(chip, CornerRadius::same(2), p.border);
-                painter.rect_stroke(
-                    chip,
-                    CornerRadius::same(2),
-                    Stroke::new(1.0, p.border),
-                    egui::epaint::StrokeKind::Inside,
-                );
-                // Grip glyph: three dots along the chip's long axis.
-                let dot = 1.2;
-                let along = if horizontal_group {
-                    chip.center().y
-                } else {
-                    chip.center().x
-                };
-                let cross_c = if horizontal_group {
-                    chip.center().x
-                } else {
-                    chip.center().y
-                };
-                for k in [-1.0f32, 0.0, 1.0] {
-                    let center = if horizontal_group {
-                        Pos2::new(cross_c, along + k * 4.0)
+                let nova = theme.style == Style::Nova;
+                if nova {
+                    // Nova grip: a plain `bg-border` pill (`h-6 w-1
+                    // rounded-lg`, rotated on horizontal groups), no glyph.
+                    let (cw, ch) = if horizontal_group {
+                        (4.0, 24.0)
                     } else {
-                        Pos2::new(cross_c + k * 4.0, along)
+                        (24.0, 4.0)
                     };
-                    painter.circle_filled(center, dot, dot_color(&p, theme.mode.is_dark()));
+                    let chip = Rect::from_center_size(flow_rect.center(), Vec2::new(cw, ch));
+                    painter.rect_filled(chip, CornerRadius::same(2), p.border);
+                } else {
+                    // Base grip chip: `h-4 w-3 rounded-xs border bg-border`
+                    // with the `size-2.5` grip glyph (the source rotates the
+                    // chip on horizontal dividers, so the glyph follows).
+                    let (cw, ch) = if horizontal_group {
+                        (12.0, 16.0)
+                    } else {
+                        (16.0, 12.0)
+                    };
+                    let chip = Rect::from_center_size(flow_rect.center(), Vec2::new(cw, ch));
+                    painter.rect_filled(chip, CornerRadius::same(2), p.border);
+                    painter.rect_stroke(
+                        chip,
+                        CornerRadius::same(2),
+                        Stroke::new(1.0, p.border),
+                        egui::epaint::StrokeKind::Inside,
+                    );
+                    let glyph = if horizontal_group {
+                        Icon::GripVertical
+                    } else {
+                        Icon::GripHorizontal
+                    };
+                    let glyph_rect = Rect::from_center_size(chip.center(), Vec2::splat(10.0));
+                    // The lucide glyph inherits the text color (`currentColor`)
+                    // over the `bg-border` chip.
+                    glyph.paint(painter, glyph_rect, p.foreground, 2.0 * 10.0 / 24.0);
                 }
             }
 
@@ -581,12 +592,6 @@ impl ResizableHandle {
     }
 }
 
-fn dot_color(p: &crate::theme::Palette, _dark: bool) -> Color32 {
-    // Grip glyph on a `bg-border` chip: the background token reads against
-    // it in both modes.
-    p.background
-}
-
 fn color_ring(p: &crate::theme::Palette) -> Color32 {
     p.ring
 }
@@ -595,11 +600,7 @@ fn color_ring(p: &crate::theme::Palette) -> Color32 {
 mod tests {
     use super::*;
     use crate::theme::{Mode, Preset};
-    use egui::Key;
-
-    fn palette(mode: Mode) -> crate::theme::Palette {
-        Preset::default().build(mode).palette
-    }
+    use egui::{Key, Pos2};
 
     #[test]
     fn equal_split_and_panel_px() {
@@ -728,13 +729,5 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-    }
-
-    #[test]
-    fn dot_color_uses_background_token() {
-        let p = palette(Mode::Light);
-        assert_eq!(dot_color(&p, false), p.background);
-        let dark = palette(Mode::Dark);
-        assert_eq!(dot_color(&dark, true), dark.background);
     }
 }
