@@ -400,7 +400,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "attachment",
-            show: None,
+            show: Some(demos::attachment_demo),
         },
         DemoPage {
             name: "bubble",

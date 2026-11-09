@@ -3605,3 +3605,148 @@ pub fn carousel_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, selected));
 }
+
+pub fn attachment_demo(ui: &mut egui::Ui) {
+    ui.label("States");
+    ui.add_space(4.0);
+    let states: [(&str, AttachmentState, bool, Icon, &str, bool); 5] = [
+        (
+            "selected-file.pdf",
+            AttachmentState::Idle,
+            false,
+            Icon::Clock,
+            "Ready to upload",
+            false,
+        ),
+        (
+            "design-system.zip",
+            AttachmentState::Uploading,
+            true,
+            Icon::FileText,
+            "Uploading · 64%",
+            false,
+        ),
+        (
+            "market-research.pdf",
+            AttachmentState::Processing,
+            false,
+            Icon::FileText,
+            "Processing document",
+            false,
+        ),
+        (
+            "financial-model.xlsx",
+            AttachmentState::Error,
+            false,
+            Icon::CircleAlert,
+            "Upload failed. Try again.",
+            true,
+        ),
+        (
+            "uploaded-report.pdf",
+            AttachmentState::Done,
+            false,
+            Icon::CircleCheck,
+            "Uploaded · 1.8 MB",
+            false,
+        ),
+    ];
+    for (title, state, spin, media_icon, desc, retry) in states {
+        let mut removed = false;
+        Attachment::new().state(state).show(ui, |ui| {
+            AttachmentMedia::new()
+                .spinner(spin)
+                .icon(media_icon)
+                .show(ui);
+            AttachmentContent::new().show(ui, |ui| {
+                AttachmentTitle::new(title).show(ui);
+                AttachmentDescription::new(desc).show(ui);
+            });
+            AttachmentActions::new().show(ui, |ui| {
+                if retry && AttachmentAction::new(Icon::RefreshCw).show(ui).clicked() {
+                    ui.ctx().request_repaint();
+                }
+                if AttachmentAction::new(Icon::X).show(ui).clicked() {
+                    removed = true;
+                }
+            });
+        });
+        if removed {
+            ui.label(format!("{title} — remove clicked"));
+        }
+        ui.add_space(8.0);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Sizes");
+    ui.add_space(4.0);
+    for (size, title) in [
+        (AttachmentSize::Default, "Default attachment"),
+        (AttachmentSize::Sm, "Small attachment"),
+        (AttachmentSize::Xs, "Extra small attachment"),
+    ] {
+        Attachment::new().size(size).show(ui, |ui| {
+            AttachmentMedia::new().icon(Icon::FileText).show(ui);
+            AttachmentContent::new().show(ui, |ui| {
+                AttachmentTitle::new(title).show(ui);
+                AttachmentDescription::new("PDF · 2.4 MB").show(ui);
+            });
+        });
+        ui.add_space(8.0);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Vertical orientation");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        for (state, title) in [
+            (AttachmentState::Uploading, "clip.mp4"),
+            (AttachmentState::Error, "broken.png"),
+            (AttachmentState::Done, "report.pdf"),
+        ] {
+            Attachment::new()
+                .state(state)
+                .orientation(AttachmentOrientation::Vertical)
+                .show(ui, |ui| {
+                    AttachmentMedia::new()
+                        .spinner(state == AttachmentState::Uploading)
+                        .icon(if state == AttachmentState::Uploading {
+                            Icon::LoaderCircle
+                        } else {
+                            Icon::FileText
+                        })
+                        .show(ui);
+                    AttachmentContent::new().show(ui, |ui| {
+                        AttachmentTitle::new(title).show(ui);
+                        if state == AttachmentState::Error {
+                            AttachmentDescription::new("Failed").show(ui);
+                        }
+                    });
+                    AttachmentActions::new().show(ui, |ui| {
+                        AttachmentAction::new(Icon::X).show(ui);
+                    });
+                });
+        }
+    });
+
+    ui.add_space(12.0);
+    ui.label("Group (horizontal scroll strip) + trigger");
+    ui.add_space(4.0);
+    AttachmentGroup::new().show(ui, |ui| {
+        for name in [
+            "quarterly-report.pdf",
+            "budget-2026.xlsx",
+            "design-tokens.json",
+            "architecture-notes.md",
+        ] {
+            Attachment::new().trigger(true).show(ui, |ui| {
+                AttachmentMedia::new().icon(Icon::FileText).show(ui);
+                AttachmentContent::new().show(ui, |ui| {
+                    AttachmentTitle::new(name).show(ui);
+                    AttachmentDescription::new("Click to open").show(ui);
+                });
+            });
+        }
+    });
+}

@@ -71,6 +71,9 @@ pub enum Icon {
     Dot,
     GripVertical,
     GripHorizontal,
+    FileText,
+    RefreshCw,
+    Clock,
 }
 
 impl Icon {
@@ -290,6 +293,32 @@ impl Icon {
                 El::Dot([12.0, 15.0], 1.0),
                 El::Dot([19.0, 15.0], 1.0),
             ],
+            Icon::FileText => vec![
+                El::PolyClosed(&[
+                    [15.0, 2.0],
+                    [6.0, 2.0],
+                    [4.0, 4.0],
+                    [4.0, 20.0],
+                    [6.0, 22.0],
+                    [18.0, 22.0],
+                    [20.0, 20.0],
+                    [20.0, 7.0],
+                ]),
+                El::Poly(&[[14.0, 2.0], [14.0, 6.0], [16.0, 8.0], [20.0, 8.0]]),
+                El::Line([10.0, 9.0], [8.0, 9.0]),
+                El::Line([16.0, 13.0], [8.0, 13.0]),
+                El::Line([16.0, 17.0], [8.0, 17.0]),
+            ],
+            Icon::RefreshCw => vec![
+                El::Arc([12.0, 12.0], 9.0, 180.0, 340.0),
+                El::Poly(&[[21.0, 3.0], [21.0, 8.0], [16.0, 8.0]]),
+                El::Arc([12.0, 12.0], 9.0, 0.0, 156.0),
+                El::Poly(&[[8.0, 16.0], [3.0, 16.0], [3.0, 21.0]]),
+            ],
+            Icon::Clock => vec![
+                El::Circle([12.0, 12.0], 10.0),
+                El::Poly(&[[12.0, 6.0], [12.0, 12.0], [16.0, 14.0]]),
+            ],
         }
     }
 
@@ -383,7 +412,7 @@ fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 39] = [
+    const ALL: [Icon; 42] = [
         Icon::Check,
         Icon::ChevronDown,
         Icon::ChevronUp,
@@ -423,6 +452,9 @@ mod tests {
         Icon::Dot,
         Icon::GripVertical,
         Icon::GripHorizontal,
+        Icon::FileText,
+        Icon::RefreshCw,
+        Icon::Clock,
     ];
 
     #[test]
