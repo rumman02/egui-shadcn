@@ -8,7 +8,9 @@
 //!
 //! The optional icon slot sits left of the title/description column; the
 //! optional [`AlertAction`] paints at the alert's top-right corner (nova
-//! `absolute top-2 right-2`) and the alert reserves `pr-18` for it.
+//! `absolute top-2 right-2`). `AlertAction` is a nova-era slot: only the
+//! nova recipe reserves `pr-18` (72px) for it, so non-nova styles keep the
+//! text at full width.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -185,10 +187,16 @@ impl Alert {
         };
         // `has-data-[slot=alert-action]:pr-18` — reserve 72px on the right
         // for the action; read from the previous frame (self-correcting).
+        // The slot is nova-only (the base recipe has no action slot), so
+        // other styles keep the text at full width.
         let has_action: bool = ui
             .ctx()
             .data_mut(|d| d.get_temp(id.with("has_action")).unwrap_or(false));
-        let reserved_right = if has_action { 72.0 } else { 0.0 };
+        let reserved_right = if has_action && theme.style == Style::Nova {
+            72.0
+        } else {
+            0.0
+        };
 
         let cursor = ui.cursor();
         push_variant(ui, self.variant);
@@ -281,7 +289,7 @@ impl AlertTitle {
 }
 
 /// `AlertDescription` — `text-sm text-muted-foreground` (destructive:
-/// `text-destructive/90`), wraps to the width.
+/// `text-destructive/90`) with `leading-relaxed`, wraps to the width.
 #[derive(Clone, Debug)]
 pub struct AlertDescription {
     text: String,
@@ -298,10 +306,19 @@ impl AlertDescription {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let c = resolve_alert_colors(&p, current_variant(ui).unwrap_or_default());
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let galley = ui
-            .painter()
-            .layout(self.text, font, c.description, ui.available_width());
+        let size = crate::theme::tokens::type_scale::SM;
+        let font = FontId::proportional(size);
+        // `[&_p]:leading-relaxed` (1.625) is set through the TextFormat.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: c.description,
+            line_height: Some(size * 1.625),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = ui.available_width().max(0.0);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
         if ui.is_rect_visible(rect) {
             ui.painter().galley(rect.min, galley, c.description);
