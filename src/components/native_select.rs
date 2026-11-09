@@ -6,6 +6,11 @@
 //! `right-3.5` (`text-muted-foreground opacity-50`), the shared
 //! focus/invalid/disabled styles and `dark:bg-input/30 dark:hover:bg-input/50`.
 //!
+//! The nova style (`.cn-native-select`) reshapes the trigger to `h-8
+//! rounded-lg py-1 pr-8 pl-2.5` (sm: `h-7 rounded-[min(var(--radius-md),10px)] py-0.5`)
+//! with the chevron at `right-2.5`; the disabled wrapper fade
+//! (`has-[select:disabled]:opacity-50`) also fades the border.
+//!
 //! The browser's native dropdown is replaced by an [`egui::Popup`] anchored
 //! below the trigger; option rows follow the popover look
 //! (`bg-popover`/`rounded-md shadow-md`, `bg-accent` on the hovered or
@@ -24,7 +29,7 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, Ui, Vec2};
 
 /// Trigger height per size.
@@ -38,12 +43,62 @@ pub enum NativeSelectSize {
 }
 
 impl NativeSelectSize {
-    /// Trigger height in points.
+    /// Trigger height in points (base recipe `h-9`/`h-8`; the nova style
+    /// renders 32px/28px instead).
     pub fn height(self) -> f32 {
         match self {
             NativeSelectSize::Default => crate::theme::tokens::spacing::CONTROL,
             NativeSelectSize::Sm => crate::theme::tokens::spacing::CONTROL_SM,
         }
+    }
+}
+
+/// Outer height (`h-9`/`h-8` base recipe; nova `.cn-native-select` `h-8`,
+/// sm `h-7`).
+fn trigger_height(size: NativeSelectSize, style: Style) -> f32 {
+    match style {
+        Style::Nova => match size {
+            NativeSelectSize::Default => 32.0, // h-8
+            NativeSelectSize::Sm => 28.0,      // h-7
+        },
+        _ => size.height(),
+    }
+}
+
+/// Corner radius (`rounded-md` base recipe; nova `rounded-lg`, sm
+/// `rounded-[min(var(--radius-md),10px)]`).
+fn trigger_radius(size: NativeSelectSize, style: Style, radius: &RadiusTokens) -> u8 {
+    match style {
+        Style::Nova => match size {
+            NativeSelectSize::Default => radius.lg_u8(),
+            NativeSelectSize::Sm => (radius.md().round() as i32).clamp(0, 10) as u8,
+        },
+        _ => radius.md_u8(),
+    }
+}
+
+/// Left padding (`pl-3` base recipe; nova `pl-2.5`).
+fn padding_left(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0,
+        _ => 12.0,
+    }
+}
+
+/// Chevron inset from the right edge (`right-3.5` base recipe; nova
+/// `right-2.5`), before the half icon width.
+fn chevron_right_inset(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0, // right-2.5
+        _ => 14.0,           // right-3.5
+    }
+}
+
+/// Trigger width padding: `(pr-9 + pl-3)` base recipe; nova `(pr-8 + pl-2.5)`.
+fn width_padding(style: Style) -> f32 {
+    match style {
+        Style::Nova => 32.0 + 10.0,
+        _ => 36.0 + 12.0,
     }
 }
 
@@ -87,7 +142,8 @@ pub(crate) struct TriggerColors {
 
 /// Mirrors the base recipe: `border-input bg-transparent px-3 text-sm`,
 /// `dark:bg-input/30 dark:hover:bg-input/50`, focus/invalid styles, chevron
-/// `text-muted-foreground opacity-50`.
+/// `text-muted-foreground opacity-50`. The disabled wrapper fade
+/// (`has-[select:disabled]:opacity-50`) also fades the border.
 pub(crate) fn resolve_trigger_colors(
     p: &Palette,
     dark: bool,
@@ -112,6 +168,11 @@ pub(crate) fn resolve_trigger_colors(
         p.ring
     } else {
         p.input
+    };
+    let stroke_color = if disabled {
+        color_alpha(stroke_color, 0.5)
+    } else {
+        stroke_color
     };
     let ring = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
@@ -229,14 +290,15 @@ impl<'a> NativeSelect<'a> {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
         let p = theme.palette;
-        let height = self.size.height();
+        let style = theme.style;
+        let height = trigger_height(self.size, style);
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => ui.auto_id_with("shadcn_native_select"),
         };
 
-        // Trigger width: widest option + px-3 + pr-9, at least 160.
+        // Trigger width: widest option + (pr + pl), at least 160.
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let widest = self
             .options
@@ -261,7 +323,7 @@ impl<'a> NativeSelect<'a> {
             );
         let width = self
             .width
-            .unwrap_or_else(|| (widest + 36.0 + 12.0).max(160.0));
+            .unwrap_or_else(|| (widest + width_padding(style)).max(160.0));
 
         let sense = if self.disabled {
             Sense::hover()
@@ -282,7 +344,7 @@ impl<'a> NativeSelect<'a> {
                 self.disabled,
                 selected.is_some(),
             );
-            let radius = theme.radius.md_u8();
+            let radius = trigger_radius(self.size, style, &theme.radius);
             let corner = CornerRadius::same(radius);
             let painter = ui.painter();
 
@@ -304,19 +366,17 @@ impl<'a> NativeSelect<'a> {
             }
             painter.rect_stroke(rect, corner, c.stroke, egui::epaint::StrokeKind::Inside);
 
-            // Label: `px-3 ... pr-9 text-sm`, left aligned, vertically centered.
+            // Label: `px-3 pl-2.5` (nova), left aligned, vertically centered.
             let label = selected
                 .map(|i| self.label_for(i))
                 .unwrap_or_else(|| self.placeholder.clone().unwrap_or_default());
-            let text_pos = egui::Pos2::new(
-                rect.min.x + crate::theme::tokens::spacing::MD,
-                rect.center().y,
-            );
+            let text_pos = egui::Pos2::new(rect.min.x + padding_left(style), rect.center().y);
             painter.text(text_pos, Align2::LEFT_CENTER, label, font, c.text);
 
-            // Chevron: `right-3.5 size-4 text-muted-foreground opacity-50`.
+            // Chevron: `right-3.5 size-4` base recipe; nova `right-2.5 size-4`
+            // (`text-muted-foreground opacity-50`).
             let chevron_center = egui::Pos2::new(
-                rect.max.x - 14.0 - 8.0, // right-3.5 = 14px, half of size-4 = 8px
+                rect.max.x - chevron_right_inset(style) - 8.0, // inset, half of size-4 = 8px
                 rect.center().y,
             );
             let chevron_rect = Rect::from_center_size(
@@ -451,6 +511,8 @@ mod tests {
         assert_eq!(invalid.ring, color_alpha(p.destructive, 0.2));
         let disabled = resolve_trigger_colors(&p, false, false, false, false, true, true);
         assert_eq!(disabled.text, color_alpha(p.muted_foreground, 0.5));
+        // The wrapper fade also fades the border.
+        assert_eq!(disabled.stroke.color, color_alpha(p.input, 0.5));
     }
 
     #[test]
@@ -460,6 +522,31 @@ mod tests {
         assert_eq!(c.fill, color_alpha(dark.input, 0.5));
         let resting = resolve_trigger_colors(&dark, true, false, false, false, false, true);
         assert_eq!(resting.fill, color_alpha(dark.input, 0.3));
+    }
+
+    #[test]
+    fn trigger_geometry_follows_style() {
+        let radius = Preset::default().build(Mode::Light).radius;
+        // Nova `h-8` / sm `h-7`; base recipe `h-9` / `h-8`.
+        assert_eq!(trigger_height(NativeSelectSize::Default, Style::Nova), 32.0);
+        assert_eq!(trigger_height(NativeSelectSize::Sm, Style::Nova), 28.0);
+        assert_eq!(trigger_height(NativeSelectSize::Default, Style::Vega), 36.0);
+        assert_eq!(trigger_height(NativeSelectSize::Sm, Style::Vega), 32.0);
+        // Nova `rounded-lg`; sm `min(var(--radius-md), 10px)`.
+        assert_eq!(
+            trigger_radius(NativeSelectSize::Default, Style::Nova, &radius),
+            radius.lg_u8()
+        );
+        assert_eq!(
+            trigger_radius(NativeSelectSize::Sm, Style::Nova, &radius),
+            (radius.md().round() as i32).clamp(0, 10) as u8
+        );
+        assert_eq!(padding_left(Style::Nova), 10.0);
+        assert_eq!(padding_left(Style::Vega), 12.0);
+        assert_eq!(chevron_right_inset(Style::Nova), 10.0);
+        assert_eq!(chevron_right_inset(Style::Vega), 14.0);
+        assert_eq!(width_padding(Style::Nova), 42.0);
+        assert_eq!(width_padding(Style::Vega), 48.0);
     }
 
     #[test]
@@ -492,7 +579,8 @@ mod tests {
     }
 
     #[test]
-    fn trigger_is_36pt_tall() {
+    fn trigger_height_follows_installed_style() {
+        // The default preset is nova: `h-8` (32pt).
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut selected = Some(0);
@@ -501,6 +589,25 @@ mod tests {
             let ui = &mut egui::Ui::new(
                 ctx.clone(),
                 egui::Id::unique("native_select_size_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            rect = NativeSelect::new(&mut selected)
+                .options(["A", "B"])
+                .show(ui)
+                .rect;
+        });
+        out.textures_delta.clear();
+        assert_eq!(rect.height(), 32.0, "nova h-8: {}", rect.height());
+
+        // A non-nova (base recipe) theme keeps `h-9`.
+        let ctx = egui::Context::default();
+        Preset::default().with_style(Style::Vega).install(&ctx);
+        let mut rect = Rect::NOTHING;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("native_select_size_test_base"),
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
             );
