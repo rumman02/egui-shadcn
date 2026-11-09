@@ -186,6 +186,12 @@ pub fn label_demo(ui: &mut egui::Ui) {
     Label::new("Project name").show(ui);
 
     ui.add_space(12.0);
+    ui.label("With a 16px icon (gap-2)");
+    ui.add_space(4.0);
+    Label::new("Profile").icon(Icon::User).show(ui);
+    Label::new("Attachments").icon(Icon::Paperclip).show(ui);
+
+    ui.add_space(12.0);
     ui.label("Bound to a control: click the label to focus the field.");
     ui.add_space(4.0);
     let id = egui::Id::unique("demo_email_field");

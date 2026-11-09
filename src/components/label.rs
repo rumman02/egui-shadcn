@@ -1,7 +1,9 @@
 //! shadcn `label.tsx` — a form label, optionally wired to a control.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/label.tsx`:
-//! `text-sm font-medium select-none`, 50% opacity when disabled.
+//! `flex items-center gap-2 text-sm leading-none font-medium select-none`,
+//! 50% opacity when disabled. The flex row's leading icon slot is exposed
+//! via [`Label::icon`].
 //!
 //! Like the Radix `<label>`, clicking a label that is bound with
 //! [`Label::for_id`] moves keyboard focus to the control with that id.
@@ -10,10 +12,12 @@
 //! use egui_shadcn_ui::prelude::*;
 //!
 //! Label::new("Email").for_id(email_id).show(ui);
+//! Label::new("Profile").icon(Icon::User).show(ui);
 //! ```
 
+use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
-use egui::{Align2, Color32, FontId, Id, Response, Sense, Ui, Vec2, Widget};
+use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Response, Sense, Ui, Vec2, Widget};
 
 /// Label text color: `text-foreground`, 50% alpha when disabled
 /// (`group-data-[disabled=true]:opacity-50`).
@@ -29,6 +33,7 @@ pub(crate) fn text_color(p: &Palette, disabled: bool) -> Color32 {
 #[derive(Clone, Debug)]
 pub struct Label {
     text: String,
+    icon: Option<Icon>,
     disabled: bool,
     for_id: Option<Id>,
     id_salt: Option<String>,
@@ -39,10 +44,18 @@ impl Label {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            icon: None,
             disabled: false,
             for_id: None,
             id_salt: None,
         }
+    }
+
+    /// Shows a 16px icon before the text (the flex row's `[&>svg]` slot,
+    /// separated by `gap-2`).
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// Binds the label to a control id: clicking focuses that widget,
@@ -74,7 +87,18 @@ impl Label {
         let galley = ui
             .painter()
             .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE);
-        let desired = Vec2::new(galley.size().x, galley.size().y.max(text_size));
+
+        // `leading-none` → the text line box is the font size.
+        let line_h = text_size;
+        let icon_size = crate::theme::tokens::spacing::LG; // [&>svg]:size-4
+        let icon_gap = crate::theme::tokens::spacing::SM; // gap-2
+        let has_icon = self.icon.is_some();
+        let icon_w = if has_icon { icon_size } else { 0.0 };
+        let icon_gap_w = if has_icon { icon_gap } else { 0.0 };
+        let desired = Vec2::new(
+            icon_w + icon_gap_w + galley.size().x,
+            line_h.max(if has_icon { icon_size } else { 0.0 }),
+        );
 
         // Clickable when it can focus a control (`label[for]` semantics);
         // otherwise the text is not interactive (`select-none`).
@@ -104,12 +128,24 @@ impl Label {
         }
 
         if ui.is_rect_visible(rect) {
-            ui.painter().text(
-                rect.center(),
+            let painter = ui.painter();
+            let color = text_color(&p, self.disabled);
+            let center_y = rect.center().y;
+            let mut cursor = rect.left();
+            if let Some(icon) = self.icon {
+                let r = Rect::from_center_size(
+                    Pos2::new(cursor + icon_size * 0.5, center_y),
+                    Vec2::splat(icon_size),
+                );
+                icon.paint(painter, r, color, 2.0 * icon_size / 24.0);
+                cursor += icon_size + icon_gap;
+            }
+            painter.text(
+                Pos2::new(cursor + galley.size().x * 0.5, center_y),
                 Align2::CENTER_CENTER,
                 self.text,
                 font,
-                text_color(&p, self.disabled),
+                color,
             );
         }
 
@@ -138,10 +174,12 @@ mod tests {
     #[test]
     fn builder_fields() {
         let label = Label::new("Email")
+            .icon(Icon::User)
             .for_id(Id::unique("email"))
             .disabled(true)
             .id_salt("email_label");
         assert_eq!(label.text, "Email");
+        assert!(label.icon.is_some());
         assert!(label.disabled);
         assert_eq!(label.for_id, Some(Id::unique("email")));
         assert_eq!(label.id_salt.as_deref(), Some("email_label"));
