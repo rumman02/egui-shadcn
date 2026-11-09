@@ -32,8 +32,14 @@ pub(crate) fn track_color(p: &crate::theme::Palette, style: Style) -> Color32 {
 }
 
 /// The indicator fill fraction for a raw value, clamped to 0.0..=1.0.
+/// The source's `value || 0` coerces NaN to 0, so NaN maps to an empty
+/// bar (f32::clamp would otherwise pass NaN through).
 pub(crate) fn fill_fraction(value: f32) -> f32 {
-    (value / 100.0).clamp(0.0, 1.0)
+    if value.is_nan() {
+        0.0
+    } else {
+        (value / 100.0).clamp(0.0, 1.0)
+    }
 }
 
 /// A shadcn progress bar. See the [module docs](self) for an example.
@@ -136,6 +142,9 @@ mod tests {
         assert_eq!(fill_fraction(100.0), 1.0);
         assert_eq!(fill_fraction(120.0), 1.0);
         assert_eq!(fill_fraction(-10.0), 0.0);
+        // The source's `value || 0` coerces NaN to an empty bar; f32::clamp
+        // would pass NaN through.
+        assert_eq!(fill_fraction(f32::NAN), 0.0);
     }
 
     #[test]
