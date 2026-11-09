@@ -6,9 +6,18 @@
 //! padding.
 //!
 //! The scrollbar look is applied through a *scoped* egui style
-//! (`ScrollStyle::solid` + themed handle color), so the global style is
-//! never permanently mutated — nested `egui::ScrollArea`s created inside
+//! (`ScrollStyle::solid` + themed handle/track colors), so the global style
+//! is never permanently mutated — nested `egui::ScrollArea`s created inside
 //! the closure inherit it.
+//!
+//! In egui 0.37 a solid scrollbar paints its background track with
+//! `visuals.extreme_bg_color` and the handle with
+//! `widgets.{inactive,hovered,active}.bg_fill` (using those widget visuals'
+//! `corner_radius` for the rounding). The source has *no* track
+//! (`border-l-transparent`) and a `rounded-full bg-border` thumb, so the
+//! scope sets a transparent track color, a `bg-border` handle in all three
+//! widget states, and a 5px (= `bar_width / 2`) corner radius for a
+//! fully-rounded thumb.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -87,8 +96,8 @@ impl ScrollArea {
     /// Builds the scoped scrollbar style.
     ///
     /// Track = `w-2.5` (10px) with `p-px` margins, always-visible solid
-    /// thumb. The thumb color is applied separately through the scoped
-    /// `visuals.extreme_bg_color` (what egui's solid handle paints with).
+    /// thumb. The handle color/radius is applied separately through the
+    /// scoped widget visuals (see [`Self::show`]).
     pub(crate) fn themed_scroll_style() -> egui::style::ScrollStyle {
         let mut s = egui::style::ScrollStyle::solid();
         s.bar_width = SCROLLBAR_WIDTH; // w-2.5
@@ -102,6 +111,19 @@ impl ScrollArea {
         s
     }
 
+    /// Applies the shadcn scrollbar colors to the scoped visuals.
+    ///
+    /// The track becomes invisible (the source only paints the thumb) and
+    /// the handle uses the `bg-border` token with a `rounded-full` radius
+    /// in every widget state.
+    pub(crate) fn themed_scroll_visuals(visuals: &mut egui::Visuals, border: egui::Color32) {
+        visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
+        visuals.widgets.inactive.bg_fill = border;
+        visuals.widgets.hovered.bg_fill = border;
+        visuals.widgets.active.bg_fill = border;
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(5); // bar_width / 2
+    }
+
     /// Renders the scroll area around its contents.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
@@ -110,9 +132,10 @@ impl ScrollArea {
         let outer = ui.scope(|ui| {
             // Scoped style: only scroll areas created inside inherit it.
             ui.style_mut().spacing.scroll = Self::themed_scroll_style();
-            // The solid handle color comes from `extreme_bg_color`; scope it
-            // to the scrollbar token (`bg-border`).
-            ui.style_mut().visuals.extreme_bg_color = p.border;
+            // egui 0.37 paints the solid track with `extreme_bg_color` and
+            // the handle with the widget `bg_fill`s; retarget them so the
+            // track disappears and the thumb is `bg-border`, rounded-full.
+            Self::themed_scroll_visuals(&mut ui.style_mut().visuals, p.border);
 
             let mut area =
                 egui::ScrollArea::new([self.vertical, self.horizontal]).auto_shrink([false, false]);
@@ -151,6 +174,41 @@ mod tests {
         assert_eq!(s.bar_inner_margin, 1.0); // p-px
         assert!(!s.floating); // solid, always allocates space
         assert_eq!(s.dormant_handle_opacity, 1.0);
+    }
+
+    #[test]
+    fn scrollbar_visuals_match_source() {
+        // The source has no visible track (`border-l-transparent`) and a
+        // `rounded-full bg-border` thumb; egui paints the track with
+        // `extreme_bg_color` and the handle with the widget `bg_fill`s.
+        let ctx = egui::Context::default();
+        let preset = Preset::default();
+        preset.build(Mode::Light).install(&ctx);
+        let border = preset.build(Mode::Light).palette.border;
+        let mut captured: Option<egui::Visuals> = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_visuals_test"),
+                egui::UiBuilder::new(),
+            );
+            ScrollArea::new().show(ui, |ui| {
+                captured = Some(ui.style().visuals.clone());
+            });
+        });
+        out.textures_delta.clear();
+        let v = captured.expect("scroll area content ran");
+        assert_eq!(v.extreme_bg_color, egui::Color32::TRANSPARENT);
+        assert_eq!(v.widgets.inactive.bg_fill, border);
+        assert_eq!(v.widgets.hovered.bg_fill, border);
+        assert_eq!(v.widgets.active.bg_fill, border);
+        assert_eq!(
+            v.widgets.inactive.corner_radius,
+            egui::CornerRadius::same(5)
+        );
+        // The default (unscoped) style must not be mutated.
+        let global = ctx.style_of(egui::Theme::Light).visuals.clone();
+        assert_ne!(global.extreme_bg_color, egui::Color32::TRANSPARENT);
     }
 
     #[test]
