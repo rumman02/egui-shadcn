@@ -955,9 +955,32 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-        // `icon-sm` is a 32pt square.
-        assert!((icon_btn_rect.width() - 32.0).abs() < 1.0);
-        assert!((icon_btn_rect.height() - 32.0).abs() < 1.0);
+        // Nova `icon-sm` is a 28pt square (`size-7`).
+        assert!((icon_btn_rect.width() - 28.0).abs() < 1.0);
+        assert!((icon_btn_rect.height() - 28.0).abs() < 1.0);
+        // The base recipe keeps the 32pt square (`size-8`).
+        let mut base_btn_rect = Rect::NOTHING;
+        {
+            let ctx2 = egui::Context::default();
+            Preset::default()
+                .with_style(crate::theme::Style::Vega)
+                .install(&ctx2);
+            let mut out = ctx2.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("ig_btn_test_base"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                base_btn_rect = InputGroupButton::icon(Icon::Copy)
+                    .size(InputGroupButtonSize::IconSm)
+                    .show(ui)
+                    .rect;
+            });
+            out.textures_delta.clear();
+        }
+        assert!((base_btn_rect.width() - 32.0).abs() < 1.0);
+        assert!((base_btn_rect.height() - 32.0).abs() < 1.0);
 
         let txt = InputGroupText::new("https://")
             .icon(Icon::Copy)
