@@ -15,9 +15,9 @@
 //! `widgets.{inactive,hovered,active}.bg_fill` (using those widget visuals'
 //! `corner_radius` for the rounding). The source has *no* track
 //! (`border-l-transparent`) and a `rounded-full bg-border` thumb, so the
-//! scope sets a transparent track color, a `bg-border` handle in all three
-//! widget states, and a 5px (= `bar_width / 2`) corner radius for a
-//! fully-rounded thumb.
+//! scope sets a transparent track color and a `bg-border` handle in all
+//! three widget states. The thumb ends up `rounded-full` for free: epaint
+//! clamps the bar radius to half the 10px bar width.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -114,14 +114,14 @@ impl ScrollArea {
     /// Applies the shadcn scrollbar colors to the scoped visuals.
     ///
     /// The track becomes invisible (the source only paints the thumb) and
-    /// the handle uses the `bg-border` token with a `rounded-full` radius
-    /// in every widget state.
+    /// the handle uses the `bg-border` token in every widget state. No
+    /// corner-radius override is needed: epaint clamps the bar radius to
+    /// half the 10px bar width, which is the source's `rounded-full` thumb.
     pub(crate) fn themed_scroll_visuals(visuals: &mut egui::Visuals, border: egui::Color32) {
         visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
         visuals.widgets.inactive.bg_fill = border;
         visuals.widgets.hovered.bg_fill = border;
         visuals.widgets.active.bg_fill = border;
-        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(5); // bar_width / 2
     }
 
     /// Renders the scroll area around its contents.
@@ -202,10 +202,6 @@ mod tests {
         assert_eq!(v.widgets.inactive.bg_fill, border);
         assert_eq!(v.widgets.hovered.bg_fill, border);
         assert_eq!(v.widgets.active.bg_fill, border);
-        assert_eq!(
-            v.widgets.inactive.corner_radius,
-            egui::CornerRadius::same(5)
-        );
         // The default (unscoped) style must not be mutated.
         let global = ctx.style_of(egui::Theme::Light).visuals.clone();
         assert_ne!(global.extreme_bg_color, egui::Color32::TRANSPARENT);
