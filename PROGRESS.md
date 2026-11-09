@@ -72,9 +72,9 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 55 | select | ✅ done | F | f22b537 | controlled (&mut Option<String>/&mut String) + uncontrolled via id_salt; h-9/h-8 trigger, placeholder/invalid/disabled; ScrollArea popup; labels/separators/disabled items; check indicator; keyboard nav (arrows/home/end/enter/space/escape, opens on selection highlight); no typeahead |
 | 56 | combobox | ✅ done | F | ace65c7 | popover trigger (w-200, chevron, placeholder/invalid/disabled) + embedded Command list (search filter, check marks, empty state, keyboard); single &multi (removable chips, +N overflow, X-to-remove); &mut Option<String>/&mut String/&mut Vec<String>/uncontrolled |
 | 57 | command | ✅ done | F | d1f4bdd | cmdk palette: builder groups/items/separators/shortcuts/icons, case-insensitive filter + should_filter pin, ScrollArea list, empty state, arrows/home/end/enter + hover/click select; CommandDialog via crate Dialog (autofocus, force keyboard, close on select/Escape/backdrop) |
-| 58 | calendar | ⬜ todo | G | | month grid, nav, presets, multiple/range. Gaps: caption dropdown layout + week numbers not ported (label caption only); today resolution is UTC |
-| 59 | date-picker | ⬜ todo | G | | popover + calendar + input |
-| 60 | carousel | ⬜ todo | G | | pannable slides + dots + prev/next |
+| 58 | calendar | ✅ done | G | 8f86d29 | nova 28px cell grid, caption nav chevrons, today bg-accent, outside days muted, single/multiple/range (accent middle bar, rounded ends), disabled-matcher, Sun/Mon week start, pure-Rust date math (leap/rollover tested); keyboard arrows/Enter/Space/PageUp(±Shift year); gaps: dropdown captionLayout + week numbers |
+| 59 | date-picker | ✅ done | G | e74f85d | docs composition: w-[240px] outline trigger (CalendarIcon, PPP format or muted placeholder) + p-0 align-start popover w/ single calendar; closes on pick/Escape/outside; initialFocus on selected day; fresh calendar per open; controlled date, id_salt open state |
+| 60 | carousel | ✅ done | G | 4cce737 | pannable clipped strip (basis-full + pl-4 gutters, horiz/vert), snap-on-release anim, outline rounded-full size-8 arrows perched outside (disabled at bounds), dots (active primary, muted/50, click-to-jump), Arrow keys move slide; viewport = tallest slide; gaps: multi-slide-per-view basis fractions |
 | 61 | chart | ⬜ todo | G | | egui-painted area/bar/line charts, tooltip |
 | 62 | data-table | ⬜ todo | G | | table + toolbar + selection + pagination + sorting/filtering |
 | 63 | form | ⬜ todo | G | | field + validation wiring |
