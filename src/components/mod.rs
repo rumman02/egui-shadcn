@@ -99,7 +99,9 @@ pub use calendar::{
     apply_multiple, apply_range, apply_single, Calendar, CalendarDate, CalendarResponse, WeekStart,
     CALENDAR_CELL_SIZE, CALENDAR_GRID_WIDTH, CALENDAR_PADDING, MONTH_NAMES, WEEKDAY_SHORT,
 };
-pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
+pub use card::{
+    Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardSize, CardTitle,
+};
 pub use carousel::{
     Carousel, CarouselItem, CarouselOrientation, CarouselResponse, CAROUSEL_ARROW_GUTTER,
     CAROUSEL_ARROW_SIZE, CAROUSEL_DOT_SIZE, CAROUSEL_ITEM_GAP,

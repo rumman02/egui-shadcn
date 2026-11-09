@@ -24,13 +24,28 @@
 //! });
 //! ```
 
+use crate::components::avatar::{cover_uv, resolve_texture};
 use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
-use egui::{Color32, CornerRadius, FontId, InnerResponse, Margin, Pos2, Rect, Ui};
+use egui::{Color32, CornerRadius, FontId, ImageSource, InnerResponse, Margin, Pos2, Rect, Ui};
 
-/// The `--card-spacing` token: `24px` in the base recipe, `16px` in nova.
-pub(crate) fn card_spacing(style: Style) -> f32 {
-    match style {
-        Style::Nova => 16.0,
+/// Card density presets, mirroring the source's nova `data-[size=sm]`
+/// variant (`--card-spacing: 12px` + `text-sm` title). The base recipe has
+/// no size variants, so [`CardSize::Sm`] only changes nova cards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CardSize {
+    /// The default card (`--card-spacing: 16px` in nova).
+    #[default]
+    Default,
+    /// The compact card (`--card-spacing: 12px` in nova).
+    Sm,
+}
+
+/// The nova `--card-spacing` token: `24px` in the base recipe, `16px` in
+/// nova and `12px` for nova's `data-[size=sm]` card.
+pub(crate) fn card_spacing(style: Style, size: CardSize) -> f32 {
+    match (style, size) {
+        (Style::Nova, CardSize::Default) => 16.0,
+        (Style::Nova, CardSize::Sm) => 12.0,
         _ => 24.0,
     }
 }
@@ -38,27 +53,71 @@ pub(crate) fn card_spacing(style: Style) -> f32 {
 /// Resolved card surface decoration (pure, unit-testable).
 ///
 /// Nova replaces the `border` with a translucent foreground ring, drops the
-/// shadow and enlarges the title; other styles use `border` + `shadow-sm`.
+/// shadow and gives the title `text-base` (`text-sm` on `size=sm`); other
+/// styles use `border` + `shadow-sm` and inherit the 16px body size.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CardColors {
     pub fill: Color32,
     pub stroke: egui::Stroke,
     pub title_size: f32,
+    /// Title line height multiplier: `leading-none` (1.0) in the base
+    /// recipe, `leading-snug` (1.375) in nova.
+    pub title_line_height: f32,
 }
 
-pub(crate) fn resolve_card_colors(p: &Palette, style: Style) -> CardColors {
+pub(crate) fn resolve_card_colors(p: &Palette, style: Style, size: CardSize) -> CardColors {
     match style {
         Style::Nova => CardColors {
             fill: p.card,
             stroke: egui::Stroke::new(1.0, color_alpha(p.foreground, 0.1)),
-            title_size: crate::theme::tokens::type_scale::BASE,
+            title_size: match size {
+                CardSize::Sm => crate::theme::tokens::type_scale::SM,
+                CardSize::Default => crate::theme::tokens::type_scale::BASE,
+            },
+            title_line_height: 1.375, // leading-snug
         },
         _ => CardColors {
             fill: p.card,
             stroke: egui::Stroke::new(1.0, p.border),
-            title_size: crate::theme::tokens::type_scale::SM,
+            title_size: crate::theme::tokens::type_scale::BASE,
+            title_line_height: 1.0, // leading-none
         },
     }
+}
+
+/// Enclosing-card context shared with [`CardTitle`] through the ui temp
+/// stack (the nova `group-data-[size=sm]/card` selectors).
+#[derive(Clone, Copy, Debug, Default)]
+struct CardCtx {
+    size: CardSize,
+}
+
+fn card_stack_id() -> egui::Id {
+    egui::Id::unique("shadcn_card_ctx_stack")
+}
+
+fn push_card(ui: &Ui, ctx: CardCtx) {
+    let mut stack: Vec<CardCtx> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(card_stack_id()))
+        .unwrap_or_default();
+    stack.push(ctx);
+    ui.ctx().data_mut(|d| d.insert_temp(card_stack_id(), stack));
+}
+
+fn pop_card(ui: &Ui) {
+    let mut stack: Vec<CardCtx> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(card_stack_id()))
+        .unwrap_or_default();
+    stack.pop();
+    ui.ctx().data_mut(|d| d.insert_temp(card_stack_id(), stack));
+}
+
+fn current_card(ui: &Ui) -> Option<CardCtx> {
+    ui.ctx()
+        .data_mut(|d| d.get_temp::<Vec<CardCtx>>(card_stack_id()))
+        .and_then(|s| s.last().copied())
 }
 
 /// Header geometry shared with [`CardAction`] through the ui temp stack.
@@ -101,14 +160,20 @@ fn current_header(ui: &Ui) -> Option<HeaderCtx> {
 
 /// A shadcn card container. See the [module docs](self) for an example.
 #[derive(Clone, Debug, Default)]
-pub struct Card {
+pub struct Card<'a> {
     id_salt: Option<String>,
+    size: CardSize,
+    image_top: Option<ImageSource<'a>>,
 }
 
-impl Card {
+impl<'a> Card<'a> {
     /// Creates a card.
     pub fn new() -> Self {
-        Self { id_salt: None }
+        Self {
+            id_salt: None,
+            size: CardSize::default(),
+            image_top: None,
+        }
     }
 
     /// Sets a stable id salt (Card keeps no state, but nested containers
@@ -118,13 +183,30 @@ impl Card {
         self
     }
 
+    /// Sets the card size preset. Only the nova style implements
+    /// `data-[size=sm]` (`--card-spacing: 12px`, `text-sm` title); other
+    /// styles are unaffected.
+    pub fn size(mut self, size: CardSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Paints a full-bleed image above the card content, with rounded top
+    /// corners and no top padding (the nova `has-[>img:first-child]:pt-0` /
+    /// `rounded-t-xl` media slot). Texture sources paint immediately;
+    /// URI/bytes sources reserve no space until they resolve.
+    pub fn image_top(mut self, image: impl Into<ImageSource<'a>>) -> Self {
+        self.image_top = Some(image.into());
+        self
+    }
+
     /// Renders the card around its contents.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let c = resolve_card_colors(&p, theme.style);
+        let c = resolve_card_colors(&p, theme.style, self.size);
         let nova = theme.style == Style::Nova;
-        let spacing = card_spacing(theme.style);
+        let spacing = card_spacing(theme.style, self.size);
         let radius = theme.radius.xl_u8();
         let dark = theme.mode.is_dark();
         let shadow = if nova {
@@ -132,24 +214,68 @@ impl Card {
         } else {
             crate::utils::shadow::shadow_sm(dark)
         };
+        // Nova `has-[>img:first-child]:pt-0` — a top image bleeds to the
+        // card edge (base cards use the same full-bleed media extension).
+        let pad_v = if self.image_top.is_some() {
+            0
+        } else {
+            spacing as i8
+        };
 
         let frame = egui::Frame::new()
             .fill(c.fill)
             .stroke(c.stroke)
             .corner_radius(CornerRadius::same(radius))
             .shadow(shadow)
-            .inner_margin(Margin::symmetric(0, spacing as i8));
+            .inner_margin(Margin::symmetric(0, pad_v));
 
+        push_card(ui, CardCtx { size: self.size });
+        let image_top = self.image_top.clone();
         let inner = frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width()); // `w-full`
                                                     // Card text defaults to `text-card-foreground`; widgets that
                                                     // paint their own colors (buttons etc.) are unaffected.
             ui.style_mut().visuals.override_text_color = Some(p.card_foreground);
             ui.spacing_mut().item_spacing.y = spacing; // gap-6 / nova gap-4
+            if let Some(src) = image_top {
+                paint_image_top(ui, &src, radius);
+            }
             content(ui)
         });
+        pop_card(ui);
         InnerResponse::new(inner.inner, inner.response)
     }
+}
+
+/// Paints the [`Card::image_top`] media slot: a full-width image with
+/// rounded top corners, height derived from the texture's aspect ratio.
+fn paint_image_top(ui: &mut Ui, source: &ImageSource<'_>, radius: u8) {
+    let width = ui.available_width().max(1.0);
+    let Some(tex) = resolve_texture(ui, source, width) else {
+        return;
+    };
+    let height = if tex.size.x > 0.0 {
+        width * tex.size.y / tex.size.x
+    } else {
+        0.0
+    };
+    let (rect, _) = ui.allocate_exact_size(
+        egui::Vec2::new(width, height.max(1.0)),
+        egui::Sense::hover(),
+    );
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let uv = cover_uv(tex.size, rect.size());
+    let corners = CornerRadius {
+        nw: radius,
+        ne: radius,
+        sw: 0,
+        se: 0,
+    };
+    ui.painter().add(
+        egui::epaint::RectShape::filled(rect, corners, Color32::WHITE).with_texture(tex.id, uv),
+    );
 }
 
 /// `CardHeader` — the `gap-2 px-6` (nova `gap-1 px-4`) title block.
@@ -179,35 +305,42 @@ impl CardHeader {
         let nova = theme.style == Style::Nova;
         // `gap-2` base / `gap-1` nova.
         let gap = if nova { 4.0 } else { 8.0 };
-        let pad = card_spacing(theme.style);
-
-        // Record the header content area for CardAction anchoring.
-        let cursor = ui.cursor();
-        push_header(
-            ui,
-            HeaderCtx {
-                left: cursor.left(),
-                top: cursor.top(),
-                right: cursor.left() + ui.available_width(),
-            },
+        let pad = card_spacing(
+            theme.style,
+            current_card(ui).map(|c| c.size).unwrap_or_default(),
         );
 
         let inner = egui::Frame::new()
             .inner_margin(Margin::symmetric(pad as i8, 0))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = gap;
-                    content(ui)
-                })
-                .inner
+                // Record the header content area for CardAction anchoring,
+                // inset by the slot's `px-6`/`px-4` padding (recorded inside
+                // the padded frame so `right` excludes the padding).
+                let cursor = ui.cursor();
+                push_header(
+                    ui,
+                    HeaderCtx {
+                        left: cursor.left(),
+                        top: cursor.top(),
+                        right: cursor.left() + ui.available_width(),
+                    },
+                );
+                let ret = ui
+                    .vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = gap;
+                        content(ui)
+                    })
+                    .inner;
+                pop_header(ui);
+                ret
             });
 
-        pop_header(ui);
         InnerResponse::new(inner.inner, inner.response)
     }
 }
 
-/// `CardTitle` — `leading-none font-semibold` (nova `text-base font-medium`).
+/// `CardTitle` — `leading-none font-semibold` (nova `text-base
+/// leading-snug font-medium`); `text-sm` on nova's `size=sm` card.
 #[derive(Clone, Debug)]
 pub struct CardTitle {
     text: String,
@@ -223,11 +356,21 @@ impl CardTitle {
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let c = resolve_card_colors(&p, theme.style);
+        let size = current_card(ui).map(|c| c.size).unwrap_or_default();
+        let c = resolve_card_colors(&p, theme.style, size);
         let font = FontId::proportional(c.title_size);
-        let galley = ui
-            .painter()
-            .layout_no_wrap(self.text, font, p.card_foreground);
+        // The line height is set explicitly (`leading-none` /
+        // `leading-snug`); layout is left-to-right, no wrap.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: p.card_foreground,
+            line_height: Some(c.title_size * c.title_line_height),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = f32::INFINITY;
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
         if ui.is_rect_visible(rect) {
             ui.painter().galley(rect.min, galley, p.card_foreground);
@@ -336,7 +479,10 @@ impl CardContent {
     /// Renders the content slot.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
-        let pad = card_spacing(theme.style) as i8;
+        let pad = card_spacing(
+            theme.style,
+            current_card(ui).map(|c| c.size).unwrap_or_default(),
+        ) as i8;
         egui::Frame::new()
             .inner_margin(Margin::symmetric(pad, 0))
             .show(ui, content)
@@ -367,17 +513,27 @@ impl CardFooter {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let nova = theme.style == Style::Nova;
-        let spacing = card_spacing(theme.style);
+        let spacing = card_spacing(
+            theme.style,
+            current_card(ui).map(|c| c.size).unwrap_or_default(),
+        );
 
         let painter = ui.painter().clone();
         let band_idx = painter.add(egui::Shape::Noop);
 
         // Base recipe: `flex items-center px-6` (no fill). Nova: a padded
-        // band whose fill bleeds to the card edges.
+        // band whose fill bleeds to the card edges. The source is a flex
+        // row, so children are laid out horizontally.
         let pad_v = if nova { spacing as i8 } else { 0 };
         let inner = egui::Frame::new()
             .inner_margin(Margin::symmetric(spacing as i8, pad_v))
-            .show(ui, content);
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    content(ui)
+                })
+                .inner
+            });
 
         if nova {
             // Extend the band over the card's bottom padding and the 1px
@@ -445,22 +601,36 @@ mod tests {
 
     #[test]
     fn spacing_matches_style_recipes() {
-        // nova `--card-spacing: --spacing(4)`, base `py-6 gap-6`.
-        assert_eq!(card_spacing(Style::Nova), 16.0);
-        assert_eq!(card_spacing(Style::Vega), 24.0);
+        // nova `--card-spacing: --spacing(4)` (sm: `--spacing(3)`),
+        // base `py-6 gap-6`.
+        assert_eq!(card_spacing(Style::Nova, CardSize::Default), 16.0);
+        assert_eq!(card_spacing(Style::Nova, CardSize::Sm), 12.0);
+        assert_eq!(card_spacing(Style::Vega, CardSize::Default), 24.0);
+        assert_eq!(card_spacing(Style::Vega, CardSize::Sm), 24.0);
     }
 
     #[test]
     fn nova_uses_ring_and_larger_title() {
         let p = palette(Mode::Light);
-        let nova = resolve_card_colors(&p, Style::Nova);
+        let nova = resolve_card_colors(&p, Style::Nova, CardSize::Default);
         assert_eq!(nova.stroke.color, color_alpha(p.foreground, 0.1));
         assert_eq!(nova.fill, p.card);
         assert_eq!(nova.title_size, 16.0);
+        assert_eq!(nova.title_line_height, 1.375); // leading-snug
 
-        let base = resolve_card_colors(&p, Style::Vega);
+        // Base CardTitle has no size class and inherits the 16px body size
+        // with `leading-none`.
+        let base = resolve_card_colors(&p, Style::Vega, CardSize::Default);
         assert_eq!(base.stroke.color, p.border);
-        assert_eq!(base.title_size, 14.0);
+        assert_eq!(base.title_size, 16.0);
+        assert_eq!(base.title_line_height, 1.0);
+
+        // nova `group-data-[size=sm]/card:text-sm`.
+        let nova_sm = resolve_card_colors(&p, Style::Nova, CardSize::Sm);
+        assert_eq!(nova_sm.title_size, 14.0);
+        // The base recipe has no size variant.
+        let base_sm = resolve_card_colors(&p, Style::Vega, CardSize::Sm);
+        assert_eq!(base_sm.title_size, 16.0);
     }
 
     #[test]
@@ -506,6 +676,9 @@ mod tests {
             CardHeader::new().show(ui, |ui| {
                 let h = current_header(ui).expect("inside header");
                 assert_eq!(h.top, ui.cursor().top());
+                // The action region is inset by the slot's `px-6`/`px-4`
+                // padding, not flush with the card edge.
+                assert!(h.right < 400.0 - 8.0, "right = {}", h.right);
                 CardAction::new().show(ui, |ui| {
                     ui.label("action");
                 });
@@ -513,5 +686,40 @@ mod tests {
             assert!(current_header(ui).is_none());
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn footer_lays_out_children_horizontally() {
+        // `flex items-center`: sibling footer children sit side by side.
+        use std::cell::RefCell;
+        let ctx = egui::Context::default();
+        let rects: RefCell<Vec<egui::Rect>> = RefCell::new(Vec::new());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("card_footer_layout_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            Card::new().show(ui, |ui| {
+                CardFooter::new().show(ui, |ui| {
+                    let (a, _) =
+                        ui.allocate_exact_size(Vec2::new(60.0, 20.0), egui::Sense::hover());
+                    let (b, _) =
+                        ui.allocate_exact_size(Vec2::new(60.0, 20.0), egui::Sense::hover());
+                    rects.borrow_mut().push(a);
+                    rects.borrow_mut().push(b);
+                });
+            });
+        });
+        out.textures_delta.clear();
+        let rects = rects.into_inner();
+        assert_eq!(rects.len(), 2);
+        assert!(
+            (rects[0].top() - rects[1].top()).abs() < 2.0,
+            "children must share a row: {:?}",
+            rects
+        );
+        assert!(rects[0].right() <= rects[1].left() + 0.5);
     }
 }
