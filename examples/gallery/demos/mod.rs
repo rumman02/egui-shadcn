@@ -497,7 +497,7 @@ pub fn marker_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
-    ui.label("Border (bottom rule)");
+    ui.label("Border (bottom rule grows with the content)");
     ui.add_space(4.0);
     Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
         MarkerIcon::new(Icon::CircleAlert).show(ui);
@@ -506,6 +506,13 @@ pub fn marker_demo(ui: &mut egui::Ui) {
     Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
         MarkerContent::new("Last synced 2 minutes ago").show(ui);
     });
+    Marker::new()
+        .variant(MarkerVariant::Border)
+        .id_salt("marker_demo_multiline")
+        .show(ui, |ui| {
+            MarkerIcon::new(Icon::CircleAlert).show(ui);
+            MarkerContent::new("Two-line content:\nthe row and its rule grow with it").show(ui);
+        });
 }
 
 pub fn button_group_demo(ui: &mut egui::Ui) {
@@ -2139,6 +2146,35 @@ pub fn item_demo(ui: &mut egui::Ui) {
             });
         });
     });
+
+    ui.add_space(12.0);
+    ui.label("Interactive item (hover fill + focus ring, click to activate)");
+    ui.add_space(4.0);
+    let item_active_store = egui::Id::unique("item_demo_active");
+    let mut active: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(item_active_store).unwrap_or(false));
+    let item = Item::new()
+        .interactive(true)
+        .id_salt("item_demo_clickable")
+        .show(ui, |ui| {
+            ItemMedia::icon(Icon::ChevronsRight).show(ui);
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Launch checklist").show_with(ui, |ui| {
+                    Badge::new("Ready").show(ui);
+                });
+                ItemDescription::new("The item hovers like the source's anchor rows.").show(ui);
+            });
+            ItemActions::new().show(ui, |ui| {
+                Button::new("Launch").size(ButtonSize::Sm).show(ui);
+            });
+        });
+    if item.response.clicked() {
+        active = !active;
+    }
+    ui.small(format!("activated: {active}"));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(item_active_store, active));
 
     ui.add_space(12.0);
     ui.label("Separator between items (nova my-2)");

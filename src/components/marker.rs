@@ -73,7 +73,9 @@ impl Marker {
         self
     }
 
-    /// The row height: `min-h-4` (16px), plus padding for `border`.
+    /// The minimum row height: `min-h-4` (16px), plus padding for `border`.
+    /// The `border` variant grows past this with its content: the row is
+    /// laid out at `content height + pb-2 + border-b` measured last frame.
     pub fn row_height(&self) -> f32 {
         let min_h = crate::theme::tokens::spacing::LG;
         match self.variant {
@@ -87,7 +89,23 @@ impl Marker {
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let width = ui.available_width();
-        let height = self.row_height();
+
+        // The `border` variant grows with its content (`border-b pb-2`;
+        // `min-h-4` is only a floor): store last frame's measured content
+        // height + 9 (pb-2 + 1px border) under a stable id and lay the row
+        // out at that height, defaulting to the 25px minimum.
+        let row_id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt).with("marker_row_height"),
+            None => ui.scope_id().with("marker_row_height"),
+        };
+        let stored_row: f32 = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(row_id))
+            .unwrap_or_else(|| self.row_height());
+        let height = match self.variant {
+            MarkerVariant::Border => stored_row,
+            _ => self.row_height(),
+        };
 
         let layout = match self.variant {
             MarkerVariant::Separator => egui::Layout::left_to_right(egui::Align::Center)
@@ -96,22 +114,32 @@ impl Marker {
         };
 
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        let mut builder = UiBuilder::new().max_rect(rect).layout(layout);
+        // The content box excludes the pb-2 + border so the children center
+        // in the same space the CSS flex row gives them.
+        let content_rect = match self.variant {
+            MarkerVariant::Border => {
+                egui::Rect::from_min_max(rect.min, egui::Pos2::new(rect.max.x, rect.max.y - 9.0))
+            }
+            _ => rect,
+        };
+        let mut builder = UiBuilder::new().max_rect(content_rect).layout(layout);
         if let Some(salt) = self.id_salt.clone() {
             builder = builder.id_salt(salt);
         }
         let mut child = ui.new_child(builder);
         let inner = content(&mut child);
+        let m = child.min_rect();
 
         let painter = ui.painter();
         let rule = theme.palette.border;
         match self.variant {
             MarkerVariant::Separator => {
-                // `before:bg-border` / `after:bg-border`, `mr-1`/`ml-1` (4px).
-                let content_min = child.min_rect().left();
-                let content_max = child.min_rect().right();
+                // `before:bg-border` / `after:bg-border` with flex `gap-2`
+                // (8px) plus `mr-1`/`ml-1` (4px) → a 12px rule gap.
+                let content_min = m.left();
+                let content_max = m.right();
                 let cy = rect.center().y;
-                let gap = crate::theme::tokens::spacing::XS;
+                let gap = crate::theme::tokens::spacing::SM + crate::theme::tokens::spacing::XS;
                 let left_end = (content_min - gap).max(rect.left());
                 let right_start = (content_max + gap).min(rect.right());
                 if left_end > rect.left() + 2.0 {
@@ -134,8 +162,12 @@ impl Marker {
                 }
             }
             MarkerVariant::Border => {
-                // `border-b pb-2`
-                let y = rect.top() + height - 0.5;
+                // `border-b pb-2`: the rule sits 8px under the measured
+                // content (1px line centered in the border box). Persist the
+                // measured row height for the next frame.
+                let row = (m.height() + 9.0).max(self.row_height());
+                ui.ctx().data_mut(|d| d.insert_temp(row_id, row));
+                let y = m.bottom() + 8.5;
                 painter.line_segment(
                     [
                         egui::Pos2::new(rect.left(), y),
@@ -254,19 +286,19 @@ mod tests {
 
     #[test]
     fn separator_lines_leave_a_gap_around_content() {
-        let ctx = egui::Context::default();
-        // Verify the gap math: content 60px wide in a 200px row leaves
-        // (200 - 60)/2 - 4px rules on each side.
+        // flex `gap-2` (8px) + `mr-1`/`ml-1` (4px) → a 12px rule gap.
+        let gap = crate::theme::tokens::spacing::SM + crate::theme::tokens::spacing::XS;
+        assert!((gap - 12.0).abs() < 1e-4);
+        // Content 60px wide in a 200px row leaves (200 - 60)/2 - 12px rules
+        // on each side.
         let row_w = 200.0;
         let content_w = 60.0;
-        let gap = crate::theme::tokens::spacing::XS;
         let left_rule_end = (row_w - content_w) / 2.0 - gap;
         let right_rule_start = (row_w + content_w) / 2.0 + gap;
         assert!(left_rule_end > 0.0);
         assert!(right_rule_start < row_w);
-        assert!((left_rule_end - 66.0).abs() < 1e-4);
-        assert!((right_rule_start - 134.0).abs() < 1e-4);
-        let _ = (ctx, gap);
+        assert!((left_rule_end - 58.0).abs() < 1e-4);
+        assert!((right_rule_start - 142.0).abs() < 1e-4);
         let _ = (Pos2::ZERO, Rect::ZERO);
     }
 }
