@@ -376,7 +376,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "date-picker",
-            show: None,
+            show: Some(demos::date_picker_demo),
         },
         DemoPage {
             name: "carousel",

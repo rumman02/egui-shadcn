@@ -332,7 +332,7 @@ enum SelectionRef<'a> {
 }
 
 /// Predicate deciding which days are disabled.
-type DisabledFn<'a> = Box<dyn Fn(&CalendarDate) -> bool + 'a>;
+pub(crate) type DisabledFn<'a> = Box<dyn Fn(&CalendarDate) -> bool + 'a>;
 
 /// Day cell visual role (mirrors the source's `data-range-*`, `data-today`…).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,6 +343,16 @@ enum CellRole {
     RangeStart,
     RangeEnd,
     RangeMiddle,
+}
+
+/// The day keyboard focus should land on for `initialFocus`: the selected
+/// day (first for multiple, start for ranges) or today.
+fn selection_day(sel: &SelectionRef<'_>) -> Option<CalendarDate> {
+    match sel {
+        SelectionRef::Single(opt) => **opt,
+        SelectionRef::Multiple(v) => v.first().copied(),
+        SelectionRef::Range(opt) => (**opt).map(|(start, _)| start),
+    }
 }
 
 fn selection_role(sel: &SelectionRef<'_>, day: CalendarDate) -> Option<CellRole> {
@@ -380,6 +390,8 @@ struct CalendarState {
     focused_day: Option<CalendarDate>,
     /// Range mode: a start has been clicked, awaiting the end.
     range_pending: bool,
+    /// `initial_focus` was already applied once.
+    initial_focus_done: bool,
 }
 
 /// What happened to a [`Calendar`] this frame.
@@ -403,6 +415,7 @@ pub struct Calendar<'a> {
     show_outside_days: bool,
     week_start: WeekStart,
     disabled: Option<DisabledFn<'a>>,
+    initial_focus: bool,
 }
 
 impl<'a> Calendar<'a> {
@@ -415,6 +428,7 @@ impl<'a> Calendar<'a> {
             show_outside_days: true,
             week_start: WeekStart::default(),
             disabled: None,
+            initial_focus: false,
         }
     }
 
@@ -427,6 +441,7 @@ impl<'a> Calendar<'a> {
             show_outside_days: true,
             week_start: WeekStart::default(),
             disabled: None,
+            initial_focus: false,
         }
     }
 
@@ -439,6 +454,7 @@ impl<'a> Calendar<'a> {
             show_outside_days: true,
             week_start: WeekStart::default(),
             disabled: None,
+            initial_focus: false,
         }
     }
 
@@ -475,6 +491,13 @@ impl<'a> Calendar<'a> {
         self
     }
 
+    /// Requests keyboard focus for the selected day (or today) on the first
+    /// frame, like the source's `initialFocus`. Used by the date-picker.
+    pub fn initial_focus(mut self, on: bool) -> Self {
+        self.initial_focus = on;
+        self
+    }
+
     fn is_disabled(&self, day: &CalendarDate) -> bool {
         self.disabled.as_deref().is_some_and(|f| f(day))
     }
@@ -504,6 +527,13 @@ impl<'a> Calendar<'a> {
             .or(self.default_month)
             .unwrap_or_else(|| today.first_of_month());
         st.view_month = Some((view_first.year, view_first.month));
+
+        // `initialFocus`: focus the selected day (or today) once, on first show.
+        if self.initial_focus && !st.initial_focus_done {
+            st.initial_focus_done = true;
+            let target = selection_day(&self.selection).unwrap_or(today);
+            ui.memory_mut(|m| m.request_focus(state_id.with((DAY_ID_KEY, target.epoch_days()))));
+        }
 
         // Grid geometry: leading outside days + weeks of 7.
         let week_start = self.week_start.index();

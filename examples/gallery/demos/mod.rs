@@ -3461,3 +3461,58 @@ pub fn calendar_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, state));
 }
+
+pub fn date_picker_demo(ui: &mut egui::Ui) {
+    use egui_shadcn_ui::components::calendar::CalendarDate;
+
+    let store = egui::Id::unique("date_picker_demo_values");
+    #[derive(Clone, Default)]
+    struct DemoState {
+        empty: Option<CalendarDate>,
+        preset: Option<CalendarDate>,
+    }
+    let mut state: DemoState = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<DemoState>(store).unwrap_or_default());
+
+    ui.label("Default");
+    ui.add_space(4.0);
+    let changed = DatePicker::new(&mut state.empty).id_salt("demo").show(ui);
+    ui.add_space(4.0);
+    ui.label(match state.empty {
+        Some(d) => format!("Picked: {}", d.format_ppp()),
+        None => "No date picked yet".to_owned(),
+    });
+
+    ui.add_space(16.0);
+    ui.label("With a preselected date");
+    ui.add_space(4.0);
+    if state.preset.is_none() {
+        state.preset = Some(CalendarDate::new(2026, 11, 10).unwrap());
+    }
+    DatePicker::new(&mut state.preset)
+        .id_salt("demo_preset")
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Disabled");
+    ui.add_space(4.0);
+    let mut disabled_date = None;
+    DatePicker::new(&mut disabled_date)
+        .id_salt("demo_disabled")
+        .disabled(true)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Monday week start, no outside days, disabled weekends");
+    ui.add_space(4.0);
+    DatePicker::new(&mut state.empty)
+        .id_salt("demo_options")
+        .week_starts_on(egui_shadcn_ui::components::calendar::WeekStart::Monday)
+        .show_outside_days(false)
+        .disabled_when(|d| matches!(d.weekday(), 0 | 6))
+        .show(ui);
+    let _ = changed;
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, state));
+}
