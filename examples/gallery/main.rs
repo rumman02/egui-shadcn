@@ -416,7 +416,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "direction",
-            show: None,
+            show: Some(demos::direction_demo),
         },
     ]
 }

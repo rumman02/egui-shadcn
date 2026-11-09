@@ -23,6 +23,7 @@ pub mod context_menu;
 pub mod data_table;
 pub mod date_picker;
 pub mod dialog;
+pub mod direction;
 pub mod drawer;
 pub mod dropdown_menu;
 pub mod empty;
@@ -126,6 +127,7 @@ pub use dialog::{
     Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
     DialogTrigger, DIALOG_MAX_WIDTH,
 };
+pub use direction::{cross_align, current, is_rtl, row_layout, Direction, DirectionProvider};
 pub use drawer::{
     Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle,
     DrawerTrigger,

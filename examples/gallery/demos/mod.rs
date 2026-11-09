@@ -3959,3 +3959,48 @@ pub fn message_scroller_demo(ui: &mut egui::Ui) {
 
     ui.ctx().data_mut(|d| d.insert_temp(store, transcript));
 }
+pub fn direction_demo(ui: &mut egui::Ui) {
+    ui.label("LTR (default)");
+    ui.add_space(4.0);
+    DirectionProvider::ltr().show(ui, |ui| {
+        ui.label("Layout flows left to right and text hugs the left edge.");
+        ui.with_layout(row_layout(ui), |ui| {
+            Button::new("First").show(ui);
+            Button::new("Second").show(ui);
+            Button::new("Third").show(ui);
+        });
+        ui.label(format!("current direction: {:?}", current(ui)));
+    });
+
+    ui.add_space(16.0);
+    ui.label("RTL (scoped flip: right-aligned text + right-to-left rows)");
+    ui.add_space(4.0);
+    DirectionProvider::rtl().show(ui, |ui| {
+        ui.label("النص يتدفق من اليمين إلى اليسار ومحاذاته إلى اليمين.");
+        ui.with_layout(row_layout(ui), |ui| {
+            Button::new("الأول").show(ui);
+            Button::new("الثاني").show(ui);
+            Button::new("الثالث").show(ui);
+        });
+        ui.label(format!("current direction: {:?}", current(ui)));
+    });
+
+    ui.add_space(16.0);
+    ui.label("Convenience form (Direction::rtl)");
+    ui.add_space(4.0);
+    Direction::rtl(ui, |ui| {
+        ui.label("مرحبا — scoped via Direction::rtl");
+    });
+
+    ui.add_space(16.0);
+    ui.label("Nesting (RTL scope containing an LTR island)");
+    ui.add_space(4.0);
+    DirectionProvider::rtl().show(ui, |ui| {
+        ui.label("يمين");
+        DirectionProvider::ltr().show(ui, |ui| {
+            ui.label("Inner island back to LTR");
+            ui.label(format!("current: {:?}", current(ui)));
+        });
+        ui.label("وإلى اليمين مرة أخرى");
+    });
+}
