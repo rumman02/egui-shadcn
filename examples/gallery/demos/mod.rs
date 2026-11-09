@@ -358,62 +358,70 @@ fn theme_radius_full(ui: &egui::Ui) -> u8 {
 }
 
 pub fn typography_demo(ui: &mut egui::Ui) {
+    // Block spacing follows the source recipes' margins: `mt-6` (24px) on
+    // paragraphs/blockquotes, `mt-8` (32px) on h3/h4, `mt-10` (40px) on h2,
+    // `my-6` (24px) on lists. The components themselves do not auto-margin.
     H1::new("Taxing Laughter: The Joke Tax Chronicles").show(ui);
-    ui.add_space(8.0);
+    ui.add_space(24.0);
     P::new("The joke tax is a levy imposed on the punchline economy. When the people discovered the jokes were taxable, laughter became a ledger entry — and humor learned to hide.").show(ui);
-    ui.add_space(12.0);
+    ui.add_space(40.0);
     H2::new("The King's Plan").show(ui);
-    ui.add_space(8.0);
+    ui.add_space(24.0);
     P::new("The king, seeing how much happier his subjects were, realized the error of his ways and repealed the joke tax.").show(ui);
-    ui.add_space(12.0);
+    ui.add_space(24.0);
     Blockquote::new("After the tax was repealed, the court jester's salary doubled, and the kingdom's GDP of giggles soared.").show(ui);
-    ui.add_space(12.0);
+    ui.add_space(32.0);
     H3::new("The Joke Tax Chronicles").show(ui);
-    ui.add_space(8.0);
+    ui.add_space(24.0);
     P::new("As implemented in the royal decree, the tax collected a flat rate on all punchlines above three words.").show(ui);
-    ui.add_space(12.0);
+    ui.add_space(32.0);
     H4::new("Exemptions").show(ui);
-    ui.add_space(8.0);
+    ui.add_space(24.0);
     Ul::new(&[
         "Puns under one second",
         "Knock-knock jokes",
         "Sighs and groans",
     ])
     .show(ui);
-    ui.add_space(12.0);
+    ui.add_space(24.0);
     Ol::new(&[
         "File form LOL-1",
         "Attach proof of laughter",
         "Pay within 30 days",
     ])
     .show(ui);
-    ui.add_space(12.0);
+    ui.add_space(24.0);
     Lead::new(
         "A modal dialog that interrupts the user with important content and expects a response.",
     )
     .show(ui);
-    ui.add_space(8.0);
+    ui.add_space(24.0);
     Large::new("Display a prominent message in a large size.").show(ui);
-    ui.add_space(8.0);
+    ui.add_space(16.0);
     Small::new("Email address").show(ui);
-    ui.add_space(4.0);
+    ui.add_space(8.0);
     Muted::new("Enter your email to subscribe to the joke tax digest.").show(ui);
-    ui.add_space(12.0);
+    ui.add_space(24.0);
     ui.horizontal(|ui| {
         ui.label("Press");
         InlineCode::new("Cmd + K").show(ui);
         ui.label("to open the palette. Kingdom GDP figure:");
         InlineCode::new("GDP_giggles").show(ui);
     });
-    ui.add_space(12.0);
+    ui.add_space(24.0);
     CodeBlock::new(
         "fn levy(punchline: &Punchline) -> Tax {
     Tax::new(punchline.words()).rate(0.2)
 }",
     )
     .show(ui);
-    ui.add_space(8.0);
+    ui.add_space(16.0);
     TableCaption::new("Table 1 — joke revenue by quarter.").show(ui);
+    ui.add_space(8.0);
+    ui.small(
+        "The docs' typography-table composition (striped rows, captions) is \
+         covered by the table demo.",
+    );
 }
 
 pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
@@ -1559,17 +1567,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
     ui.add_space(16.0);
     ui.label("Card with a top image slot");
     ui.add_space(4.0);
-    Card::new()
-        .image_top(card_demo_texture(ui))
-        .show(ui, |ui| {
-            CardHeader::new().show(ui, |ui| {
-                CardTitle::new("Landscape").show(ui);
-                CardDescription::new("The image bleeds to the rounded top corners.").show(ui);
-            });
-            CardContent::new().show(ui, |ui| {
-                ui.label("The media slot removes the card's top padding.");
-            });
+    Card::new().image_top(card_demo_texture(ui)).show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Landscape").show(ui);
+            CardDescription::new("The image bleeds to the rounded top corners.").show(ui);
         });
+        CardContent::new().show(ui, |ui| {
+            ui.label("The media slot removes the card's top padding.");
+        });
+    });
 }
 
 /// A generated gradient texture for the card demo's image slot (cached in
@@ -1592,11 +1598,8 @@ fn card_demo_texture(ui: &mut egui::Ui) -> egui::ImageSource<'static> {
             }
         }
         let image = egui::ColorImage::new([size, size], pixels);
-        ui.ctx().load_texture(
-            "card_demo_gradient",
-            image,
-            egui::TextureOptions::default(),
-        )
+        ui.ctx()
+            .load_texture("card_demo_gradient", image, egui::TextureOptions::default())
     });
     egui::ImageSource::Texture(egui::load::SizedTexture::new(
         texture.id(),
@@ -1905,6 +1908,9 @@ pub fn table_demo(ui: &mut egui::Ui) {
             });
         });
     });
+    // The source caption is `mt-4` (16px above); TableCaption itself uses
+    // the default item spacing, so the demo adds the space explicitly.
+    ui.add_space(16.0);
     TableCaption::new("A list of your recent invoices.").show(ui);
 
     ui.add_space(12.0);
@@ -1931,6 +1937,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
                 let mut selected_row = selected == Some(i);
                 let resp = TableRow::new()
                     .selected(selected_row)
+                    .interactive(true)
                     .id_salt(format!("table_demo_row_{i}"))
                     .show(ui, |ui| {
                         TableCell::text(name).show_text(ui);
