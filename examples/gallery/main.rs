@@ -404,7 +404,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "bubble",
-            show: None,
+            show: Some(demos::bubble_demo),
         },
         DemoPage {
             name: "message",

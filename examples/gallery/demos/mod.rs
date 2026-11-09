@@ -3750,3 +3750,71 @@ pub fn attachment_demo(ui: &mut egui::Ui) {
         }
     });
 }
+pub fn bubble_demo(ui: &mut egui::Ui) {
+    ui.label("Variants");
+    ui.add_space(4.0);
+    for (variant, label) in [
+        (BubbleVariant::Default, "Default (bg-primary)"),
+        (BubbleVariant::Secondary, "Secondary"),
+        (BubbleVariant::Muted, "Muted"),
+        (BubbleVariant::Tinted, "Tinted (OKLCH tint of primary)"),
+        (BubbleVariant::Outline, "Outline"),
+        (BubbleVariant::Ghost, "Ghost (frameless, full width)"),
+        (BubbleVariant::Destructive, "Destructive"),
+    ] {
+        Bubble::new().variant(variant).show(ui, |ui| {
+            BubbleContent::new(format!(
+                "{label} — a chat bubble with wrapping text that demonstrates the pill shape."
+            ))
+            .show(ui);
+        });
+        ui.add_space(8.0);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Alignment (start vs end, max-w 80%)");
+    ui.add_space(4.0);
+    Bubble::new().show(ui, |ui| {
+        BubbleContent::new("Start-aligned bubble.").show(ui);
+    });
+    Bubble::new()
+        .align(BubbleAlign::End)
+        .variant(BubbleVariant::Secondary)
+        .show(ui, |ui| {
+            BubbleContent::new("End-aligned bubble.").show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Group");
+    ui.add_space(4.0);
+    BubbleGroup::new().show(ui, |ui| {
+        Bubble::new().show(ui, |ui| {
+            BubbleContent::new("First message in a group.").show(ui);
+        });
+        Bubble::new().show(ui, |ui| {
+            BubbleContent::new("Second message — same side, 8px gap.").show(ui);
+        });
+        Bubble::new()
+            .variant(BubbleVariant::Muted)
+            .align(BubbleAlign::End)
+            .show(ui, |ui| {
+                BubbleContent::new("Reply from the other side.").show(ui);
+            });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Reactions (bottom/end default, top/start variant)");
+    ui.add_space(4.0);
+    Bubble::new().variant(BubbleVariant::Muted).show(ui, |ui| {
+        BubbleContent::new("Hover me in Slack, apparently.").show(ui);
+        BubbleReactions::new("👍 3").show(ui);
+    });
+    ui.add_space(16.0);
+    Bubble::new().show(ui, |ui| {
+        BubbleContent::new("Reaction on the top edge.").show(ui);
+        BubbleReactions::new("🎉")
+            .side(BubbleReactionSide::Top)
+            .align(BubbleReactionAlign::Start)
+            .show(ui);
+    });
+}
