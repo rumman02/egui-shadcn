@@ -412,7 +412,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "message-scroller",
-            show: None,
+            show: Some(demos::message_scroller_demo),
         },
         DemoPage {
             name: "direction",

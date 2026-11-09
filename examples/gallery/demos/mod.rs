@@ -3876,3 +3876,86 @@ pub fn message_demo(ui: &mut egui::Ui) {
         });
     });
 }
+pub fn message_scroller_demo(ui: &mut egui::Ui) {
+    ui.label("Auto-follow chat viewport (scroll up to see the jump button)");
+    ui.add_space(4.0);
+    let store = egui::Id::unique("demo_scroller_transcript");
+    let mut transcript: Vec<(bool, String)> =
+        ui.ctx().data_mut(|d| d.get_temp(store)).unwrap_or_else(|| {
+            (0..8)
+                .map(|i| {
+                    (
+                        i % 2 == 1,
+                        format!("Seeded message {i} — padding the log so it overflows."),
+                    )
+                })
+                .collect()
+        });
+
+    ui.horizontal(|ui| {
+        if Button::new("Append user message").show(ui).clicked() {
+            transcript.push((true, format!("New user message #{}", transcript.len())));
+        }
+        if Button::new("Append reply")
+            .variant(ButtonVariant::Outline)
+            .show(ui)
+            .clicked()
+        {
+            transcript.push((
+                false,
+                format!(
+                    "Auto-scroll follows only while you're pinned to the bottom (#{}).",
+                    transcript.len()
+                ),
+            ));
+        }
+        if Button::new("Reset")
+            .variant(ButtonVariant::Ghost)
+            .show(ui)
+            .clicked()
+        {
+            transcript.truncate(8);
+        }
+    });
+    ui.add_space(8.0);
+
+    let scroller = MessageScroller::new()
+        .height(320.0)
+        .id_salt("demo_scroller")
+        .show(ui, |ui| {
+            for (is_user, text) in &transcript {
+                Message::new()
+                    .align(if *is_user {
+                        MessageAlign::End
+                    } else {
+                        MessageAlign::Start
+                    })
+                    .show(ui, |ui| {
+                        MessageAvatar::new().show(ui, |ui| {
+                            Avatar::new()
+                                .fallback(if *is_user { "ME" } else { "RB" })
+                                .show(ui);
+                        });
+                        MessageContent::new().show(ui, |ui| {
+                            Bubble::new()
+                                .variant(if *is_user {
+                                    BubbleVariant::Default
+                                } else {
+                                    BubbleVariant::Muted
+                                })
+                                .show(ui, |ui| {
+                                    BubbleContent::new(text.clone()).show(ui);
+                                });
+                        });
+                    });
+            }
+        });
+    let resp = scroller.inner;
+    ui.add_space(4.0);
+    ui.label(format!(
+        "at_bottom: {} · auto-follow: {}",
+        resp.at_bottom, resp.following
+    ));
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, transcript));
+}
