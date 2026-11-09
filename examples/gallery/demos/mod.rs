@@ -3403,3 +3403,61 @@ pub fn navigation_menu_demo(ui: &mut egui::Ui) {
     ui.ctx()
         .data_mut(|d| d.insert_temp(store, (open_label, link_clicked)));
 }
+
+pub fn calendar_demo(ui: &mut egui::Ui) {
+    use egui_shadcn_ui::components::calendar::{CalendarDate, WeekStart};
+
+    let store = egui::Id::unique("calendar_demo_values");
+    #[derive(Clone, Default)]
+    struct DemoState {
+        single: Option<CalendarDate>,
+        multiple: Vec<CalendarDate>,
+        range: Option<(CalendarDate, CalendarDate)>,
+    }
+    let mut state: DemoState = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<DemoState>(store).unwrap_or_default());
+
+    ui.label("Single");
+    ui.add_space(4.0);
+    let res = Calendar::single(&mut state.single).show(ui);
+    ui.add_space(4.0);
+    ui.label(match res.clicked_day {
+        Some(d) => format!("Clicked: {}", d.format_ppp()),
+        None => match state.single {
+            Some(d) => format!("Selected: {}", d.format_ppp()),
+            None => "No date selected".to_owned(),
+        },
+    });
+
+    ui.add_space(16.0);
+    ui.label("Multiple");
+    ui.add_space(4.0);
+    Calendar::multiple(&mut state.multiple)
+        .week_starts_on(WeekStart::Monday)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Range");
+    ui.add_space(4.0);
+    Calendar::range(&mut state.range).show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Without outside days, from a fixed month");
+    ui.add_space(4.0);
+    let mut fixed = Some(CalendarDate::new(2026, 11, 10).unwrap());
+    Calendar::single(&mut fixed)
+        .default_month(CalendarDate::new(2026, 11, 1).unwrap())
+        .show_outside_days(false)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Disabled weekends");
+    ui.add_space(4.0);
+    let mut weekend = None;
+    Calendar::single(&mut weekend)
+        .disabled_when(|d| matches!(d.weekday(), 0 | 6))
+        .show(ui);
+
+    ui.ctx().data_mut(|d| d.insert_temp(store, state));
+}

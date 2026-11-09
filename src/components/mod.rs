@@ -9,6 +9,7 @@ pub mod badge;
 pub mod breadcrumb;
 pub mod button;
 pub mod button_group;
+pub mod calendar;
 pub mod card;
 pub mod checkbox;
 pub mod collapsible;
@@ -74,6 +75,10 @@ pub use breadcrumb::{
 };
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
+pub use calendar::{
+    apply_multiple, apply_range, apply_single, Calendar, CalendarDate, CalendarResponse, WeekStart,
+    CALENDAR_CELL_SIZE, CALENDAR_GRID_WIDTH, CALENDAR_PADDING, MONTH_NAMES, WEEKDAY_SHORT,
+};
 pub use card::{Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};

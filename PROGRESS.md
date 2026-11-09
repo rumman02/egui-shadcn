@@ -72,7 +72,7 @@ Source of truth for the port. Statuses: `⬜ todo`, `⏳ in progress`, `✅ done
 | 55 | select | ✅ done | F | f22b537 | controlled (&mut Option<String>/&mut String) + uncontrolled via id_salt; h-9/h-8 trigger, placeholder/invalid/disabled; ScrollArea popup; labels/separators/disabled items; check indicator; keyboard nav (arrows/home/end/enter/space/escape, opens on selection highlight); no typeahead |
 | 56 | combobox | ✅ done | F | ace65c7 | popover trigger (w-200, chevron, placeholder/invalid/disabled) + embedded Command list (search filter, check marks, empty state, keyboard); single &multi (removable chips, +N overflow, X-to-remove); &mut Option<String>/&mut String/&mut Vec<String>/uncontrolled |
 | 57 | command | ✅ done | F | d1f4bdd | cmdk palette: builder groups/items/separators/shortcuts/icons, case-insensitive filter + should_filter pin, ScrollArea list, empty state, arrows/home/end/enter + hover/click select; CommandDialog via crate Dialog (autofocus, force keyboard, close on select/Escape/backdrop) |
-| 58 | calendar | ⬜ todo | G | | month grid, nav, presets, multiple/range |
+| 58 | calendar | ⬜ todo | G | | month grid, nav, presets, multiple/range. Gaps: caption dropdown layout + week numbers not ported (label caption only); today resolution is UTC |
 | 59 | date-picker | ⬜ todo | G | | popover + calendar + input |
 | 60 | carousel | ⬜ todo | G | | pannable slides + dots + prev/next |
 | 61 | chart | ⬜ todo | G | | egui-painted area/bar/line charts, tooltip |

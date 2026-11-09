@@ -372,7 +372,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "calendar",
-            show: None,
+            show: Some(demos::calendar_demo),
         },
         DemoPage {
             name: "date-picker",
