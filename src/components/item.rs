@@ -35,6 +35,11 @@ use egui::{
     Color32, FontId, ImageSource, InnerResponse, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2,
 };
 
+/// Title line-height multiplier (`leading-snug`).
+const TITLE_LINE_HEIGHT: f32 = 1.375;
+/// Description line-height multiplier (`leading-normal`).
+const DESCRIPTION_LINE_HEIGHT: f32 = 1.5;
+
 /// Item variants, mirroring the source `itemVariants.variant`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ItemVariant {
@@ -76,12 +81,16 @@ pub(crate) fn item_geometry(style: Style, size: ItemSize) -> (f32, f32, f32) {
 }
 
 /// The gap an [`ItemGroup`] uses between items (nova `gap-4` / `gap-2.5` /
-/// `gap-2` by size).
-pub(crate) fn group_gap(_style: Style, size: ItemSize) -> f32 {
-    match size {
-        ItemSize::Xs => 8.0,
-        ItemSize::Sm => 10.0,
-        ItemSize::Default => 16.0,
+/// `gap-2` by size). The base recipe's group is a plain `flex flex-col`
+/// with no gap, so non-nova styles return 0 (use [`ItemSeparator`] there).
+pub(crate) fn group_gap(style: Style, size: ItemSize) -> f32 {
+    match style {
+        Style::Nova => match size {
+            ItemSize::Xs => 8.0,
+            ItemSize::Sm => 10.0,
+            ItemSize::Default => 16.0,
+        },
+        _ => 0.0,
     }
 }
 
@@ -229,6 +238,7 @@ fn current_group(ui: &Ui) -> Option<GroupCtx> {
 pub struct Item {
     variant: ItemVariant,
     size: Option<ItemSize>,
+    interactive: bool,
     id_salt: Option<String>,
 }
 
@@ -238,6 +248,7 @@ impl Item {
         Self {
             variant: ItemVariant::default(),
             size: None,
+            interactive: false,
             id_salt: None,
         }
     }
@@ -252,6 +263,15 @@ impl Item {
     /// unset).
     pub fn size(mut self, size: ItemSize) -> Self {
         self.size = Some(size);
+        self
+    }
+
+    /// Makes the item interactive (the source's `asChild` anchor rows):
+    /// hovering fills it with `bg-accent/50` (nova `bg-muted`) and focusing
+    /// paints the `focus-visible:ring-[3px] ring-ring/50 border-ring`
+    /// ring. The returned response reports `clicked()`.
+    pub fn interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
         self
     }
 
@@ -284,8 +304,24 @@ impl Item {
 
         push_item(ui, ItemCtx { id, size });
 
+        // `[a]:hover:bg-accent/50` (nova `bg-muted`): the hover fill
+        // *replaces* the base fill, read from the previous frame's response
+        // (one-frame lag, standard egui hover styling).
+        let hover_bg = if theme.style == Style::Nova {
+            p.muted
+        } else {
+            color_alpha(p.accent, 0.5)
+        };
+        let hovered = self.interactive
+            && ui
+                .ctx()
+                .read_response(id)
+                .map(|r| r.hovered())
+                .unwrap_or(false);
+        let fill = if hovered { hover_bg } else { c.fill };
+
         let inner = egui::Frame::new()
-            .fill(c.fill)
+            .fill(fill)
             .stroke(c.stroke)
             .corner_radius(egui::CornerRadius::same(radius))
             .inner_margin(Margin {
@@ -304,7 +340,25 @@ impl Item {
 
         pop_item(ui);
 
-        InnerResponse::new(inner.inner, inner.response)
+        let sense = if self.interactive {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(inner.response.rect, id, sense);
+        if ui.is_rect_visible(response.rect) && response.has_focus() {
+            // `focus-visible:border-ring`: recolor the border, then the 3px
+            // `ring-ring/50` outline.
+            ui.painter().rect_stroke(
+                response.rect,
+                egui::CornerRadius::same(radius),
+                Stroke::new(1.0, p.ring),
+                egui::epaint::StrokeKind::Inside,
+            );
+            crate::utils::focus::paint_focus_ring(ui, &response, radius as f32, true);
+        }
+
+        InnerResponse::new(inner.inner, response)
     }
 }
 
@@ -465,7 +519,9 @@ impl ItemContent {
     }
 }
 
-/// `ItemTitle` — `text-sm font-medium leading-snug`.
+/// `ItemTitle` — `text-sm font-medium leading-snug` (`flex w-fit
+/// items-center gap-2`, so icons can be hosted next to the text via
+/// [`ItemTitle::show_with`]).
 #[derive(Clone, Debug)]
 pub struct ItemTitle {
     text: String,
@@ -479,19 +535,41 @@ impl ItemTitle {
 
     /// Renders the title.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
+        self.show_with(ui, |_| {}).response
+    }
+
+    /// Renders the title with extra content beside the text (the source's
+    /// `flex w-fit items-center gap-2` allows e.g. an icon or badge).
+    pub fn show_with<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let galley = ui.painter().layout_no_wrap(self.text, font, p.foreground);
-        let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
-        if ui.is_rect_visible(rect) {
-            ui.painter().galley(rect.min, galley, p.foreground);
-        }
-        response
+        let size = crate::theme::tokens::type_scale::SM;
+        let font = FontId::proportional(size);
+        // `leading-snug` is set explicitly through the TextFormat.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: p.foreground,
+            line_height: Some(size * TITLE_LINE_HEIGHT),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = f32::INFINITY;
+        let galley = ui.painter().layout_job(job);
+        let inner = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0; // gap-2
+            let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+            if ui.is_rect_visible(rect) {
+                ui.painter().galley(rect.min, galley, p.foreground);
+            }
+            content(ui)
+        });
+        InnerResponse::new(inner.inner, inner.response)
     }
 }
 
-/// `ItemDescription` — `text-sm text-muted-foreground`, wraps.
+/// `ItemDescription` — `text-sm leading-normal text-muted-foreground`
+/// (nova `group-data-[size=xs]/item:text-xs`), wraps.
 #[derive(Clone, Debug)]
 pub struct ItemDescription {
     text: String,
@@ -507,10 +585,25 @@ impl ItemDescription {
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let galley = ui
-            .painter()
-            .layout(self.text, font, p.muted_foreground, ui.available_width());
+        // nova shrinks the description to `text-xs` inside xs items.
+        let size = match current_item(ui).map(|c| c.size) {
+            Some(ItemSize::Xs) if theme.style == Style::Nova => {
+                crate::theme::tokens::type_scale::XS
+            }
+            _ => crate::theme::tokens::type_scale::SM,
+        };
+        let font = FontId::proportional(size);
+        // `leading-normal` is set explicitly through the TextFormat.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: p.muted_foreground,
+            line_height: Some(size * DESCRIPTION_LINE_HEIGHT),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = ui.available_width().max(0.0);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
         if ui.is_rect_visible(rect) {
             ui.painter().galley(rect.min, galley, p.muted_foreground);
@@ -755,10 +848,49 @@ mod tests {
             (16.0, 16.0, 16.0)
         );
         assert_eq!(item_geometry(Style::Vega, ItemSize::Sm), (16.0, 12.0, 10.0));
-        // group gaps: gap-4 / gap-2.5 / gap-2.
+        // group gaps: nova gap-4 / gap-2.5 / gap-2; the base group is a
+        // plain flex column with no gap.
         assert_eq!(group_gap(Style::Nova, ItemSize::Default), 16.0);
         assert_eq!(group_gap(Style::Nova, ItemSize::Sm), 10.0);
         assert_eq!(group_gap(Style::Nova, ItemSize::Xs), 8.0);
+        assert_eq!(group_gap(Style::Vega, ItemSize::Default), 0.0);
+        assert_eq!(group_gap(Style::Vega, ItemSize::Sm), 0.0);
+    }
+
+    #[test]
+    fn interactive_items_sense_clicks() {
+        let ctx = egui::Context::default();
+        let mut plain_senses_clicks = true;
+        let mut interactive_senses_clicks = false;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let root = egui::Id::unique("item_interactive_test");
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                root,
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            Item::new().id_salt("plain_item").show(ui, |ui| {
+                ItemTitle::new("Plain").show(ui);
+            });
+            Item::new()
+                .interactive(true)
+                .id_salt("click_item")
+                .show(ui, |ui| {
+                    ItemTitle::new("Clickable").show(ui);
+                });
+            let plain = ui.ctx().read_response(root.with("plain_item"));
+            let clickable = ui.ctx().read_response(root.with("click_item"));
+            if let Some(r) = plain {
+                plain_senses_clicks = r.sense.senses_click();
+            }
+            if let Some(r) = clickable {
+                interactive_senses_clicks = r.sense.senses_click();
+            }
+        });
+        out.textures_delta.clear();
+        assert!(!plain_senses_clicks);
+        assert!(interactive_senses_clicks);
     }
 
     #[test]
