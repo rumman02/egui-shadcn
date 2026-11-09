@@ -353,26 +353,33 @@ impl Button {
             .unwrap_or(GroupOrientation::Horizontal);
 
         let desired = self.content_size(ui);
-        let sense = if self.disabled {
-            Sense::hover()
-        } else {
-            Sense::click()
+
+        // Reserve space without registering an auto-id focusable response, so
+        // egui's spatial arrow-key navigation only sees the explicit widget id.
+        let (_, rect) = ui.allocate_space(desired);
+        let id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt),
+            None => ui.auto_id_with("shadcn_button"),
         };
 
-        let (rect, response) = match self.id_salt.as_deref() {
-            Some(salt) => {
-                let id = ui.scope_id().with(salt);
-                let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
-                (rect, ui.interact(rect, id, sense))
-            }
-            None => ui.allocate_exact_size(desired, sense),
+        let response = if self.disabled {
+            // Disabled at the egui level too: `enabled()` is false and egui
+            // suppresses hover, clicks and focus. Interact through a disabled
+            // child Ui; painting below keeps using the outer painter so the
+            // child's disabled opacity doesn't double-fade the explicit
+            // `disabled:opacity-50` color fade.
+            let child = ui.new_child(egui::UiBuilder::new().disabled());
+            child.interact(rect, id, Sense::click())
+        } else {
+            ui.interact(rect, id, Sense::click())
         };
 
         if ui.is_rect_visible(rect) {
             let radius = theme.radius.md_u8();
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
 
-            let hovered = response.hovered() && !self.disabled;
+            // A disabled response is never hovered, so this stays false.
+            let hovered = response.hovered();
             let mut c = resolve_colors(self.variant, &p, dark, hovered);
 
             // `aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40`
@@ -773,6 +780,30 @@ mod tests {
         assert!(!c.underline);
         let h = resolve_colors(ButtonVariant::Link, &p, false, true);
         assert!(h.underline);
+    }
+
+    #[test]
+    fn disabled_response_is_disabled_at_the_egui_level() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("button_disabled_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            );
+            let enabled = Button::new("On").show(ui);
+            assert!(enabled.enabled());
+            let disabled = Button::new("Off").disabled(true).show(ui);
+            assert!(!disabled.enabled());
+            // No clicks or hover ever come through a disabled response.
+            assert!(!disabled.clicked());
+            assert!(!disabled.hovered());
+            // id_salt and the fallback produce different, stable ids.
+            assert_ne!(enabled.id, disabled.id);
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
