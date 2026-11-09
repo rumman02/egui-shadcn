@@ -2715,3 +2715,145 @@ pub fn resizable_demo(ui: &mut egui::Ui) {
             });
         });
 }
+
+pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
+    let state = egui::Id::unique("dropdown_menu_demo_state");
+    let action_store = egui::Id::unique("dropdown_menu_demo_action");
+    let ctrl_store = egui::Id::unique("dropdown_menu_demo_controlled");
+    let (mut show_status_bar, mut show_activity, mut show_panel, mut theme): (
+        bool,
+        bool,
+        bool,
+        Option<usize>,
+    ) = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(state).unwrap_or((true, false, false, Some(0))));
+    let mut last_action: Option<String> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
+
+    ui.label("Click a trigger to open. ArrowUp/Down navigate, ArrowRight opens sub-menus, Enter/Space activate, Escape closes.");
+    ui.add_space(8.0);
+
+    ui.label("Basic (docs demo, w-56, align start)");
+    ui.add_space(4.0);
+    let res = DropdownMenu::new("Open")
+        .align(MenuAlign::Start)
+        .width(224.0)
+        .id_salt("dropdown_demo_basic")
+        .show(ui, |m| {
+            m.label("My Account");
+            m.separator();
+            m.item(MenuItem::new("Profile").shortcut("⇧⌘P"));
+            m.item(MenuItem::new("Billing").shortcut("⌘B"));
+            m.item(MenuItem::new("Settings").shortcut("⌘S"));
+            m.item(MenuItem::new("Keyboard shortcuts").shortcut("⌘K"));
+            m.separator();
+            m.item(MenuItem::new("Team").icon(Icon::User));
+            m.sub_menu("Invite users", |m| {
+                m.item(MenuItem::new("Email").icon(Icon::Send));
+                m.item(MenuItem::new("Message"));
+                m.separator();
+                m.item(MenuItem::new("More…"));
+            });
+            m.item(MenuItem::new("New Team").shortcut("⌘+T"));
+            m.separator();
+            m.item(MenuItem::new("GitHub"));
+            m.item(MenuItem::new("Support"));
+            m.item(MenuItem::new("API").disabled(true));
+            m.separator();
+            m.item(MenuItem::new("Log out").shortcut("⇧⌘Q").destructive(true));
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Checkbox items (one disabled)");
+    ui.add_space(4.0);
+    let res = DropdownMenu::new("Checkboxes")
+        .align(MenuAlign::Start)
+        .width(224.0)
+        .id_salt("dropdown_demo_checkboxes")
+        .show(ui, |m| {
+            m.label("Appearance");
+            m.separator();
+            m.checkbox_item(CheckboxItem::new("Status Bar", &mut show_status_bar));
+            m.checkbox_item(CheckboxItem::new("Activity Bar", &mut show_activity).disabled(true));
+            m.checkbox_item(CheckboxItem::new("Panel", &mut show_panel));
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Radio group + destructive item with icon");
+    ui.add_space(4.0);
+    let res = DropdownMenu::new("Radio group")
+        .align(MenuAlign::Start)
+        .width(224.0)
+        .id_salt("dropdown_demo_radio")
+        .show(ui, |m| {
+            m.label("Theme");
+            m.radio_group(&mut theme, |g| {
+                g.radio_items([
+                    RadioItem::new("Light").shortcut("⌘1"),
+                    RadioItem::new("Dark").shortcut("⌘2"),
+                    RadioItem::new("System").shortcut("⌘3"),
+                ]);
+            });
+            m.separator();
+            m.item(
+                MenuItem::new("Delete all data")
+                    .icon(Icon::Trash)
+                    .destructive(true),
+            );
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
+
+    ui.add_space(12.0);
+    ui.label("Alignment against the trigger");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        DropdownMenu::new("Start")
+            .align(MenuAlign::Start)
+            .id_salt("dropdown_demo_align_start")
+            .show(ui, |m| m.item(MenuItem::new("Aligned start")));
+        DropdownMenu::new("Center")
+            .align(MenuAlign::Center)
+            .id_salt("dropdown_demo_align_center")
+            .show(ui, |m| m.item(MenuItem::new("Aligned center")));
+        DropdownMenu::new("End")
+            .align(MenuAlign::End)
+            .id_salt("dropdown_demo_align_end")
+            .show(ui, |m| m.item(MenuItem::new("Aligned end")));
+    });
+
+    ui.add_space(12.0);
+    let mut open: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(ctrl_store).unwrap_or(false));
+    ui.horizontal(|ui| {
+        ui.label("Controlled open state:");
+        DropdownMenu::controlled("Controlled", &mut open)
+            .align(MenuAlign::Start)
+            .id_salt("dropdown_demo_controlled")
+            .show(ui, |m| {
+                m.item(MenuItem::new("Refresh").shortcut("⌘R"));
+                m.item(MenuItem::new("Reload").shortcut("⇧⌘R").disabled(true));
+            });
+        ui.label(format!("open = {open}"));
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(ctrl_store, open));
+
+    ui.add_space(12.0);
+    if let Some(action) = &last_action {
+        ui.label(format!("Last activated item: {action}"));
+    }
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(state, (show_status_bar, show_activity, show_panel, theme));
+        d.insert_temp(action_store, last_action);
+    });
+}
