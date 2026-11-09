@@ -121,7 +121,8 @@ impl Icon {
                 El::Line([12.0, 16.0], [12.0, 12.0]),
                 El::Dot([12.0, 8.0], 1.0),
             ],
-            Icon::LoaderCircle => vec![El::Arc([12.0, 12.0], 10.0, -80.0, 200.0)],
+            // lucide loader-circle: 270° arc, radius 9, gap in the top-right quadrant.
+            Icon::LoaderCircle => vec![El::Arc([12.0, 12.0], 9.0, 0.0, 270.0)],
             Icon::Calendar => vec![
                 El::Rect([3.0, 4.0], [18.0, 18.0], 2.0),
                 El::Line([8.0, 2.0], [8.0, 6.0]),

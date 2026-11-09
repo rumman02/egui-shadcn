@@ -15,11 +15,12 @@ use crate::theme::ShadcnTheme;
 use egui::{Color32, Pos2, Response, Sense, Shape, Stroke, Ui, Vec2, Widget};
 
 /// The lucide `loader-circle` geometry: center, radius, and sweep on the
-/// 24x24 icon grid. The gap in the circle is what reads as "spinning".
+/// 24x24 icon grid (`M21 12a9 9 0 1 1-9-9`). The gap in the circle (the
+/// top-right quadrant) is what reads as "spinning".
 pub(crate) const ARC_CENTER: [f32; 2] = [12.0, 12.0];
-pub(crate) const ARC_RADIUS: f32 = 10.0;
-/// Sweep in degrees (280° of the 360° circle, matching the lucide path).
-pub(crate) const ARC_SWEEP: f32 = 280.0;
+pub(crate) const ARC_RADIUS: f32 = 9.0;
+/// Sweep in degrees (270° of the 360° circle, matching the lucide path).
+pub(crate) const ARC_SWEEP: f32 = 270.0;
 
 /// Rotation angle at `elapsed_secs`: 360° per second (`animate-spin`).
 pub(crate) fn angle_at(elapsed_secs: f64) -> f32 {
@@ -90,10 +91,9 @@ impl Spinner {
         let color = self.color.unwrap_or(theme.palette.foreground);
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.size), Sense::hover());
 
-        // Keep the animation running.
-        ui.ctx().request_repaint();
-
         if ui.is_rect_visible(rect) {
+            // Keep the animation running while on screen.
+            ui.ctx().request_repaint();
             let elapsed = ui.input(|i| i.time);
             let angle = angle_at(elapsed);
             let scale = self.size / 24.0;
@@ -128,18 +128,21 @@ mod tests {
     }
 
     #[test]
-    fn arc_covers_280_degrees() {
+    fn arc_covers_270_degrees() {
         let pts = arc_points(0.0, 24);
         assert_eq!(pts.len(), 25);
-        // Starts at angle 0 (right side of the circle).
-        assert!((pts[0][0] - (12.0 + 10.0)).abs() < 1e-4);
+        // Starts at angle 0 (right side of the circle, lucide M21 12).
+        assert!((pts[0][0] - 21.0).abs() < 1e-4);
         assert!((pts[0][1] - 12.0).abs() < 1e-4);
-        // Ends 280° clockwise (y-down): below the top-left of the circle.
+        // Ends 270° clockwise (y-down): at the top of the circle, leaving the
+        // top-right quadrant as the gap (lucide `-9-9`).
         let last = pts[24];
-        let a = 280.0_f32.to_radians();
+        assert!((last[0] - 12.0).abs() < 1e-4);
+        assert!((last[1] - 3.0).abs() < 1e-4);
+        let a = 270.0_f32.to_radians();
         let (sin, cos) = a.sin_cos();
-        assert!((last[0] - (12.0 + 10.0 * cos)).abs() < 1e-4);
-        assert!((last[1] - (12.0 + 10.0 * sin)).abs() < 1e-4);
+        assert!((last[0] - (12.0 + ARC_RADIUS * cos)).abs() < 1e-4);
+        assert!((last[1] - (12.0 + ARC_RADIUS * sin)).abs() < 1e-4);
     }
 
     #[test]
@@ -147,7 +150,7 @@ mod tests {
         let a = arc_points(90.0, 8);
         // At +90° the first point sits at the bottom of the circle (y-down).
         assert!((a[0][0] - 12.0).abs() < 1e-4);
-        assert!((a[0][1] - 22.0).abs() < 1e-4);
+        assert!((a[0][1] - 21.0).abs() < 1e-4);
     }
 
     #[test]
