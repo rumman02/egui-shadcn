@@ -235,13 +235,16 @@ impl FieldLabel {
         } else {
             Sense::hover()
         };
-        let (rect, response) = match self.id_salt.as_deref() {
-            Some(salt) => {
-                let id = ui.scope_id().with(salt);
-                let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
-                (rect, ui.interact(rect, id, sense))
-            }
-            None => ui.allocate_exact_size(desired, sense),
+        let (rect, response) = {
+            // Reserve space without registering an auto-id focusable
+            // response, so egui's spatial arrow-key navigation only sees the
+            // explicit widget id (checkbox.rs pattern).
+            let (_, rect) = ui.allocate_space(desired);
+            let id = match self.id_salt.as_deref() {
+                Some(salt) => ui.scope_id().with(salt),
+                None => ui.auto_id_with("shadcn_field_label"),
+            };
+            (rect, ui.interact(rect, id, sense))
         };
 
         if interactive && response.clicked() {
