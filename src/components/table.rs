@@ -12,6 +12,19 @@
 //! align columns across rows; cells without a width take the remaining
 //! space (make the last cell flexible, like `w-auto` vs `w-1/4`).
 //!
+//! The source wraps the table in `overflow-x-auto`; for wide tables wrap
+//! this component in
+//! [`ScrollArea`](crate::components::ScrollArea)::new().horizontal(true).
+//! Rows only sense hover by default (they are not buttons in the source);
+//! call [`TableRow::interactive`] to make rows clickable for
+//! click-to-select recipes. The caption is the typography
+//! [`TableCaption`](crate::components::typography::TableCaption) slot (the
+//! source adds `mt-4`, so give it 16px of space above).
+//!
+//! Known gap: the body/footer's last-row border drop (`border-0`) is
+//! learned over two frames, so the very first frame after a resize paints
+//! the final row's bottom border one frame late.
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -47,8 +60,8 @@ pub(crate) fn row_bg(p: &Palette, selected: bool, hovered: bool) -> Color32 {
     }
 }
 
-/// `TableHead` height (`h-10`).
-pub const TABLE_HEAD_HEIGHT: f32 = 36.0;
+/// `TableHead` height (`h-10` = 40px).
+pub const TABLE_HEAD_HEIGHT: f32 = 40.0;
 
 /// Cell/Head horizontal padding (`px-2` head, `p-2` cell).
 pub const TABLE_CELL_PADDING: f32 = 8.0;
@@ -344,10 +357,13 @@ impl TableFooter {
 }
 
 /// `TableRow` — `border-b hover:bg-muted/50
-/// data-[state=selected]:bg-muted`. Rows report hover via the response.
+/// data-[state=selected]:bg-muted`. Rows report hover via the response; the
+/// source's rows are not buttons, so they only sense hover unless
+/// [`TableRow::interactive`] opts them into click events.
 #[derive(Clone, Debug, Default)]
 pub struct TableRow {
     selected: bool,
+    interactive: bool,
     id_salt: Option<String>,
 }
 
@@ -356,6 +372,7 @@ impl TableRow {
     pub fn new() -> Self {
         Self {
             selected: false,
+            interactive: false,
             id_salt: None,
         }
     }
@@ -363,6 +380,15 @@ impl TableRow {
     /// Marks the row `data-state="selected"`.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Makes the row clickable: the returned response then reports
+    /// `clicked()` (and click/pointer cursor) for the whole row. The source
+    /// marks up clickable rows with links/buttons in the docs examples, so
+    /// this stays opt-in and the default keeps hover-only sensing.
+    pub fn interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
         self
     }
 
@@ -398,7 +424,12 @@ impl TableRow {
         });
 
         let rect = inner.response.rect;
-        let response = ui.interact(rect, id, Sense::hover());
+        let sense = if self.interactive {
+            Sense::click_and_drag()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(rect, id, sense);
         let hovered = response.hovered() && !self.selected;
         painter.set(
             bg_idx,
@@ -582,8 +613,42 @@ mod tests {
     #[test]
     fn head_geometry_matches_source() {
         // h-10 px-2
-        assert_eq!(TABLE_HEAD_HEIGHT, 36.0);
+        assert_eq!(TABLE_HEAD_HEIGHT, 40.0);
         assert_eq!(TABLE_CELL_PADDING, 8.0);
+    }
+
+    #[test]
+    fn interactive_rows_sense_clicks() {
+        // Default rows are hover-only (the source's rows are not buttons);
+        // `.interactive(true)` opts in to click events.
+        let ctx = egui::Context::default();
+        let mut plain_clicked = false;
+        let mut interactive_senses_clicks = false;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("table_sense_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            TableBody::new().show(ui, |ui| {
+                let plain = TableRow::new().id_salt("plain_row").show(ui, |ui| {
+                    TableCell::text("hover only").show_text(ui);
+                });
+                plain_clicked = plain.response.clicked();
+                let interactive =
+                    TableRow::new()
+                        .interactive(true)
+                        .id_salt("click_row")
+                        .show(ui, |ui| {
+                            TableCell::text("click me").show_text(ui);
+                        });
+                interactive_senses_clicks = interactive.response.sense.senses_click();
+            });
+        });
+        out.textures_delta.clear();
+        assert!(!plain_clicked);
+        assert!(interactive_senses_clicks);
     }
 
     #[test]
