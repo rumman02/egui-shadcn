@@ -12,6 +12,7 @@ pub mod button_group;
 pub mod calendar;
 pub mod card;
 pub mod carousel;
+pub mod chart;
 pub mod checkbox;
 pub mod collapsible;
 pub mod combobox;
@@ -86,6 +87,7 @@ pub use carousel::{
     Carousel, CarouselItem, CarouselOrientation, CarouselResponse, CAROUSEL_ARROW_GUTTER,
     CAROUSEL_ARROW_SIZE, CAROUSEL_DOT_SIZE, CAROUSEL_ITEM_GAP,
 };
+pub use chart::{Chart, ChartContainer, ChartData, ChartIndicator, ChartSeries, ChartVariant};
 pub use checkbox::{Checkbox, CHECKBOX_RADIUS, CHECKBOX_SIZE};
 pub use collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
 pub use combobox::{

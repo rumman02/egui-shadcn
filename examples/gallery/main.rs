@@ -384,7 +384,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "chart",
-            show: None,
+            show: Some(demos::chart_demo::run),
         },
         DemoPage {
             name: "data-table",
