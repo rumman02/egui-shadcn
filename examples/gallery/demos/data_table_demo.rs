@@ -150,9 +150,11 @@ pub fn run(ui: &mut egui::Ui) {
                     ui.label(p.status.clone());
                 }),
         )
-        .column(DataTableColumn::new("email", "Email").cell(|ui, p: &Payment| {
-            ui.label(p.email.clone());
-        }))
+        .column(
+            DataTableColumn::new("email", "Email").cell(|ui, p: &Payment| {
+                ui.label(p.email.clone());
+            }),
+        )
         .show(ui);
 
     ui.ctx().data_mut(|d| d.insert_temp(store, state));

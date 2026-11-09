@@ -392,7 +392,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "form",
-            show: None,
+            show: Some(demos::form_demo::run),
         },
         DemoPage {
             name: "sidebar",
