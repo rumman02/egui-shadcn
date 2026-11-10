@@ -1,5 +1,6 @@
 //! Sidebar demo: collapsible rails (offcanvas + icon), variants, menu
-//! structures, trigger/rail/keyboard toggles.
+//! structures (group/menu actions, skeletons), trigger/rail/keyboard
+//! toggles.
 
 use egui_shadcn_ui::prelude::*;
 
@@ -7,6 +8,7 @@ fn sidebar_menu(ui: &mut egui::Ui, salt: &str) {
     SidebarContent::new().show(ui, |ui| {
         SidebarGroup::new().show(ui, |ui| {
             SidebarGroupLabel::new("Platform").show(ui);
+            SidebarGroupAction::new(Icon::Plus).show(ui);
             SidebarGroupContent::new().show(ui, |ui| {
                 SidebarMenu::new().show(ui, |ui| {
                     SidebarMenuItem::new().show(ui, |ui| {
@@ -14,6 +16,9 @@ fn sidebar_menu(ui: &mut egui::Ui, salt: &str) {
                             .tooltip("History")
                             .is_active(true)
                             .id_salt(format!("{salt}_history"))
+                            .show(ui);
+                        SidebarMenuAction::new(Icon::MoreVertical)
+                            .show_on_hover(true)
                             .show(ui);
                     });
                     SidebarMenuItem::new().show(ui, |ui| {
@@ -29,6 +34,7 @@ fn sidebar_menu(ui: &mut egui::Ui, salt: &str) {
                             .variant(SidebarMenuButtonVariant::Outline)
                             .id_salt(format!("{salt}_outline"))
                             .show(ui);
+                        SidebarMenuAction::new(Icon::MoreVertical).show(ui);
                     });
                     SidebarMenuItem::new().show(ui, |ui| {
                         SidebarMenuButton::new("Disabled", Icon::CircleAlert)
@@ -62,6 +68,15 @@ fn sidebar_menu(ui: &mut egui::Ui, salt: &str) {
                         .size(SidebarMenuButtonSize::Lg)
                         .show(ui);
                 });
+            });
+        });
+        SidebarSeparator::new().show(ui);
+        SidebarGroup::new().show(ui, |ui| {
+            SidebarGroupLabel::new("Loading").show(ui);
+            SidebarMenu::new().show(ui, |ui| {
+                SidebarMenuSkeleton::new().show_icon(true).show(ui);
+                SidebarMenuSkeleton::new().show_icon(true).show(ui);
+                SidebarMenuSkeleton::new().show(ui);
             });
         });
     });

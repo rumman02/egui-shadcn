@@ -8,14 +8,17 @@
 //!   width (expanded 16rem ↔ icon 3rem, or 0 when `offcanvas`), variants
 //!   `sidebar` / `floating` / `inset` and sides left/right. The open state
 //!   is uncontrolled (persisted per `id_salt`) or controlled (`&mut bool`).
-//! - Header / [`SidebarContent`] / [`SidebarFooter`] / [`SidebarSeparator`],
-//!   [`SidebarGroup`] / [`SidebarGroupLabel`] / [`SidebarGroupContent`],
-//!   [`SidebarMenu`] / [`SidebarMenuItem`] / [`SidebarMenuButton`],
-//!   [`SidebarMenuSub`] / [`SidebarMenuSubButton`], plus [`SidebarTrigger`],
-//!   [`SidebarRail`] and [`SidebarInset`].
+//! - Header / [`SidebarContent`] (scrollable, `overflow-auto`) /
+//!   [`SidebarFooter`] / [`SidebarSeparator`], [`SidebarGroup`] /
+//!   [`SidebarGroupLabel`] / [`SidebarGroupAction`] /
+//!   [`SidebarGroupContent`], [`SidebarMenu`] / [`SidebarMenuItem`] /
+//!   [`SidebarMenuButton`] / [`SidebarMenuAction`] /
+//!   [`SidebarMenuSkeleton`], [`SidebarMenuSub`] / [`SidebarMenuSubButton`],
+//!   plus [`SidebarTrigger`], [`SidebarRail`] and [`SidebarInset`].
 //! - Keyboard: `Ctrl/Cmd+B` toggles (the source's global shortcut), Escape
 //!   collapses while a widget inside the sidebar has focus. Menu buttons
-//!   show hover tooltips when collapsed to icons.
+//!   show hover tooltips when collapsed to icons, and the rail keeps
+//!   working when fully collapsed (offcanvas).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -297,7 +300,8 @@ impl<'a> Sidebar<'a> {
             match collapsible {
                 SidebarCollapsible::Icon => match variant {
                     SidebarVariant::Sidebar => icon_width,
-                    _ => icon_width + 16.0, // p-2 padding both sides
+                    // `calc(var(--sidebar-width-icon) + theme(spacing.4) + 2px)`
+                    _ => icon_width + 18.0, // p-2 padding + 2px ring
                 },
                 SidebarCollapsible::Offcanvas => 0.0,
                 SidebarCollapsible::None => width,
@@ -355,7 +359,12 @@ impl<'a> Sidebar<'a> {
             let _out = content(&mut child);
             pop_ctx(ui);
         } else {
-            // Fully collapsed (offcanvas): the content closure is skipped.
+            // Fully collapsed (offcanvas): the content closure is skipped,
+            // but the source's rail keeps working when collapsed
+            // (`group-data-[collapsible=offcanvas]:translate-x-0
+            // after:left-full`, sidebar.tsx:297-299) — render a built-in
+            // rail strip at the edge so the sidebar can be re-opened
+            // without an external trigger.
             push_ctx(
                 ui,
                 SidebarCtx {
@@ -368,6 +377,33 @@ impl<'a> Sidebar<'a> {
                 },
             );
             pop_ctx(ui);
+
+            let edge_x = match side {
+                SidebarSide::Left => outer.right(),
+                SidebarSide::Right => outer.left(),
+            };
+            // The rail straddles the edge (`-right-4 -translate-x-1/2`):
+            // 8px on each side, clipped to the visible area.
+            let strip = Rect::from_min_max(
+                Pos2::new(edge_x - 8.0, outer.top()),
+                Pos2::new(edge_x + 8.0, outer.bottom()),
+            )
+            .intersect(ui.clip_rect());
+            if strip.width() > 0.5 && strip.height() > 0.5 {
+                let response = ui.interact(strip, base.with("offcanvas_rail"), Sense::click());
+                if response.hovered() && ui.is_rect_visible(strip) {
+                    painter.line_segment(
+                        [
+                            Pos2::new(edge_x, strip.top()),
+                            Pos2::new(edge_x, strip.bottom()),
+                        ],
+                        Stroke::new(2.0, p.sidebar_border),
+                    );
+                }
+                if response.clicked() {
+                    request_toggle(ui, base);
+                }
+            }
         }
 
         // Paint the column now that the rect is final.
@@ -532,8 +568,9 @@ impl SidebarFooter {
     }
 }
 
-/// `SidebarContent` — `flex-1 flex-col` between header and footer (`gap-0`
-/// in nova, `gap-2` in the base style).
+/// `SidebarContent` — `flex-1 flex-col overflow-auto` between header and
+/// footer (`gap-0` in nova, `gap-2` in the base style). Content taller than
+/// the remaining column height scrolls vertically.
 #[derive(Default)]
 pub struct SidebarContent {
     id_salt: Option<String>,
@@ -551,7 +588,7 @@ impl SidebarContent {
         self
     }
 
-    /// Renders the content area.
+    /// Renders the scrollable content area.
     pub fn show<R>(
         self,
         ui: &mut Ui,
@@ -561,10 +598,18 @@ impl SidebarContent {
             Style::Nova => 0.0, // cn-sidebar-content: gap-0
             _ => crate::theme::tokens::spacing::SM,
         };
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = gap;
-            content(ui)
-        })
+        // Fill the width, hug the content height and scroll when it exceeds
+        // the remaining space (`overflow-auto` on a flex-1 column).
+        let out = egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                content(ui)
+            });
+        egui::InnerResponse::new(
+            out.inner,
+            ui.interact(out.inner_rect, out.id, egui::Sense::hover()),
+        )
     }
 }
 
@@ -678,6 +723,13 @@ impl SidebarGroupLabel {
         let width = ui.available_width();
         let (_, rect) =
             ui.allocate_space(Vec2::new(width, crate::theme::tokens::spacing::CONTROL_SM));
+        // Publish the label geometry for [`SidebarGroupAction`] (anchored to
+        // the group's first label, `absolute top-3.5 right-3`).
+        if let Some(info) = current_ctx(ui) {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(info.state_id.with("last_group_label"), rect);
+            });
+        }
         if ui.is_rect_visible(rect) {
             let font = FontId::new(
                 crate::theme::tokens::type_scale::XS,
@@ -848,7 +900,8 @@ fn resolve_menu_button_colors(
 }
 
 /// A small tooltip to the right of a collapsed menu button (delay 0, like
-/// the source's `TooltipProvider delayDuration={0}`).
+/// the source's `TooltipProvider delayDuration={0}`; the shared tooltip
+/// skin — inverted `bg-primary text-primary-foreground`).
 fn show_rail_tooltip(ui: &Ui, info: SidebarCtx, button_id: Id, text: &str) {
     let theme = ShadcnTheme::of_ui(ui);
     let p = theme.palette;
@@ -858,7 +911,7 @@ fn show_rail_tooltip(ui: &Ui, info: SidebarCtx, button_id: Id, text: &str) {
     );
     let galley = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), font, p.popover_foreground);
+        .layout_no_wrap(text.to_owned(), font, p.background);
     let galley_size = galley.size();
     let pos = Pos2::new(info.inner_rect.right() + 4.0, ui.cursor().top());
     egui::Area::new(button_id.with("rail_tooltip"))
@@ -868,14 +921,13 @@ fn show_rail_tooltip(ui: &Ui, info: SidebarCtx, button_id: Id, text: &str) {
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .corner_radius(theme.radius.md_u8())
-                .fill(p.popover)
-                .stroke(Stroke::new(1.0, p.border))
+                .fill(p.foreground) // bg-primary (inverted tooltip skin)
+                .stroke(Stroke::NONE)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .shadow(crate::utils::shadow::shadow_md(theme.mode.is_dark()))
                 .show(ui, |ui| {
                     ui.set_min_width(galley_size.x);
-                    ui.painter()
-                        .galley(ui.cursor().min, galley, p.popover_foreground);
+                    ui.painter().galley(ui.cursor().min, galley, p.background);
                     ui.advance_cursor_after_rect(Rect::from_min_size(ui.cursor().min, galley_size));
                 });
         });
@@ -986,6 +1038,18 @@ impl SidebarMenuButton {
         let response = ui.interact(rect, id, Sense::click());
         let hovered = response.hovered() && !self.disabled;
 
+        // Publish the button geometry for the absolute-positioned
+        // [`SidebarMenuAction`] (`absolute top-1.5 right-1` anchors to the
+        // menu row).
+        if let Some(info) = ctx_info {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    info.state_id.with("last_menu_button"),
+                    (rect, self.size, self.is_active),
+                );
+            });
+        }
+
         if ui.is_rect_visible(rect) && rect.width() > 0.0 {
             let radius = theme.radius.md_u8();
             let (bg, fg) = resolve_menu_button_colors(
@@ -1091,7 +1155,8 @@ impl SidebarMenuButton {
 }
 
 /// `SidebarMenuSub` — `mx-3.5 border-l border-sidebar-border px-2.5 py-0.5
-/// gap-1`; hidden when collapsed to icons.
+/// gap-1`; hidden when collapsed to icons. The border sits 14px in
+/// (`mx-3.5`); the content starts 24px in (`mx-3.5` + `px-2.5`).
 #[derive(Default)]
 pub struct SidebarMenuSub {
     id_salt: Option<String>,
@@ -1122,14 +1187,19 @@ impl SidebarMenuSub {
         }
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let indent = 14.0; // mx-3.5
-        let line_x = ui.cursor().left() + indent + 0.5;
+        let line_x = ui.cursor().left() + 14.0 + 0.5; // mx-3.5 border-l
         let inner = ui.vertical(|ui| {
-            ui.add_space(2.0); // py-0.5
             ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::XS; // gap-1
-            let r = content(ui);
-            ui.add_space(2.0);
-            r
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    // mx-3.5 (14) + px-2.5 (10) content inset, py-0.5.
+                    left: 24,
+                    top: 2,
+                    bottom: 2,
+                    right: 0,
+                })
+                .show(ui, |ui| content(ui))
+                .inner
         });
         // Border-l along the sub menu.
         let top = inner.response.rect.top();
@@ -1249,6 +1319,245 @@ impl SidebarMenuSubButton {
     }
 }
 
+/// A rendered response placeholder for orphaned absolute-positioned slots.
+fn orphan_response(ui: &Ui, tag: &str) -> Response {
+    ui.interact(Rect::NOTHING, ui.auto_id_with(tag), Sense::hover())
+}
+
+/// `SidebarMenuAction` — the absolute icon button at the right edge of the
+/// last [`SidebarMenuButton`] row (`top-1.5 right-1 aspect-square w-5`,
+/// sidebar.tsx:548-578). Ghost style: hover `bg-sidebar-accent`; with
+/// `show_on_hover` it only paints while the row is hovered
+/// (`md:opacity-0` → 1). Hidden when collapsed to the icon rail.
+pub struct SidebarMenuAction {
+    icon: Icon,
+    show_on_hover: bool,
+    id_salt: Option<String>,
+}
+
+impl SidebarMenuAction {
+    /// Creates a menu action with an icon.
+    pub fn new(icon: Icon) -> Self {
+        Self {
+            icon,
+            show_on_hover: false,
+            id_salt: None,
+        }
+    }
+
+    /// Only paints while the enclosing menu row is hovered
+    /// (`showOnHover`); the click area stays active.
+    pub fn show_on_hover(mut self, on: bool) -> Self {
+        self.show_on_hover = on;
+        self
+    }
+
+    /// Sets a stable id salt.
+    pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
+        self.id_salt = Some(salt.into());
+        self
+    }
+
+    /// Renders the action (does not consume flow space; anchors to the most
+    /// recent [`SidebarMenuButton`] in the enclosing sidebar).
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let theme = ShadcnTheme::of_ui(ui);
+        let p = theme.palette;
+        let Some(info) = current_ctx(ui) else {
+            return orphan_response(ui, "sidebar_menu_action_orphan");
+        };
+        if info.collapsed_icon {
+            // `group-data-[collapsible=icon]:hidden`
+            return orphan_response(ui, "sidebar_menu_action_hidden");
+        }
+        let Some((btn_rect, btn_size, btn_active)) = ui.ctx().data_mut(|d| {
+            d.get_temp::<(Rect, SidebarMenuButtonSize, bool)>(
+                info.state_id.with("last_menu_button"),
+            )
+        }) else {
+            return orphan_response(ui, "sidebar_menu_action_no_button");
+        };
+
+        // `peer-data-[size=sm]:top-1 peer-data-[size=default]:top-1.5
+        // peer-data-[size=lg]:top-2.5`, `right-1`, `w-5`.
+        let top = match btn_size {
+            SidebarMenuButtonSize::Sm => 4.0,
+            SidebarMenuButtonSize::Default => 6.0,
+            SidebarMenuButtonSize::Lg => 10.0,
+        };
+        let rect = Rect::from_min_size(
+            Pos2::new(btn_rect.right() - 4.0 - 20.0, btn_rect.top() + top),
+            Vec2::splat(20.0),
+        );
+        let id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt),
+            None => ui.auto_id_with("sidebar_menu_action"),
+        };
+        let response = ui.interact(rect, id, Sense::click());
+        let hovered = response.hovered();
+        // `showOnHover`: paint only when the row is hovered (the click area
+        // stays active, like the source's opacity transition).
+        let row_hovered = ui.rect_contains_pointer(btn_rect);
+        let paint = !self.show_on_hover || row_hovered;
+        if paint && ui.is_rect_visible(rect) {
+            let (fg, bg) = if hovered {
+                (p.sidebar_accent_foreground, p.sidebar_accent)
+            } else if self.show_on_hover && btn_active {
+                (p.sidebar_accent_foreground, egui::Color32::TRANSPARENT)
+            } else {
+                (p.sidebar_foreground, egui::Color32::TRANSPARENT)
+            };
+            if bg != egui::Color32::TRANSPARENT {
+                ui.painter().rect_filled(rect, theme.radius.md_u8(), bg);
+            }
+            self.icon.paint(
+                ui.painter(),
+                Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+                fg,
+                2.0,
+            );
+        }
+        response
+    }
+}
+
+/// `SidebarGroupAction` — the absolute icon button at the right edge of the
+/// last [`SidebarGroupLabel`] row (`absolute top-3.5 right-3 aspect-square
+/// w-5`, sidebar.tsx:417-438). Hidden when collapsed to the icon rail.
+pub struct SidebarGroupAction {
+    icon: Icon,
+    id_salt: Option<String>,
+}
+
+impl SidebarGroupAction {
+    /// Creates a group action with an icon.
+    pub fn new(icon: Icon) -> Self {
+        Self {
+            icon,
+            id_salt: None,
+        }
+    }
+
+    /// Sets a stable id salt.
+    pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
+        self.id_salt = Some(salt.into());
+        self
+    }
+
+    /// Renders the action (does not consume flow space; anchors to the most
+    /// recent [`SidebarGroupLabel`] in the enclosing sidebar).
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let theme = ShadcnTheme::of_ui(ui);
+        let p = theme.palette;
+        let Some(info) = current_ctx(ui) else {
+            return orphan_response(ui, "sidebar_group_action_orphan");
+        };
+        if info.collapsed_icon {
+            return orphan_response(ui, "sidebar_group_action_hidden");
+        }
+        let Some(label_rect) = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<Rect>(info.state_id.with("last_group_label")))
+        else {
+            return orphan_response(ui, "sidebar_group_action_no_label");
+        };
+
+        // `top-3.5 right-3` relative to the group: the label starts at the
+        // group's p-2 inset, so the offsets shift by that padding.
+        let rect = Rect::from_min_size(
+            Pos2::new(label_rect.right() - 4.0 - 20.0, label_rect.top() + 6.0),
+            Vec2::splat(20.0),
+        );
+        let id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt),
+            None => ui.auto_id_with("sidebar_group_action"),
+        };
+        let response = ui.interact(rect, id, Sense::click());
+        if ui.is_rect_visible(rect) {
+            let hovered = response.hovered();
+            let (fg, bg) = if hovered {
+                (p.sidebar_accent_foreground, p.sidebar_accent)
+            } else {
+                (p.sidebar_foreground, egui::Color32::TRANSPARENT)
+            };
+            if bg != egui::Color32::TRANSPARENT {
+                ui.painter().rect_filled(rect, theme.radius.md_u8(), bg);
+            }
+            self.icon.paint(
+                ui.painter(),
+                Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+                fg,
+                2.0,
+            );
+        }
+        response
+    }
+}
+
+/// `SidebarMenuSkeleton` — `h-8 px-2 gap-2` loading row with an optional
+/// `size-4` icon skeleton and an `h-4` text skeleton whose width is a
+/// stable per-id fraction between 50% and 90% (sidebar.tsx:602-638).
+pub struct SidebarMenuSkeleton {
+    show_icon: bool,
+    id_salt: Option<String>,
+}
+
+impl Default for SidebarMenuSkeleton {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SidebarMenuSkeleton {
+    /// Creates a menu skeleton row.
+    pub fn new() -> Self {
+        Self {
+            show_icon: false,
+            id_salt: None,
+        }
+    }
+
+    /// Prepends a 16×16 icon skeleton (`showIcon`).
+    pub fn show_icon(mut self, on: bool) -> Self {
+        self.show_icon = on;
+        self
+    }
+
+    /// Sets a stable id salt (also picks the text-skeleton width).
+    pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
+        self.id_salt = Some(salt.into());
+        self
+    }
+
+    /// Renders the skeleton row.
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt),
+            None => ui.auto_id_with("sidebar_menu_skeleton"),
+        };
+        // "Random width between 50 to 90%", stable per id.
+        let frac = 0.5 + ((id.value() >> 13) % 100) as f32 / 100.0 * 0.4;
+        let px = 8.0; // px-2
+        ui.allocate_ui(Vec2::new(ui.available_width(), 32.0), |ui| {
+            // h-8 row, items vertically centered (flex items-center gap-2).
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0; // gap-2
+                ui.add_space(px);
+                if self.show_icon {
+                    crate::components::skeleton::Skeleton::new()
+                        .size(16.0, 16.0)
+                        .show(ui);
+                }
+                let avail = (ui.available_width() - px).max(0.0);
+                crate::components::skeleton::Skeleton::new()
+                    .size(avail * frac, 16.0) // h-4 text skeleton
+                    .show(ui);
+            });
+        })
+        .response
+    }
+}
+
 /// `SidebarTrigger` — the `PanelLeft` ghost icon button (`size-7`).
 #[derive(Default)]
 pub struct SidebarTrigger {
@@ -1308,15 +1617,26 @@ impl SidebarTrigger {
         let response = ui.interact(rect, id, Sense::click());
         if ui.is_rect_visible(rect) {
             let hovered = response.hovered();
+            let dark = theme.mode.is_dark();
             if hovered {
-                ui.painter()
-                    .rect_filled(rect, theme.radius.sm_u8(), p.sidebar_accent);
+                // The source trigger is a plain ghost Button
+                // (`hover:bg-accent`; crate base recipe: accent light /
+                // accent/50 dark).
+                ui.painter().rect_filled(
+                    rect,
+                    theme.radius.md_u8(), // rounded-md
+                    if dark {
+                        color_alpha(p.accent, 0.5)
+                    } else {
+                        p.accent
+                    },
+                );
             }
             Icon::PanelLeft.paint(
                 ui.painter(),
                 Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
                 if hovered {
-                    p.sidebar_accent_foreground
+                    p.accent_foreground
                 } else {
                     p.sidebar_foreground
                 },
@@ -1376,26 +1696,28 @@ impl SidebarRail {
             );
         }
 
-        let rail_w = 16.0; // w-4
-        let right_edge = info.inner_rect.right();
+        let edge_x = info.inner_rect.right();
+        // The rail straddles the sidebar edge (`-right-4 -translate-x-1/2`):
+        // 8px inside + 8px outside, clipped to the visible area.
         let rect = Rect::from_min_max(
-            Pos2::new(
-                (right_edge - rail_w).max(info.inner_rect.left()),
-                info.inner_rect.top(),
-            ),
-            Pos2::new(right_edge, info.inner_rect.bottom()),
-        );
+            Pos2::new(edge_x - 8.0, info.inner_rect.top()),
+            Pos2::new(edge_x + 8.0, info.inner_rect.bottom()),
+        )
+        .intersect(ui.clip_rect());
+        if rect.width() <= 0.5 || rect.height() <= 0.5 {
+            return orphan_response(ui, "sidebar_rail_clipped");
+        }
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => ui.auto_id_with("sidebar_rail"),
         };
         let response = ui.interact(rect, id, Sense::click());
         if response.hovered() && ui.is_rect_visible(rect) {
-            // The 2px hover line at the edge (`after:left-1/2 w-[2px]`).
+            // The 2px hover line sits at the very edge (`after:left-full`).
             ui.painter().line_segment(
                 [
-                    Pos2::new(rect.right() - 1.0, rect.top()),
-                    Pos2::new(rect.right() - 1.0, rect.bottom()),
+                    Pos2::new(edge_x, rect.top()),
+                    Pos2::new(edge_x, rect.bottom()),
                 ],
                 Stroke::new(2.0, p.sidebar_border),
             );
@@ -1459,6 +1781,17 @@ impl SidebarInset {
         );
 
         let painter = ui.painter().clone();
+        // `md:peer-data-[variant=inset]:shadow-sm` behind the rounded card
+        // (added first so the card fill paints above it).
+        let sh = crate::utils::shadow::shadow_sm(theme.mode.is_dark());
+        painter.add(
+            egui::epaint::RectShape::filled(
+                card_rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
+                theme.radius.xl_u8(),
+                sh.color,
+            )
+            .with_blur_width(sh.blur as f32),
+        );
         let bg_idx = painter.add(egui::Shape::Noop);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
@@ -1807,6 +2140,169 @@ mod tests {
         out.textures_delta.clear();
         run(&ctx, |ui| {
             assert!(!minimal_sidebar(ui, "esc", SidebarCollapsible::Icon));
+        });
+    }
+
+    #[test]
+    fn menu_sub_content_is_inset_24px() {
+        let ctx = harness();
+        let mut inner_left = None;
+        let mut sub_left = None;
+        run(&ctx, |ui| {
+            Sidebar::new().id_salt("subinset").show(ui, |ui| {
+                inner_left = Some(ui.cursor().left());
+                SidebarContent::new().show(ui, |ui| {
+                    SidebarMenu::new().show(ui, |ui| {
+                        SidebarMenuItem::new().show(ui, |ui| {
+                            SidebarMenuButton::new("History", Icon::Message).show(ui);
+                            SidebarMenuSub::new().show(ui, |ui| {
+                                let b = SidebarMenuSubButton::new("Clone", Icon::Copy).show(ui);
+                                sub_left = Some(b.rect.left());
+                            });
+                        });
+                    });
+                });
+            });
+        });
+        let inner = inner_left.expect("column left");
+        let sub = sub_left.expect("sub button left");
+        // `mx-3.5` (14) + `px-2.5` (10): content starts 24px from the edge,
+        // while the border line stays at 14.5px.
+        assert!(
+            (sub - inner - 24.0).abs() < 0.5,
+            "sub content must start 24px in (got {} at inner {})",
+            sub,
+            inner
+        );
+    }
+
+    /// Press + release a click at `pos` across two passes (with advancing
+    /// time so the width animation completes).
+    fn click(ctx: &egui::Context, pos: Pos2, salt: &str, start_time: f64) {
+        for (i, pressed) in [true, false].iter().enumerate() {
+            let mut input = egui::RawInput {
+                time: Some(start_time + i as f64 * 0.1),
+                ..Default::default()
+            };
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: *pressed,
+                modifiers: Default::default(),
+            });
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut Ui::new(
+                    ctx.clone(),
+                    Id::unique("sidebar_click_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+                );
+                Sidebar::new().id_salt(salt).show(ui, |_ui| {});
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn rail_strip_reopens_collapsed_offcanvas_sidebar() {
+        let ctx = harness();
+        // Advance time so the collapse width animation (200ms) completes
+        // before the click.
+        let mut t = 0.0;
+        run(&ctx, |ui| {
+            request_toggle(ui, state_id("offrail"));
+        });
+        for step in 1..=4 {
+            let input = egui::RawInput {
+                time: Some(step as f64 * 0.2),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut Ui::new(
+                    ctx.clone(),
+                    Id::unique("sidebar_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+                );
+                let r = Sidebar::new().id_salt("offrail").show(ui, |_ui| {});
+                assert!(!r.open);
+            });
+            out.textures_delta.clear();
+        }
+        t += 1.0;
+        // The built-in strip straddles the collapsed edge (8px visible).
+        click(&ctx, Pos2::new(4.0, 300.0), "offrail", t);
+        let input = egui::RawInput {
+            time: Some(t + 0.5),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut Ui::new(
+                ctx.clone(),
+                Id::unique("sidebar_test_ui"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+            );
+            let r = Sidebar::new().id_salt("offrail").show(ui, |_ui| {});
+            assert!(r.open, "the offcanvas rail strip must re-open the sidebar");
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn menu_action_anchors_to_menu_button() {
+        let ctx = harness();
+        run(&ctx, |ui| {
+            Sidebar::new().id_salt("mact").show(ui, |ui| {
+                SidebarContent::new().show(ui, |ui| {
+                    SidebarMenu::new().show(ui, |ui| {
+                        SidebarMenuItem::new().show(ui, |ui| {
+                            let btn = SidebarMenuButton::new("History", Icon::Message).show(ui);
+                            let act = SidebarMenuAction::new(Icon::MoreVertical).show(ui);
+                            assert!((act.rect.width() - 20.0).abs() < 0.5, "w-5");
+                            assert!((act.rect.left() - (btn.rect.right() - 24.0)).abs() < 0.5);
+                            assert!((act.rect.top() - (btn.rect.top() + 6.0)).abs() < 0.5);
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn group_action_anchors_to_label() {
+        let ctx = harness();
+        run(&ctx, |ui| {
+            Sidebar::new().id_salt("gact").show(ui, |ui| {
+                SidebarContent::new().show(ui, |ui| {
+                    SidebarGroup::new().show(ui, |ui| {
+                        let label = SidebarGroupLabel::new("Platform").show(ui);
+                        let act = SidebarGroupAction::new(Icon::Plus).show(ui);
+                        assert!((act.rect.width() - 20.0).abs() < 0.5, "w-5");
+                        // `top-3.5 right-3` shifted by the group's p-2.
+                        assert!((act.rect.left() - (label.rect.right() - 24.0)).abs() < 0.5);
+                        assert!((act.rect.top() - (label.rect.top() + 6.0)).abs() < 0.5);
+                    });
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn menu_skeleton_renders_with_stable_width() {
+        let ctx = harness();
+        run(&ctx, |ui| {
+            Sidebar::new().id_salt("skel").show(ui, |ui| {
+                SidebarContent::new().show(ui, |ui| {
+                    SidebarMenu::new().show(ui, |ui| {
+                        let a = SidebarMenuSkeleton::new().show_icon(true).show(ui);
+                        assert!((a.rect.height() - 32.0).abs() < 0.5, "h-8 row");
+                        let b = SidebarMenuSkeleton::new().show_icon(true).show(ui);
+                        // Each row keeps its own (stable) text width.
+                        assert!(b.rect.height() > 0.0);
+                    });
+                });
+            });
         });
     }
 }

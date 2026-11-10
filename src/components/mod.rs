@@ -207,11 +207,12 @@ pub use sheet::{
     SheetTitle, SheetTrigger, SHEET_MAX_WIDTH,
 };
 pub use sidebar::{
-    Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
-    SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
-    SidebarMenuButtonSize, SidebarMenuButtonVariant, SidebarMenuItem, SidebarMenuSub,
-    SidebarMenuSubButton, SidebarMenuSubSize, SidebarRail, SidebarResponse, SidebarSeparator,
-    SidebarSide, SidebarTrigger, SidebarVariant, SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON,
+    Sidebar, SidebarCollapsible, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupAction,
+    SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
+    SidebarMenuAction, SidebarMenuButton, SidebarMenuButtonSize, SidebarMenuButtonVariant,
+    SidebarMenuItem, SidebarMenuSkeleton, SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubSize,
+    SidebarRail, SidebarResponse, SidebarSeparator, SidebarSide, SidebarTrigger, SidebarVariant,
+    SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON,
 };
 pub use skeleton::Skeleton;
 pub use slider::{Slider, SliderValue, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT};
