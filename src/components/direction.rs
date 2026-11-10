@@ -9,9 +9,13 @@
 //! wrapper**: [`DirectionProvider`] pushes the direction onto a stack for
 //! the duration of its closure, flips the closure's layout (right-aligned,
 //! right-to-left flow for [`Direction::Rtl`]) and exposes
-//! [`current`](current)/[`is_rtl`](is_rtl) plus the [`row_layout`] helper so
-//! components can consult and honor it. Already-ported components do not
-//! query it yet — mirror those with `row_layout` inside custom widgets.
+//! [`current`](current)/[`is_rtl`](is_rtl) plus helpers so components can
+//! consult and honor it: [`row_layout`] for row flow, [`cross_align`] for
+//! stacked content, and [`popup_align`]/[`mirrored_chevron`] for the popup
+//! placement and chevron mirroring Radix performs (dropdown-menu, select,
+//! combobox and popover consult it). Note egui does **no** Unicode bidi
+//! reordering or contextual shaping — RTL runs render in logical order —
+//! so the provider flips layout geometry only.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -26,6 +30,8 @@
 //! });
 //! ```
 
+use crate::icons::Icon;
+use egui::emath::RectAlign;
 use egui::{Align, Id, InnerResponse, Layout, Ui};
 
 /// Text/layout direction, mirroring the source `dir` prop.
@@ -91,6 +97,43 @@ pub fn cross_align(direction: Direction) -> Align {
     match direction {
         Direction::Ltr => Align::Min,
         Direction::Rtl => Align::Max,
+    }
+}
+
+/// Popup alignment under the current direction: `ltr` in a left-to-right
+/// scope, `rtl` when an RTL [`DirectionProvider`] encloses `ui`. Radix
+/// mirrors the inline `Start`/`End` popup alignment for RTL, so popups
+/// anchored to a trigger should route their [`egui::Popup`] `.align(…)`
+/// through this.
+///
+/// ```ignore
+/// use egui::emath::RectAlign;
+///
+/// let align = direction::popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END);
+/// Popup::new(id, ctx.clone(), PopupAnchor::ParentRect(anchor), layer).align(align);
+/// ```
+pub fn popup_align(ui: &Ui, ltr: RectAlign, rtl: RectAlign) -> RectAlign {
+    if is_rtl(ui) {
+        rtl
+    } else {
+        ltr
+    }
+}
+
+/// Chevron icon under the current direction: horizontal indicators point
+/// into the submenu (`ltr` under LTR — a right-pointing chevron — and
+/// `rtl` under RTL, which then points left). Vertical chevrons simply pass
+/// the same icon for both arguments.
+///
+/// ```ignore
+/// let chevron = direction::mirrored_chevron(ui, Icon::ChevronRight, Icon::ChevronLeft);
+/// chevron.paint(ui.painter(), rect, color, 2.0);
+/// ```
+pub fn mirrored_chevron(ui: &Ui, ltr: Icon, rtl: Icon) -> Icon {
+    if is_rtl(ui) {
+        rtl
+    } else {
+        ltr
     }
 }
 
@@ -204,6 +247,48 @@ mod tests {
             DirectionProvider::rtl().show(ui, |ui| {
                 assert_eq!(row_layout(ui).main_dir, egui::Direction::RightToLeft);
             });
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn popup_align_and_chevron_mirror_under_rtl() {
+        use egui::emath::RectAlign;
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("direction_popup_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            assert_eq!(
+                popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END),
+                RectAlign::BOTTOM_START,
+                "LTR keeps the ltr alignment"
+            );
+            assert_eq!(
+                mirrored_chevron(ui, Icon::ChevronRight, Icon::ChevronLeft),
+                Icon::ChevronRight,
+                "LTR keeps the ltr chevron"
+            );
+            DirectionProvider::rtl().show(ui, |ui| {
+                assert_eq!(
+                    popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END),
+                    RectAlign::BOTTOM_END,
+                    "RTL flips to the rtl alignment"
+                );
+                assert_eq!(
+                    mirrored_chevron(ui, Icon::ChevronRight, Icon::ChevronLeft),
+                    Icon::ChevronLeft,
+                    "RTL flips to the rtl chevron"
+                );
+            });
+            // Restoring the LTR scope restores the ltr choices.
+            assert_eq!(
+                popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END),
+                RectAlign::BOTTOM_START
+            );
         });
         out.textures_delta.clear();
     }
