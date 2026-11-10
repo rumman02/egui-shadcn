@@ -9,10 +9,18 @@
 //! 2px foreground underline (horizontal) / side bar (vertical) on the active
 //! trigger instead of a fill.
 //!
+//! Triggers stretch to an equal width like the source's `flex-1` (the list
+//! remembers the widest trigger between frames), and vertical triggers fill
+//! the column like `w-full`.
+//!
 //! The selected value lives in the egui context keyed by a stable id (pass
 //! [`Tabs::id_salt`] per instance) or is controlled through a `&mut String`
-//! with [`Tabs::controlled`]. Keyboard: triggers are focusable; egui moves
-//! focus with Tab/Arrows and activates with Enter/Space.
+//! with [`Tabs::controlled`]. Keyboard (Radix roving tabindex, default
+//! `activationMode="automatic"`): ArrowRight/ArrowLeft (horizontal) or
+//! ArrowDown/ArrowUp (vertical) move focus to the next/previous enabled
+//! trigger and select it, Home/End jump to the first/last enabled trigger,
+//! and Enter/Space activate the focused trigger. Tab keeps egui's own
+//! traversal.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -37,7 +45,8 @@
 use crate::icons::Icon;
 use crate::theme::{color_alpha, ShadcnTheme};
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2,
+    Align2, Color32, CornerRadius, FontId, Id, Key, Pos2, Rect, Response, Sense, Shape, Stroke, Ui,
+    Vec2,
 };
 
 /// Visual list variants, mirroring the source `tabsListVariants`.
@@ -66,10 +75,38 @@ pub const TABS_LIST_HEIGHT: f32 = 32.0;
 const LIST_PAD: f32 = 3.0;
 /// Trigger height inside the list: `h-[calc(100%-1px)]` of the padded inner.
 const TRIGGER_H: f32 = TABS_LIST_HEIGHT - LIST_PAD * 2.0 - 1.0;
-/// Trigger height when the list is vertical (`h-fit`).
-const TRIGGER_H_VERTICAL: f32 = 22.0;
+/// Trigger height when the list is vertical (`h-fit`; nova `px-1.5 py-0.5`
+/// + the 20px `text-sm` line box).
+const TRIGGER_H_VERTICAL: f32 = 24.0;
 /// Height/width of the `line` variant indicator (`after:h-0.5`).
 const INDICATOR: f32 = 2.0;
+
+/// Horizontal gap between triggers: the base list has none (the `flex-1`
+/// triggers touch) and the `line` variant adds `gap-1`.
+fn list_gap(variant: TabsVariant) -> f32 {
+    match variant {
+        TabsVariant::Default => 0.0,
+        TabsVariant::Line => crate::theme::tokens::spacing::XS,
+    }
+}
+
+/// The `after:bottom-[-5px] after:h-0.5` underline: it hangs below the
+/// trigger, spanning `[max.y + 3, max.y + 5]`.
+fn horizontal_indicator_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(rect.min.x, rect.max.y + 5.0 - INDICATOR),
+        Vec2::new(rect.width(), INDICATOR),
+    )
+}
+
+/// The `after:-right-1 after:w-0.5` side bar: it hangs to the right of the
+/// trigger, spanning `[max.x + 2, max.x + 4]`.
+fn vertical_indicator_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(rect.max.x + 4.0 - INDICATOR, rect.min.y),
+        Vec2::new(INDICATOR, rect.height()),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Scope plumbing
@@ -98,6 +135,27 @@ fn list_stack_id() -> Id {
 
 fn scratch_id() -> Id {
     Id::unique("shadcn_tabs_list_scratch")
+}
+
+fn trigger_order_collect_id(value_id: Id) -> Id {
+    value_id.with("trigger_order_collect")
+}
+
+/// Ordered `(value, disabled)` pairs from the previous frame's list show —
+/// the roving-focus navigation reads this so the last trigger can move
+/// focus to a sibling that has not been shown yet in the current frame.
+fn trigger_order_id(value_id: Id) -> Id {
+    value_id.with("trigger_order")
+}
+
+fn trigger_widths_collect_id(value_id: Id) -> Id {
+    value_id.with("trigger_widths_collect")
+}
+
+/// The widest natural trigger width from the previous frame (`flex-1`
+/// equal-width stretch; one-frame lag, same as the accordion item count).
+fn equal_width_id(value_id: Id) -> Id {
+    value_id.with("equal_w")
 }
 
 fn peek<T: Clone + 'static>(ui: &Ui, id: Id) -> Option<T> {
@@ -285,27 +343,52 @@ impl TabsList {
             stack.push(scope);
             d.insert_temp(list_stack_id(), stack);
             d.insert_temp(scratch_id(), None::<Rect>); // reset the trigger union
+                                                       // Reset the per-frame roving-focus and width collectors; the
+                                                       // previous-frame results stay until this list finishes.
+            d.insert_temp(
+                trigger_order_collect_id(scope.value_id),
+                Vec::<(String, bool)>::new(),
+            );
+            d.insert_temp(trigger_widths_collect_id(scope.value_id), Vec::<f32>::new());
         });
 
         // Reserve a paint slot so the background renders behind the triggers.
         let bg_idx = ui.painter().add(Shape::Noop);
 
+        let gap = list_gap(self.variant);
         match scope.orientation {
             TabsOrientation::Horizontal => {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::XS_HALF;
+                    ui.spacing_mut().item_spacing.x = gap;
                     content(ui);
                 });
             }
             TabsOrientation::Vertical => {
                 ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::XS_HALF;
+                    ui.spacing_mut().item_spacing.y = gap;
                     content(ui);
                 });
             }
         }
 
+        // Publish the trigger order (for roving-focus navigation) and the
+        // widest natural trigger width (for the `flex-1` equal-width
+        // stretch) for the next frame.
         ui.ctx().data_mut(|d| {
+            let order: Vec<(String, bool)> = d
+                .get_temp::<Vec<(String, bool)>>(trigger_order_collect_id(scope.value_id))
+                .unwrap_or_default();
+            d.insert_temp(trigger_order_id(scope.value_id), order);
+            let widths: Vec<f32> = d
+                .get_temp::<Vec<f32>>(trigger_widths_collect_id(scope.value_id))
+                .unwrap_or_default();
+            if let Some(max_w) = widths
+                .iter()
+                .copied()
+                .fold(None::<f32>, |a, b| Some(a.map_or(b, |m| m.max(b))))
+            {
+                d.insert_temp(equal_width_id(scope.value_id), max_w);
+            }
             let mut stack: Vec<TabsListScope> = d.get_temp(list_stack_id()).unwrap_or_default();
             stack.pop();
             d.insert_temp(list_stack_id(), stack);
@@ -317,19 +400,15 @@ impl TabsList {
             .data_mut(|d| d.get_temp::<Option<Rect>>(scratch_id()).flatten())
         {
             if ui.is_rect_visible(union) {
-                let dark = theme_dark(ui);
+                let theme = ShadcnTheme::of_ui(ui);
                 let bg = match self.variant {
-                    TabsVariant::Default => {
-                        if dark {
-                            crate::theme::color_alpha(ShadcnTheme::of_ui(ui).palette.muted, 0.6)
-                        } else {
-                            ShadcnTheme::of_ui(ui).palette.muted
-                        }
-                    }
+                    // Plain `bg-muted`; the dark `--muted` token already
+                    // encodes the dark appearance.
+                    TabsVariant::Default => theme.palette.muted,
                     TabsVariant::Line => Color32::TRANSPARENT,
                 };
                 let radius = match self.variant {
-                    TabsVariant::Default => ShadcnTheme::of_ui(ui).radius.lg_u8(),
+                    TabsVariant::Default => theme.radius.lg_u8(),
                     TabsVariant::Line => 0,
                 };
                 let shape = egui::epaint::RectShape::filled(
@@ -341,10 +420,6 @@ impl TabsList {
             }
         }
     }
-}
-
-fn theme_dark(ui: &Ui) -> bool {
-    ShadcnTheme::of_ui(ui).mode.is_dark()
 }
 
 // ---------------------------------------------------------------------------
@@ -436,12 +511,33 @@ impl TabsTrigger {
             } else {
                 0.0
             };
-        let desired = Vec2::new(inner_w + pad_x * 2.0, height);
+        let natural_w = inner_w + pad_x * 2.0;
+        // `flex-1` (horizontal) / `w-full` (vertical): stretch to the widest
+        // sibling's natural width from the previous frame.
+        let equal_w = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<f32>(equal_width_id(scope.value_id)));
+        let desired_w = equal_w.unwrap_or(natural_w).max(natural_w);
+        let desired = Vec2::new(desired_w, height);
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => scope.value_id.with("trigger").with(self.value.as_str()),
         };
+
+        // Register this trigger in the roving-focus order and width list.
+        ui.ctx().data_mut(|d| {
+            let mut order: Vec<(String, bool)> = d
+                .get_temp::<Vec<(String, bool)>>(trigger_order_collect_id(scope.value_id))
+                .unwrap_or_default();
+            order.push((self.value.clone(), self.disabled));
+            d.insert_temp(trigger_order_collect_id(scope.value_id), order);
+            let mut widths: Vec<f32> = d
+                .get_temp::<Vec<f32>>(trigger_widths_collect_id(scope.value_id))
+                .unwrap_or_default();
+            widths.push(natural_w);
+            d.insert_temp(trigger_widths_collect_id(scope.value_id), widths);
+        });
 
         let (_, rect) = ui.allocate_space(desired);
         let mut response = ui.interact(
@@ -465,6 +561,91 @@ impl TabsTrigger {
                 )),
             );
             response.mark_changed();
+        }
+
+        // Radix roving tabindex: arrows move focus to the next/previous
+        // enabled trigger and — with the default `activationMode="automatic"`
+        // — select it; Home/End jump to the first/last enabled trigger.
+        // While focused, the trigger claims the arrow keys via the focus lock
+        // filter so egui's own spatial navigation does not also move focus
+        // (Tab keeps the built-in traversal). `gained_focus()` is excluded so
+        // a trigger focused earlier in the same frame does not consume the
+        // same key press again.
+        if response.has_focus() && !self.disabled {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: false,
+                    },
+                );
+            });
+        }
+        if response.has_focus() && !response.gained_focus() && !self.disabled {
+            let horizontal = !vertical;
+            let order: Vec<(String, bool)> = ui.ctx().data_mut(|d| {
+                d.get_temp::<Vec<(String, bool)>>(trigger_order_id(scope.value_id))
+                    .unwrap_or_default()
+            });
+            let enabled: Vec<&str> = order
+                .iter()
+                .filter(|(_, disabled)| !*disabled)
+                .map(|(value, _)| value.as_str())
+                .collect();
+            let index = enabled
+                .iter()
+                .position(|v| *v == self.value.as_str())
+                .map(|i| i as i32);
+            if let Some(index) = index {
+                let (next, prev, home, end) = ui.input(|i| {
+                    (
+                        if horizontal {
+                            i.key_pressed(Key::ArrowRight)
+                        } else {
+                            i.key_pressed(Key::ArrowDown)
+                        },
+                        if horizontal {
+                            i.key_pressed(Key::ArrowLeft)
+                        } else {
+                            i.key_pressed(Key::ArrowUp)
+                        },
+                        i.key_pressed(Key::Home),
+                        i.key_pressed(Key::End),
+                    )
+                });
+                let last = enabled.len() as i32 - 1;
+                let target = if home {
+                    Some(0)
+                } else if end {
+                    Some(last)
+                } else if next {
+                    Some(index + 1)
+                } else if prev {
+                    Some(index - 1)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    if (0..=last).contains(&target) {
+                        let value = enabled[target as usize];
+                        if value != self.value.as_str() {
+                            // Sibling ids follow the default trigger pattern;
+                            // a custom `id_salt` trigger opts out of
+                            // traversal.
+                            ui.memory_mut(|m| {
+                                m.request_focus(scope.value_id.with("trigger").with(value))
+                            });
+                            // Radix automatic activation: selecting follows
+                            // focus.
+                            write_selected(ui, scope.value_id, Some(value.to_owned()));
+                            response.mark_changed();
+                        }
+                    }
+                }
+            }
         }
 
         // Record the rect so the list can paint its background behind us.
@@ -572,23 +753,12 @@ impl TabsTrigger {
             // (vertical) on the active trigger.
             if selected && scope.variant == TabsVariant::Line && !self.disabled {
                 let indicator_color = p.foreground;
-                if vertical {
-                    // `after:-right-1 after:inset-y-0 after:w-0.5`
-                    let bar = Rect::from_min_size(
-                        Pos2::new(rect.max.x + crate::theme::tokens::spacing::XS, rect.min.y),
-                        Vec2::new(INDICATOR, rect.height()),
-                    );
-                    painter.rect_filled(bar, CornerRadius::same(0), indicator_color);
+                let bar = if vertical {
+                    vertical_indicator_rect(rect)
                 } else {
-                    // `after:bottom-[-5px] after:inset-x-0 after:h-0.5`
-                    let y =
-                        rect.max.y + crate::theme::tokens::spacing::SM_HALF - INDICATOR + LIST_PAD;
-                    let bar = Rect::from_min_size(
-                        Pos2::new(rect.min.x, y),
-                        Vec2::new(rect.width(), INDICATOR),
-                    );
-                    painter.rect_filled(bar, CornerRadius::same(0), indicator_color);
-                }
+                    horizontal_indicator_rect(rect)
+                };
+                painter.rect_filled(bar, CornerRadius::same(0), indicator_color);
             }
 
             // `focus-visible:border-ring focus-visible:ring-[3px]`.
@@ -691,6 +861,24 @@ mod tests {
                     &mut f,
                 );
             }
+        }
+
+        /// Presses a key on a rendered frame (the focused widget must exist).
+        fn key(&mut self, key: Key, mut f: impl FnMut(&mut Ui)) {
+            self.step(
+                vec![egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                    physical_key: None,
+                }],
+                &mut f,
+            );
+        }
+
+        fn focus(&self, id: Id) {
+            self.ctx.memory_mut(|m| m.request_focus(id));
         }
     }
 
@@ -886,5 +1074,200 @@ mod tests {
                 ui.label("no root");
             });
         });
+    }
+
+    #[test]
+    fn list_gap_matches_variant() {
+        // The base list has no gap between the flex-1 triggers; `line` adds
+        // `gap-1`.
+        assert_eq!(list_gap(TabsVariant::Default), 0.0);
+        assert_eq!(list_gap(TabsVariant::Line), 4.0);
+    }
+
+    #[test]
+    fn line_indicator_geometry() {
+        // `after:bottom-[-5px] after:h-0.5`: the bar spans [max.y+3, max.y+5]
+        // directly under the trigger.
+        let r = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(60.0, 26.0));
+        let bar = horizontal_indicator_rect(r);
+        assert!((bar.top() - (r.max.y + 3.0)).abs() < 1e-6);
+        assert!((bar.bottom() - (r.max.y + 5.0)).abs() < 1e-6);
+        assert_eq!(bar.height(), 2.0);
+        assert_eq!(bar.left(), r.left());
+        assert_eq!(bar.right(), r.right());
+
+        // `after:-right-1 after:w-0.5`: the bar spans [max.x+2, max.x+4].
+        let bar = vertical_indicator_rect(r);
+        assert!((bar.left() - (r.max.x + 2.0)).abs() < 1e-6);
+        assert!((bar.right() - (r.max.x + 4.0)).abs() < 1e-6);
+        assert_eq!(bar.width(), 2.0);
+        assert_eq!(bar.top(), r.top());
+        assert_eq!(bar.bottom(), r.bottom());
+    }
+
+    #[test]
+    fn arrow_keys_move_focus_and_activate() {
+        let mut h = Harness::new();
+        h.run(|ui| tabs_ui(ui, "t7"));
+        let state_id = Id::unique("tabs_test_ui").with("t7");
+        let trigger = |value: &str| state_id.with("trigger").with(value);
+        h.focus(trigger("a"));
+        // Two plain frames: the order list is published at list end and the
+        // focus lock filter installs on the frame after focus.
+        h.run(|ui| tabs_ui(ui, "t7"));
+        h.run(|ui| tabs_ui(ui, "t7"));
+
+        h.key(Key::ArrowRight, |ui| tabs_ui(ui, "t7"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("b")),
+            "ArrowRight moves focus to the next trigger"
+        );
+        assert_eq!(
+            selected(&h, "t7").as_deref(),
+            Some("b"),
+            "automatic activation selects the trigger focus moved to"
+        );
+
+        h.key(Key::ArrowLeft, |ui| tabs_ui(ui, "t7"));
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(trigger("a")));
+        assert_eq!(selected(&h, "t7").as_deref(), Some("a"));
+
+        // ArrowRight on the last trigger keeps focus there.
+        h.key(Key::ArrowRight, |ui| tabs_ui(ui, "t7"));
+        h.key(Key::ArrowRight, |ui| tabs_ui(ui, "t7"));
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(trigger("b")));
+    }
+
+    #[test]
+    fn home_end_jump_and_disabled_triggers_are_skipped() {
+        let mut h = Harness::new();
+        let ui_with_disabled = |ui: &mut Ui, salt: &str| {
+            Tabs::new().id_salt(salt).show(ui, |ui| {
+                TabsList::new().show(ui, |ui| {
+                    TabsTrigger::new("a", "Account").disabled(true).show(ui);
+                    TabsTrigger::new("b", "Password").show(ui);
+                    TabsTrigger::new("c", "Sessions").show(ui);
+                });
+            });
+        };
+        h.run(|ui| ui_with_disabled(ui, "t8"));
+        let state_id = Id::unique("tabs_test_ui").with("t8");
+        let trigger = |value: &str| state_id.with("trigger").with(value);
+        h.focus(trigger("b"));
+        h.run(|ui| ui_with_disabled(ui, "t8"));
+        h.run(|ui| ui_with_disabled(ui, "t8"));
+
+        h.key(Key::ArrowLeft, |ui| ui_with_disabled(ui, "t8"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("b")),
+            "the disabled first trigger is skipped going backwards"
+        );
+
+        h.key(Key::End, |ui| ui_with_disabled(ui, "t8"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("c")),
+            "End jumps to the last enabled trigger"
+        );
+
+        h.key(Key::Home, |ui| ui_with_disabled(ui, "t8"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("b")),
+            "Home jumps to the first enabled trigger"
+        );
+        assert_eq!(
+            selected(&h, "t8").as_deref(),
+            Some("b"),
+            "automatic activation follows the Home jump"
+        );
+    }
+
+    #[test]
+    fn vertical_orientation_uses_up_down_arrows() {
+        let mut h = Harness::new();
+        let vertical_ui = |ui: &mut Ui, salt: &str| {
+            Tabs::new()
+                .id_salt(salt)
+                .orientation(TabsOrientation::Vertical)
+                .show(ui, |ui| {
+                    TabsList::new().show(ui, |ui| {
+                        TabsTrigger::new("a", "Account").show(ui);
+                        TabsTrigger::new("b", "Password").show(ui);
+                    });
+                });
+        };
+        h.run(|ui| vertical_ui(ui, "t9"));
+        let state_id = Id::unique("tabs_test_ui").with("t9");
+        h.focus(state_id.with("trigger").with("a"));
+        h.run(|ui| vertical_ui(ui, "t9"));
+        h.run(|ui| vertical_ui(ui, "t9"));
+
+        h.key(Key::ArrowDown, |ui| vertical_ui(ui, "t9"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(state_id.with("trigger").with("b")),
+            "ArrowDown moves focus in a vertical list"
+        );
+        assert_eq!(selected(&h, "t9").as_deref(), Some("b"));
+
+        h.key(Key::ArrowUp, |ui| vertical_ui(ui, "t9"));
+        assert_eq!(selected(&h, "t9").as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn triggers_stretch_to_equal_width() {
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 2];
+        // First frame measures the natural widths; the second frame stretches
+        // all triggers to the widest one (`flex-1` / `w-full`).
+        h.run(|ui| {
+            Tabs::new().id_salt("t10").show(ui, |ui| {
+                TabsList::new().show(ui, |ui| {
+                    rects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                    rects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                });
+            });
+        });
+        h.run(|ui| {
+            Tabs::new().id_salt("t10").show(ui, |ui| {
+                TabsList::new().show(ui, |ui| {
+                    rects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                    rects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                });
+            });
+        });
+        assert!(
+            (rects[0].width() - rects[1].width()).abs() < 0.5,
+            "triggers share an equal width: {} vs {}",
+            rects[0].width(),
+            rects[1].width()
+        );
+
+        // Vertical triggers fill the column the same way (`w-full`).
+        let mut vrects = [Rect::ZERO; 2];
+        for _ in 0..2 {
+            h.run(|ui| {
+                Tabs::new()
+                    .id_salt("t11")
+                    .orientation(TabsOrientation::Vertical)
+                    .show(ui, |ui| {
+                        TabsList::new().show(ui, |ui| {
+                            vrects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                            vrects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                        });
+                    });
+            });
+        }
+        assert!(
+            (vrects[0].width() - vrects[1].width()).abs() < 0.5,
+            "vertical triggers fill the widest sibling's width"
+        );
+        assert!(
+            (vrects[0].height() - 24.0).abs() < 0.5,
+            "nova vertical trigger height is 24px"
+        );
     }
 }

@@ -2425,13 +2425,13 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Line variant (underline indicator)");
+    ui.label("Line variant (underline indicator, gap-1 triggers)");
     ui.add_space(4.0);
     Tabs::new().id_salt("tabs_demo_line").show(ui, |ui| {
         TabsList::new().variant(TabsVariant::Line).show(ui, |ui| {
             TabsTrigger::new("preview", "Preview").show(ui);
             TabsTrigger::new("code", "Code").show(ui);
-            TabsTrigger::new("logs", "Logs").show(ui);
+            TabsTrigger::new("logs", "Logs").icon(Icon::Clock).show(ui);
         });
         TabsContent::new("preview").show(ui, |ui| {
             ui.label("Rendered output preview.");
@@ -2487,6 +2487,29 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
+    ui.label("Line + vertical (side indicator on the active trigger)");
+    ui.add_space(4.0);
+    Tabs::new()
+        .id_salt("tabs_demo_vertical_line")
+        .orientation(TabsOrientation::Vertical)
+        .show(ui, |ui| {
+            TabsList::new().variant(TabsVariant::Line).show(ui, |ui| {
+                TabsTrigger::new("outline", "Outline").show(ui);
+                TabsTrigger::new("history", "History").show(ui);
+                TabsTrigger::new("trash", "Trash").show(ui);
+            });
+            TabsContent::new("outline").show(ui, |ui| {
+                ui.label("Document outline.");
+            });
+            TabsContent::new("history").show(ui, |ui| {
+                ui.label("Version history.");
+            });
+            TabsContent::new("trash").show(ui, |ui| {
+                ui.label("Deleted items.");
+            });
+        });
+
+    ui.add_space(12.0);
     ui.label("With icons and a disabled trigger");
     ui.add_space(4.0);
     Tabs::new().id_salt("tabs_demo_icons").show(ui, |ui| {
@@ -2511,7 +2534,10 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab and Arrow keys move focus; Enter or Space selects.");
+    ui.label(
+        "Keyboard: Arrow keys move focus between triggers and select them (automatic activation); \
+         Home/End jump; Enter or Space activates the focused trigger.",
+    );
 
     ui.ctx()
         .data_mut(|d| d.insert_temp(controlled_store, controlled));
