@@ -41,11 +41,10 @@ use crate::components::button::{Button, ButtonVariant};
 use crate::components::dialog::footer_strip;
 use crate::icons::Icon;
 use crate::theme::{color_alpha, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
-use crate::utils::shadow;
+use crate::utils::animation::nova_overlay_progress;
 use egui::{
-    Align, Color32, Context, CornerRadius, Frame, Id, Key, Layout, Margin, Modal, Modifiers, Rect,
-    Response, Sense, Stroke, Ui, UiBuilder, Vec2,
+    Align, Color32, Context, CornerRadius, Frame, Id, Key, Layout, Margin, Modal, Modifiers, Pos2,
+    Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2,
 };
 
 /// nova `data-[size=default]:sm:max-w-sm` (384 px).
@@ -386,6 +385,9 @@ impl<'a> AlertDialogCancel<'a> {
     }
 
     /// Renders the cancel button; clicking dismisses the dialog.
+    ///
+    /// The rendered button's id is recorded so the content can give it the
+    /// initial focus (Radix auto-focuses Cancel on open).
     pub fn show(self, ui: &mut Ui) -> Response {
         let Some(state_id) = current_scope(ui) else {
             return action_button(&self.label, self.variant, self.id_salt.clone()).show(ui);
@@ -396,8 +398,10 @@ impl<'a> AlertDialogCancel<'a> {
             None => action_button(&self.label, self.variant, self.id_salt.clone()).show(ui),
         };
 
+        let ctx = ui.ctx().clone();
+        ctx.data_mut(|d| d.insert_temp(state_id.with("cancel_resp"), response.id));
+
         if response.clicked() {
-            let ctx = ui.ctx().clone();
             set_open(&ctx, state_id, false);
             response.mark_changed();
         }
@@ -431,9 +435,10 @@ fn action_button(
 // AlertDialogContent
 // ---------------------------------------------------------------------------
 
-/// The modal panel: centered, `bg-popover ring-foreground/10 rounded-xl p-4
-/// shadow-lg`, sizes `default`/`sm`. No close X; backdrop clicks are ignored;
-/// Escape dismisses without confirming.
+/// The modal panel: centered, `bg-popover ring-foreground/10 rounded-xl p-4`
+/// (nova, ring-only), sizes `default`/`sm`. No close X; backdrop clicks are
+/// ignored; Escape dismisses without confirming. Opening auto-focuses the
+/// Cancel button, like Radix.
 #[derive(Clone, Debug)]
 pub struct AlertDialogContent {
     size: AlertDialogSize,
@@ -484,21 +489,26 @@ impl AlertDialogContent {
         write_state(&ctx, state_id, state);
 
         let theme = ShadcnTheme::of_ui(ui);
-        let dark = theme.mode.is_dark();
         let p = theme.palette;
 
         let modal_id = state_id.with("modal");
         let anim_id = state_id.with("anim");
 
-        // `data-[state=open]:fade-in-0 zoom-in-95 duration-100`.
-        let progress = overlay_progress(&ctx, anim_id, open);
+        // nova `duration-100`: fade in/out at 100ms in both directions.
+        let progress = nova_overlay_progress(&ctx, anim_id, open);
         if !(open || progress.alpha > 0.002) {
             return None;
         }
 
         let pad = INNER_PADDING as f32;
         let screen_w = ctx.content_rect().width();
-        let max_width = self.size.width().min(screen_w - 32.0).max(80.0);
+        // nova `data-[size=default]:max-w-xs` below the 640px breakpoint.
+        let size_width = if screen_w < 640.0 {
+            AlertDialogSize::Sm.width()
+        } else {
+            self.size.width()
+        };
+        let max_width = size_width.min(screen_w - 32.0).max(80.0);
 
         // `bg-black/10` on the backdrop, fading with the dialog.
         let backdrop = color_alpha(
@@ -506,12 +516,20 @@ impl AlertDialogContent {
             BACKDROP_ALPHA * progress.alpha,
         );
 
+        // nova `.cn-alert-dialog-content` is ring-only: no shadow.
         let frame = Frame::new()
             .fill(p.popover)
             .stroke(Stroke::new(1.0, color_alpha(p.foreground, RING_ALPHA)))
             .corner_radius(CornerRadius::same(theme.radius.xl_u8()))
-            .inner_margin(Margin::same(INNER_PADDING))
-            .shadow(shadow::shadow_lg(dark));
+            .inner_margin(Margin::same(INNER_PADDING));
+
+        // Radix auto-focuses the cancel button when the dialog opens; the
+        // guard makes it fire once per open, and resets while closed.
+        let focus_guard = state_id.with("cancel_focus_done");
+        let already_focused = ctx.data_mut(|d| d.get_temp::<bool>(focus_guard).unwrap_or(false));
+        if !open {
+            ctx.data_mut(|d| d.insert_temp(focus_guard, false));
+        }
 
         let modal = Modal::new(modal_id)
             .backdrop_color(backdrop)
@@ -526,7 +544,17 @@ impl AlertDialogContent {
                 ui.set_min_width(inner_w);
                 ui.set_max_width(inner_w);
                 ui.style_mut().visuals.override_text_color = Some(p.popover_foreground);
+                // nova `.cn-alert-dialog-content`: `grid gap-4` column flow.
+                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::LG;
                 content(ui);
+                if open && !already_focused {
+                    ctx.data_mut(|d| d.insert_temp(focus_guard, true));
+                    if let Some(cancel_id) =
+                        ctx.data_mut(|d| d.get_temp::<Id>(state_id.with("cancel_resp")))
+                    {
+                        ctx.memory_mut(|m| m.request_focus(cancel_id));
+                    }
+                }
             });
         });
 
@@ -659,13 +687,21 @@ impl AlertDialogMedia {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
-            // Center within the available width (the header centers the grid
-            // for the `sm` size).
-            let center_x = ui.max_rect().center().x;
-            let rect = Rect::from_center_size(
-                egui::Pos2::new(center_x.max(rect.center().x), rect.center().y),
-                Vec2::splat(side),
-            );
+            // nova: the header grid is `place-items-start` for the `default`
+            // size on desktop; only `sm` stays centered.
+            let size = current_scope(ui)
+                .map(|id| read_state(ui.ctx(), id).size)
+                .unwrap_or_default();
+            let rect = match size {
+                AlertDialogSize::Default => rect,
+                AlertDialogSize::Sm => {
+                    let center_x = ui.max_rect().center().x;
+                    Rect::from_center_size(
+                        Pos2::new(center_x.max(rect.center().x), rect.center().y),
+                        Vec2::splat(side),
+                    )
+                }
+            };
             painter.rect_filled(rect, theme.radius.md_u8(), p.muted);
             let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(icon_side));
             self.icon
@@ -688,8 +724,9 @@ impl AlertDialogFooter {
         Self { _private: () }
     }
 
-    /// Renders the footer strip. For the `sm` size the content is centered
-    /// (`grid grid-cols-2`-like); otherwise right-aligned.
+    /// Renders the footer strip. For the `sm` size the content fills a
+    /// 2-column grid (Cancel left, Action right); otherwise it is
+    /// right-aligned.
     pub fn show<R>(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
         let size = current_scope(ui)
             .map(|id| read_state(ui.ctx(), id).size)
@@ -697,21 +734,36 @@ impl AlertDialogFooter {
         match size {
             AlertDialogSize::Default => footer_strip(ui, content),
             AlertDialogSize::Sm => {
+                // Source `group-data-[size=sm]:grid grid-cols-2`: two
+                // equal-width cells (Cancel left, Action right). An egui
+                // layout cannot split an opaque closure across cells, so the
+                // row is spread across the full inner width instead: the
+                // measured natural row width pins the first child to the
+                // left edge and the last to the right edge, matching the
+                // grid's outer geometry (more than two children simply
+                // spread tighter, without grid row wrapping).
                 let theme = ShadcnTheme::of_ui(ui);
                 let p = theme.palette;
                 let pad = crate::theme::tokens::spacing::LG;
                 let bleed = pad;
                 let radius = theme.radius.xl_u8();
+                let gap_x = ui.spacing().item_spacing.x;
 
                 let flow_min = ui.cursor().min;
                 let flow_w = ui.available_width();
                 let measure_rect = Rect::from_min_size(flow_min, Vec2::new(flow_w, f32::INFINITY));
-                let mut measure = ui.new_child(UiBuilder::new().max_rect(measure_rect).invisible());
+                let mut measure = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(measure_rect)
+                        .layout(Layout::left_to_right(Align::Center))
+                        .invisible(),
+                );
                 let _ = content(&mut measure);
                 let content_h = measure.min_rect().height();
+                let natural_w = (measure.min_rect().width() - gap_x).max(0.0);
 
                 let strip = Rect::from_min_size(
-                    egui::Pos2::new(measure_rect.left() - pad, measure_rect.top()),
+                    Pos2::new(measure_rect.left() - pad, measure_rect.top()),
                     Vec2::new(measure_rect.width() + pad * 2.0, content_h + pad * 2.0),
                 );
                 if ui.is_rect_visible(strip) {
@@ -729,12 +781,16 @@ impl AlertDialogFooter {
                     );
                 }
                 let inner_rect = Rect::from_min_size(
-                    egui::Pos2::new(strip.left() + pad, strip.top() + pad),
+                    Pos2::new(strip.left() + pad, strip.top() + pad),
                     Vec2::new(strip.width() - pad * 2.0, content_h),
                 );
+                let spread = (inner_rect.width() - natural_w).max(0.0);
                 let mut child = ui.new_child(UiBuilder::new().max_rect(inner_rect));
                 let real = child
-                    .with_layout(Layout::top_down(Align::Center), content)
+                    .with_layout(Layout::left_to_right(Align::Center), |c| {
+                        c.spacing_mut().item_spacing.x = spread;
+                        content(c)
+                    })
                     .inner;
                 ui.allocate_space(Vec2::new(flow_w, (strip.height() - bleed).max(0.0)));
                 real
@@ -1033,6 +1089,71 @@ mod tests {
         });
         assert!(!open, "Escape must close the alert dialog");
         assert_eq!(confirmations, 0, "Escape must not confirm the action");
+    }
+
+    #[test]
+    fn opening_focuses_the_cancel_button() {
+        let mut h = Harness::new();
+        let mut open = false;
+        let mut cancel_id: Option<Id> = None;
+
+        // Closed warm-up frame; the content closure does not run while
+        // closed, so nothing is focused.
+        h.run(|ui| {
+            AlertDialog::controlled(&mut open)
+                .id_salt("a4")
+                .show(ui, |ui| {
+                    AlertDialogContent::new().show(ui, |ui| {
+                        AlertDialogFooter::new().show(ui, |ui| {
+                            cancel_id = Some(AlertDialogCancel::new("Cancel").show(ui).id);
+                        });
+                    });
+                });
+        });
+        assert!(cancel_id.is_none(), "closed dialogs render no content");
+
+        // Opening auto-focuses Cancel (Radix behavior): the first open frame
+        // requests focus, the next frame grants it.
+        open = true;
+        for _ in 0..2 {
+            h.run(|ui| {
+                AlertDialog::controlled(&mut open)
+                    .id_salt("a4")
+                    .show(ui, |ui| {
+                        AlertDialogContent::new().show(ui, |ui| {
+                            AlertDialogFooter::new().show(ui, |ui| {
+                                cancel_id = Some(AlertDialogCancel::new("Cancel").show(ui).id);
+                            });
+                        });
+                    });
+            });
+        }
+        assert!(
+            h.ctx.memory(|m| m.focused() == cancel_id),
+            "the cancel button must receive the initial focus"
+        );
+
+        // Focus is released once the dialog closes and the fade-out removes
+        // the button from the screen.
+        open = false;
+        for _ in 0..2 {
+            h.run(|ui| {
+                AlertDialog::controlled(&mut open)
+                    .id_salt("a4")
+                    .show(ui, |ui| {
+                        AlertDialogContent::new().show(ui, |ui| {
+                            AlertDialogFooter::new().show(ui, |ui| {
+                                cancel_id = Some(AlertDialogCancel::new("Cancel").show(ui).id);
+                            });
+                        });
+                    });
+            });
+        }
+        assert_ne!(
+            h.ctx.memory(|m| m.focused()),
+            cancel_id,
+            "focus must be released after closing"
+        );
     }
 
     #[test]
