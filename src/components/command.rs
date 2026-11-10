@@ -1,21 +1,23 @@
 //! shadcn `command.tsx` — the cmdk-style command palette.
 //!
-//! Ported from `apps/v4/registry/new-york-v4/ui/command.tsx` (cmdk): the
-//! root is `flex flex-col overflow-hidden rounded-md bg-popover
-//! text-popover-foreground` (the docs' standalone demo adds `rounded-lg
-//! border shadow-md md:w-[300px]`, which [`Command`] paints when
-//! `chrome(true)`), the input wrapper is `flex h-9 items-center gap-2
-//! border-b px-3` with a `size-4 opacity-50` search icon, the list is
-//! `max-h-[300px]`, groups are `p-1` with `px-2 py-1.5 text-xs font-medium
-//! text-muted-foreground` headings, items are `rounded-sm px-2 py-1.5
-//! text-sm data-[selected=true]:bg-accent data-[selected=true]:
-//! text-accent-foreground data-[disabled=true]:opacity-50`, the shortcut is
-//! `ml-auto text-xs tracking-widest text-muted-foreground` and the empty
-//! state is `py-6 text-center text-sm`.
+//! Ported from `apps/v4/registry/new-york-v4/ui/command.tsx` (cmdk) with the
+//! nova recipe (`style-nova.css .cn-command-*`): the root is `rounded-xl
+//! p-1 bg-popover text-popover-foreground` ([`Command::chrome`] paints the
+//! docs' standalone `border shadow-md md:w-[300px]` around it), the input is
+//! an InputGroup — wrapper `p-1 pb-0`, field `bg-input/30 border-input/30
+//! h-8 rounded-lg shadow-none` with a `size-4 opacity-50` search icon at
+//! `pl-2` — the list is `max-h-72`, groups are `p-1` with `px-2 py-1.5
+//! text-xs font-medium text-muted-foreground` headings, items are `rounded-sm
+//! px-2 py-1.5 text-sm data-[selected=true]:bg-muted
+//! data-[selected=true]:text-foreground data-[disabled=true]:opacity-50`
+//! (`rounded-lg` inside a dialog), the shortcut is `ml-auto text-xs
+//! tracking-widest text-muted-foreground` (foreground while selected) and
+//! the empty state is `py-6 text-center text-sm`.
 //!
 //! Items are declared through builder closures like the menu API. Filtering
 //! is a case-insensitive substring match on the item label; items with
-//! `should_filter(false)` stay visible while searching. Keyboard: the input
+//! `should_filter(false)` stay visible while searching. With a query, matches
+//! rank by (match position, label length) like cmdk. Keyboard: the input
 //! focuses on open (dialog), ArrowUp/Down cycle through visible enabled
 //! items (wrapping), Home/End jump, Enter selects, and Escape closes when
 //! rendered inside [`CommandDialog`].
@@ -58,10 +60,12 @@ use egui::{
 
 /// Standalone root width: the docs demo `md:w-[300px]`.
 pub const COMMAND_DEFAULT_WIDTH: f32 = 300.0;
-/// List max height: `max-h-[300px]`.
-pub const COMMAND_LIST_MAX_HEIGHT: f32 = 300.0;
-/// Input wrapper height: `h-9`.
-pub const COMMAND_INPUT_HEIGHT: f32 = crate::theme::tokens::spacing::CONTROL;
+/// List max height: nova `max-h-72` (288 px).
+pub const COMMAND_LIST_MAX_HEIGHT: f32 = 288.0;
+/// Input field height: nova `.cn-command-input-group` `h-8` (32 px).
+pub const COMMAND_INPUT_HEIGHT: f32 = 32.0;
+/// Root padding: nova `.cn-command` `p-1` (4 px).
+const ROOT_PADDING: f32 = 4.0;
 /// Item row height: `py-1.5` + one `text-sm` line.
 pub const COMMAND_ITEM_HEIGHT: f32 = 32.0;
 /// Item horizontal padding: `px-2` (8 px).
@@ -72,6 +76,9 @@ const HEADING_HEIGHT: f32 = 24.0;
 const GROUP_PADDING: f32 = 4.0;
 /// Empty state height: `py-6` + one `text-sm` line.
 const EMPTY_HEIGHT: f32 = 48.0;
+/// Compact (combobox-embedded) empty state height: `py-2` + one
+/// `text-sm` line.
+const EMPTY_COMPACT_HEIGHT: f32 = 36.0;
 /// Icon size: `size-4` (16 px).
 const ICON_SIZE: f32 = 16.0;
 /// Gap between the icon and the text field: `gap-2` (8 px).
@@ -341,6 +348,38 @@ pub(crate) struct FlatItem {
     pub disabled: bool,
 }
 
+/// The entries of one group in cmdk rank order: with a query, matching
+/// items sort by (match position, label length) — cmdk's score
+/// approximation — and pinned (`should_filter(false)`) rows plus separators
+/// keep their original order after them. Without a query the order is
+/// unchanged.
+pub(crate) fn ordered_entries<'a>(group: &'a CommandGroup, query: &str) -> Vec<&'a CommandEntry> {
+    let entries: Vec<&CommandEntry> = group.entries.iter().collect();
+    if query.trim().is_empty() {
+        return entries;
+    }
+    let mut ranked: Vec<(usize, usize, &CommandEntry)> = Vec::new();
+    let mut rest: Vec<&CommandEntry> = Vec::new();
+    for entry in &group.entries {
+        if let CommandEntry::Item(item) = entry {
+            if item.should_filter && filter_matches(query, &item.label) {
+                let start = item.label.to_lowercase().find(&query.trim().to_lowercase());
+                ranked.push((
+                    start.unwrap_or(usize::MAX),
+                    item.label.chars().count(),
+                    entry,
+                ));
+                continue;
+            }
+        }
+        rest.push(entry);
+    }
+    ranked.sort_by_key(|(start, len, _)| (*start, *len));
+    let mut out: Vec<&CommandEntry> = ranked.into_iter().map(|(_, _, e)| e).collect();
+    out.extend(rest);
+    out
+}
+
 /// The visible, keyboard-navigable rows in render order.
 pub(crate) fn collect_visible_items(parts: &[CommandPart], query: &str) -> Vec<FlatItem> {
     let mut flat = Vec::new();
@@ -351,7 +390,7 @@ pub(crate) fn collect_visible_items(parts: &[CommandPart], query: &str) -> Vec<F
         if !group_matches(group, query) {
             continue;
         }
-        for entry in &group.entries {
+        for entry in ordered_entries(group, query) {
             if let CommandEntry::Item(item) = entry {
                 if item_matches(item, query) {
                     flat.push(FlatItem {
@@ -420,9 +459,12 @@ pub(crate) struct RowColors {
     pub shortcut: Color32,
 }
 
-/// Mirrors `data-[selected=true]:bg-accent data-[selected=true]:
-/// text-accent-foreground`, `[&_svg:not([class*='text-'])]:text-muted-foreground`,
-/// the shortcut recipe and `data-[disabled=true]:opacity-50`.
+/// Mirrors the nova item recipe `data-[selected=true]:bg-muted
+/// data-[selected=true]:text-foreground
+/// data-selected:*:[svg]:text-foreground` and
+/// `group-data-selected/command-item:text-foreground` for the shortcut,
+/// `[&_svg:not([class*='text-'])]:text-muted-foreground` when unselected and
+/// `data-[disabled=true]:opacity-50`.
 pub(crate) fn resolve_row_colors(p: &Palette, selected: bool, disabled: bool) -> RowColors {
     let mut c = RowColors {
         fill: Color32::TRANSPARENT,
@@ -431,10 +473,10 @@ pub(crate) fn resolve_row_colors(p: &Palette, selected: bool, disabled: bool) ->
         shortcut: p.muted_foreground,
     };
     if selected {
-        c.fill = p.accent;
-        c.text = p.accent_foreground;
-        c.icon = p.accent_foreground;
-        c.shortcut = p.accent_foreground;
+        c.fill = p.muted;
+        c.text = p.foreground;
+        c.icon = p.foreground;
+        c.shortcut = p.foreground;
     }
     if disabled {
         c.fill = color_alpha(c.fill, 0.5);
@@ -476,6 +518,19 @@ pub struct CommandActivated {
     pub label: String,
 }
 
+/// Empty-state look. Nova keeps the base `py-6 text-center text-sm`
+/// foreground text; the combobox embedding uses the compact
+/// `py-2 text-muted-foreground` variant of `ui/combobox.tsx`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommandEmptyStyle {
+    /// `py-6 text-center text-sm` in the popover foreground (default).
+    #[default]
+    Default,
+    /// Compact `py-2 text-center text-sm text-muted-foreground`
+    /// (combobox `ComboboxEmpty`).
+    Compact,
+}
+
 /// What [`Command::show`] returns.
 #[derive(Clone, Debug)]
 pub struct CommandResponse {
@@ -497,7 +552,7 @@ pub struct CommandResponse {
 #[derive(Debug, Default)]
 pub struct Command {
     width: Option<f32>,
-    /// Paint the standalone chrome (`rounded-lg border shadow-md`).
+    /// Paint the standalone chrome (`rounded-xl border shadow-md`).
     chrome: bool,
     /// Focus the input on the first frame (dialogs set this).
     autofocus: bool,
@@ -506,6 +561,14 @@ pub struct Command {
     /// Handle Arrow/Enter keys even when the input is not focused
     /// (dialogs set this so keys work anywhere over the modal).
     force_keyboard: bool,
+    /// Rendered inside a [`CommandDialog`] (nova `in-data-[slot=dialog-content]`
+    /// gives items `rounded-lg` and the root keeps its `p-1`).
+    in_dialog: bool,
+    /// List max-height override (the combobox embedding uses
+    /// `max-h-96 − 36px`).
+    list_max_height: Option<f32>,
+    /// Empty-state style ([`CommandEmptyStyle::Compact`] for the combobox).
+    empty_style: CommandEmptyStyle,
     id_salt: Option<String>,
 }
 
@@ -546,6 +609,27 @@ impl Command {
     /// [`CommandDialog`]).
     pub fn force_keyboard(mut self, force: bool) -> Self {
         self.force_keyboard = force;
+        self
+    }
+
+    /// Marks the command as rendered inside a [`CommandDialog`] (nova gives
+    /// in-dialog items `rounded-lg` and keeps the root `p-1`).
+    pub fn in_dialog(mut self, in_dialog: bool) -> Self {
+        self.in_dialog = in_dialog;
+        self
+    }
+
+    /// Caps the list height (default [`COMMAND_LIST_MAX_HEIGHT`]; the
+    /// combobox embedding passes `max-h-96 − 36px`).
+    pub fn list_max_height(mut self, height: f32) -> Self {
+        self.list_max_height = Some(height);
+        self
+    }
+
+    /// Chooses the empty-state look (the combobox embedding uses
+    /// [`CommandEmptyStyle::Compact`]).
+    pub fn empty_style(mut self, style: CommandEmptyStyle) -> Self {
+        self.empty_style = style;
         self
     }
 
@@ -717,21 +801,32 @@ fn render_chrome<'b>(
             ));
         }
 
-        // Phase 2: the filtered, scrolling list (`max-h-[300px]`).
+        // Phase 2: the filtered, scrolling list (nova `max-h-72`).
         let flat = collect_visible_items(&builder.parts, query);
         state.selected = normalize_selection(&flat, state.selected.as_deref());
-        render_list(ui, builder, width, state, query, &mut out.1, &mut out.2);
+        render_list(
+            ui, cmd, builder, width, state, query, &mut out.1, &mut out.2,
+        );
         out
     };
 
     let (input_response, hover, click) = if cmd.chrome {
+        // Nova `.cn-command`: `rounded-xl p-1` (the chrome adds the docs'
+        // border/shadow ring around it).
         let frame = egui::Frame::new()
             .fill(p.popover)
             .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
-            .corner_radius(CornerRadius::same(theme.radius.lg_u8()))
-            .inner_margin(Margin::same(0))
+            .corner_radius(CornerRadius::same(theme.radius.x2l_u8()))
+            .inner_margin(Margin::same(ROOT_PADDING as i8))
             .shadow(crate::utils::shadow::shadow_md(dark));
         frame
+            .show(ui, |ui| body(ui, &mut binding, &mut internal_query, state))
+            .inner
+    } else if cmd.in_dialog {
+        // The dialog provides the surface; nova still gives the command its
+        // own `p-1` inside it.
+        egui::Frame::new()
+            .inner_margin(Margin::same(ROOT_PADDING as i8))
             .show(ui, |ui| body(ui, &mut binding, &mut internal_query, state))
             .inner
     } else {
@@ -749,7 +844,9 @@ fn render_chrome<'b>(
     (input_response, hover, click, query)
 }
 
-/// Renders the input row and borderless text field; edits `query` in place.
+/// Renders the nova InputGroup search field (`p-1 pb-0` wrapper around an
+/// `h-8 rounded-lg bg-input/30 border-input/30 shadow-none` group with the
+/// search icon at `pl-2`); edits `query` in place.
 fn render_input(
     ui: &mut Ui,
     input_id: Id,
@@ -760,25 +857,29 @@ fn render_input(
 ) -> Response {
     let theme = ShadcnTheme::of_ui(ui);
     let p = theme.palette;
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), COMMAND_INPUT_HEIGHT));
+    let wrapper_height = 4.0 + COMMAND_INPUT_HEIGHT;
+    let (_, wrapper) = ui.allocate_space(Vec2::new(ui.available_width(), wrapper_height));
+    // `p-1 pb-0`: the field sits 4 px in from the top/left/right.
+    let rect = Rect::from_min_size(
+        Pos2::new(wrapper.min.x + 4.0, wrapper.min.y + 4.0),
+        Vec2::new(wrapper.width() - 8.0, COMMAND_INPUT_HEIGHT),
+    );
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        // `border-b`
-        painter.line_segment(
-            [
-                Pos2::new(rect.min.x, rect.max.y - 0.5),
-                Pos2::new(rect.max.x, rect.max.y - 0.5),
-            ],
-            Stroke::new(1.0, p.border),
+        let corner = CornerRadius::same(theme.radius.lg_u8());
+        // `bg-input/30 border-input/30 shadow-none` (both modes).
+        painter.rect_filled(rect, corner, color_alpha(p.input, 0.3));
+        painter.rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0, color_alpha(p.input, 0.3)),
+            egui::epaint::StrokeKind::Inside,
         );
 
-        // Search icon: `size-4 shrink-0 opacity-50`.
+        // Search icon: `size-4 shrink-0 opacity-50` at addon `pl-2`.
         let icon_rect = Rect::from_center_size(
-            Pos2::new(
-                rect.min.x + crate::theme::tokens::spacing::MD + ICON_SIZE * 0.5,
-                rect.center().y,
-            ),
+            Pos2::new(rect.min.x + 8.0 + ICON_SIZE * 0.5, rect.center().y),
             Vec2::splat(ICON_SIZE),
         );
         Icon::Search.paint(
@@ -789,10 +890,10 @@ fn render_input(
         );
     }
 
-    // The text field itself (`py-3 text-sm outline-hidden
+    // The text field itself (`w-full text-sm
     // placeholder:text-muted-foreground`).
-    let input_x = rect.min.x + crate::theme::tokens::spacing::MD + ICON_SIZE + ICON_GAP;
-    let field_w = rect.max.x - crate::theme::tokens::spacing::MD - input_x;
+    let input_x = rect.min.x + 8.0 + ICON_SIZE + ICON_GAP;
+    let field_w = rect.max.x - 8.0 - input_x;
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
     let query_empty = query.is_empty();
     let mut edit = egui::TextEdit::singleline(query)
@@ -840,8 +941,10 @@ fn render_input(
 }
 
 /// Renders the visible groups / rows / empty state; reports hover + click.
+#[allow(clippy::too_many_arguments)]
 fn render_list(
     ui: &mut Ui,
+    cmd: &Command,
     builder: &CommandBuilder<'_>,
     width: f32,
     state: &CommandState,
@@ -855,12 +958,12 @@ fn render_list(
 
     let list_id = ui.scope_id().with("cmd_list");
     crate::components::scroll_area::ScrollArea::new()
-        .height(COMMAND_LIST_MAX_HEIGHT)
+        .height(cmd.list_max_height.unwrap_or(COMMAND_LIST_MAX_HEIGHT))
         .id_salt(list_id.value().to_string())
         .show(ui, |ui| {
             ui.set_min_width(width);
             if flat.is_empty() {
-                paint_empty(ui, &builder.empty_text, &p);
+                paint_empty(ui, &builder.empty_text, cmd.empty_style, &p);
                 return;
             }
             for (part_i, part) in builder.parts.iter().enumerate() {
@@ -876,7 +979,7 @@ fn render_list(
                         if let Some(heading) = &group.heading {
                             paint_heading(ui, heading, &p);
                         }
-                        for (i, entry) in group.entries.iter().enumerate() {
+                        for (i, entry) in ordered_entries(group, query).into_iter().enumerate() {
                             match entry {
                                 CommandEntry::Separator => paint_separator(ui, &p),
                                 CommandEntry::Item(item) => {
@@ -886,7 +989,17 @@ fn render_list(
                                     let id = item.id.clone().unwrap_or_else(|| item.label.clone());
                                     let selected = state.selected.as_deref() == Some(id.as_str());
                                     let row_id = list_id.with(("cmd_row", part_i, i));
-                                    paint_row(ui, row_id, item, selected, &p, hover, click);
+                                    paint_row(
+                                        ui,
+                                        row_id,
+                                        item,
+                                        selected,
+                                        cmd.in_dialog,
+                                        &p,
+                                        &theme,
+                                        hover,
+                                        click,
+                                    );
                                 }
                             }
                         }
@@ -949,28 +1062,35 @@ fn paint_separator(ui: &mut Ui, p: &Palette) {
     }
 }
 
-fn paint_empty(ui: &mut Ui, text: &str, p: &Palette) {
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), EMPTY_HEIGHT));
+fn paint_empty(ui: &mut Ui, text: &str, style: CommandEmptyStyle, p: &Palette) {
+    let height = match style {
+        CommandEmptyStyle::Default => EMPTY_HEIGHT,
+        CommandEmptyStyle::Compact => EMPTY_COMPACT_HEIGHT,
+    };
+    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), height));
     if ui.is_rect_visible(rect) {
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            font,
-            p.popover_foreground,
-        );
+        let color = match style {
+            CommandEmptyStyle::Default => p.popover_foreground,
+            // Combobox `ComboboxEmpty`: `text-muted-foreground`.
+            CommandEmptyStyle::Compact => p.muted_foreground,
+        };
+        ui.painter()
+            .text(rect.center(), Align2::CENTER_CENTER, text, font, color);
     }
 }
 
-/// Draws one command row; reports `(hover id, click id)`.
+/// Draws one command row; reports `(hover id, click id)`. `in_dialog` gives
+/// the row the nova `in-data-[slot=dialog-content]:rounded-lg` radius.
 #[allow(clippy::too_many_arguments)]
 fn paint_row(
     ui: &mut Ui,
     row_id: Id,
     item: &CommandItem,
     selected: bool,
+    in_dialog: bool,
     p: &Palette,
+    theme: &ShadcnTheme,
     hover: &mut Option<String>,
     click: &mut Option<String>,
 ) {
@@ -988,7 +1108,11 @@ fn paint_row(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if colors.fill != Color32::TRANSPARENT {
-            let radius = ShadcnTheme::of_ui(ui).radius.sm_u8();
+            let radius = if in_dialog {
+                theme.radius.lg_u8()
+            } else {
+                theme.radius.sm_u8()
+            };
             painter.rect_filled(rect, CornerRadius::same(radius), colors.fill);
         }
 
@@ -1002,14 +1126,40 @@ fn paint_row(
             icon.paint(painter, icon_rect, colors.icon, 2.0 * ICON_SIZE / 24.0);
             text_x += ICON_SIZE + ICON_GAP;
         }
+        // Reserve `pr-8` when the row is checked so labels never underlap
+        // the check indicator.
+        let right_reserve = if item.checked {
+            ITEM_PAD_X + ICON_SIZE
+        } else {
+            ITEM_PAD_X
+        };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        painter.text(
-            Pos2::new(text_x, rect.center().y),
-            Align2::LEFT_CENTER,
-            item.label.clone(),
-            font,
-            colors.text,
-        );
+        let max_label_w = (rect.max.x - right_reserve - text_x).max(1.0);
+        let label_galley = painter.layout_no_wrap(item.label.clone(), font.clone(), colors.text);
+        if label_galley.size().x <= max_label_w {
+            painter.text(
+                Pos2::new(text_x, rect.center().y),
+                Align2::LEFT_CENTER,
+                item.label.clone(),
+                font,
+                colors.text,
+            );
+        } else {
+            // Truncate with an ellipsis instead of drawing under the check.
+            let mut text = item.label.clone();
+            while text.chars().count() > 1 {
+                text.pop();
+                let g = painter.layout_no_wrap(format!("{text}…"), font.clone(), colors.text);
+                if g.size().x <= max_label_w {
+                    painter.galley(
+                        Pos2::new(text_x, rect.center().y - g.size().y * 0.5),
+                        g,
+                        colors.text,
+                    );
+                    break;
+                }
+            }
+        }
 
         // Trailing check indicator (combobox items).
         let mut right_pad = ITEM_PAD_X;
@@ -1131,6 +1281,7 @@ impl<'a> CommandDialog<'a> {
             .show(ui, |ui| {
                 let res = Command::new()
                     .chrome(false)
+                    .in_dialog(true)
                     .width(width - 48.0)
                     .autofocus(true)
                     .reset_autofocus(just_opened)
@@ -1300,20 +1451,46 @@ mod tests {
         assert_eq!(c.fill, Color32::TRANSPARENT);
         assert_eq!(c.text, p.popover_foreground);
         assert_eq!(c.icon, p.muted_foreground);
+        // Nova selected: `bg-muted text-foreground`, icons and shortcut
+        // switch to the foreground too.
         let s = resolve_row_colors(&p, true, false);
-        assert_eq!(s.fill, p.accent);
-        assert_eq!(s.text, p.accent_foreground);
+        assert_eq!(s.fill, p.muted);
+        assert_eq!(s.text, p.foreground);
+        assert_eq!(s.icon, p.foreground);
+        assert_eq!(s.shortcut, p.foreground);
         let d = resolve_row_colors(&p, false, true);
         assert_eq!(d.text, color_alpha(p.popover_foreground, 0.5));
     }
 
     #[test]
+    fn query_ranks_matches_by_position_and_length() {
+        let mut b = CommandBuilder::new();
+        b.group_bare(|g| {
+            g.item(CommandItem::new("Settings"));
+            g.item(CommandItem::new("Set"));
+            g.item(CommandItem::new("Offset"));
+        });
+        let parts = b.parts;
+        let flat = collect_visible_items(&parts, "set");
+        // "Set" (position 0, len 3) ranks before "Offset" (position 2) and
+        // "Settings" (position 0, longer label).
+        assert_eq!(flat[0].id, "Set");
+        assert_eq!(flat[1].id, "Settings");
+        assert_eq!(flat[2].id, "Offset");
+        // No query keeps the declaration order.
+        let flat = collect_visible_items(&parts, "");
+        assert_eq!(flat[0].id, "Settings");
+    }
+
+    #[test]
     fn geometry_constants_match_source() {
         assert_eq!(COMMAND_DEFAULT_WIDTH, 300.0, "md:w-[300px]");
-        assert_eq!(COMMAND_LIST_MAX_HEIGHT, 300.0, "max-h-[300px]");
-        assert_eq!(COMMAND_INPUT_HEIGHT, 36.0, "h-9");
+        assert_eq!(COMMAND_LIST_MAX_HEIGHT, 288.0, "nova max-h-72");
+        assert_eq!(COMMAND_INPUT_HEIGHT, 32.0, "nova h-8 input group");
+        assert_eq!(ROOT_PADDING, 4.0, "nova p-1 root");
         assert_eq!(COMMAND_ITEM_HEIGHT, 32.0, "py-1.5 + text-sm");
         assert_eq!(EMPTY_HEIGHT, 48.0, "py-6 + text-sm");
+        assert_eq!(EMPTY_COMPACT_HEIGHT, 36.0, "combobox py-2 + text-sm");
     }
 
     /// Advances time so animations make progress across frames.
