@@ -4317,8 +4317,36 @@ pub fn message_scroller_demo(ui: &mut egui::Ui) {
     let resp = scroller.inner;
     ui.add_space(4.0);
     ui.label(format!(
-        "at_bottom: {} · auto-follow: {}",
-        resp.at_bottom, resp.following
+        "at_bottom: {} · at_top: {} · auto-follow: {}",
+        resp.at_bottom, resp.at_top, resp.following
+    ));
+
+    ui.add_space(16.0);
+    ui.label(
+        "Second instance, jump-to-start button (direction=Start — hover it, then scroll down)",
+    );
+    ui.add_space(4.0);
+    let start_resp = MessageScroller::new()
+        .height(160.0)
+        .direction(MessageScrollerDirection::Start)
+        .id_salt("demo_scroller_start")
+        .show(ui, |ui| {
+            for i in 0..12 {
+                Message::new().show(ui, |ui| {
+                    MessageContent::new().show(ui, |ui| {
+                        Bubble::new().variant(BubbleVariant::Muted).show(ui, |ui| {
+                            BubbleContent::new(format!("Start-direction scroller message {i}."))
+                                .show(ui);
+                        });
+                    });
+                });
+            }
+        })
+        .inner;
+    ui.add_space(4.0);
+    ui.label(format!(
+        "at_top: {} · at_bottom: {}",
+        start_resp.at_top, start_resp.at_bottom
     ));
 
     ui.ctx().data_mut(|d| d.insert_temp(store, transcript));

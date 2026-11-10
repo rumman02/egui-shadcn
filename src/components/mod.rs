@@ -180,7 +180,9 @@ pub use message::{
     Message, MessageAlign, MessageAvatar, MessageContent, MessageFooter, MessageGroup,
     MessageHeader,
 };
-pub use message_scroller::{MessageScroller, MessageScrollerButton, MessageScrollerResponse};
+pub use message_scroller::{
+    MessageScroller, MessageScrollerButton, MessageScrollerDirection, MessageScrollerResponse,
+};
 pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
 pub use navigation_menu::{
     NavContentBuilder, NavLink, NavOrientation, NavigationMenu, NavigationMenuBuilder,
