@@ -1,10 +1,14 @@
 //! shadcn `pagination.tsx` — page navigation links.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/pagination.tsx` (nova
-//! overrides: content `gap-0.5`, ellipsis `size-8`). Links reuse the shadcn
-//! [`Button`] exactly like the source does with `buttonVariants`: the active
-//! page uses the `Outline` variant, the rest `Ghost` (page links default to
-//! `size="icon"`), and Previous/Next are ghost buttons with chevrons.
+//! overrides: content `gap-0.5`, ellipsis `size-8`). The nav centers its
+//! row (`mx-auto w-full justify-center`). Links reuse the shadcn [`Button`]
+//! exactly like the source does with `buttonVariants`: the active page uses
+//! the `Outline` variant, the rest `Ghost` (page links default to
+//! `size="icon"`). Previous/Next are ghost buttons with chevrons carrying
+//! the source's padding overrides (`gap-1 px-2.5 sm:pl-2.5` / `sm:pr-2.5`;
+//! nova adds `pl-1.5!` / `pr-1.5!`), rendered with the shared
+//! [`crate::components::button`] metrics so heights follow the active style.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -30,10 +34,10 @@
 //! });
 //! ```
 
-use crate::components::button::{Button, ButtonSize, ButtonVariant};
+use crate::components::button::{self, Button, ButtonSize, ButtonVariant};
 use crate::icons::Icon;
-use crate::theme::ShadcnTheme;
-use egui::{Response, Sense, Ui, Vec2};
+use crate::theme::{color_alpha, ShadcnTheme, Style};
+use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Ui, Vec2};
 
 /// Ellipsis box size (nova `size-8` = 32px).
 pub const PAGINATION_ELLIPSIS_SIZE: f32 = 32.0;
@@ -42,7 +46,8 @@ pub const PAGINATION_ELLIPSIS_SIZE: f32 = 32.0;
 // Pagination (nav wrapper)
 // ---------------------------------------------------------------------------
 
-/// The `<nav aria-label="pagination">` wrapper — pure layout scope.
+/// The `<nav aria-label="pagination">` wrapper: `mx-auto w-full
+/// justify-center` — content is laid out centered.
 #[derive(Clone, Debug, Default)]
 pub struct Pagination {
     _private: (),
@@ -54,9 +59,45 @@ impl Pagination {
         Self { _private: () }
     }
 
-    /// Renders the pagination.
+    /// Renders the pagination with its content centered horizontally, like
+    /// the source's `mx-auto w-full justify-center`.
+    ///
+    /// egui cannot measure the row up front, so the first frame flows
+    /// normally while it is measured; every frame after positions the row
+    /// with the previous frame's measured size (the same one-frame
+    /// convergence as the tabs `flex-1` stretch).
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) {
-        content(ui);
+        // The id must be stable per call site: salt it with the cursor
+        // position, which is constant while the surrounding layout is.
+        let cursor = ui.cursor().min;
+        let size_id = ui.scope_id().with(format!(
+            "shadcn_pagination_center_{}_{}",
+            cursor.x as i32, cursor.y as i32
+        ));
+        let prev = ui.ctx().data_mut(|d| d.get_temp::<Vec2>(size_id));
+        let rect = prev.filter(|s| s.x > 0.0 && s.y > 0.0).map(|size| {
+            let avail = ui.available_rect_before_wrap();
+            egui::Align2::CENTER_TOP.align_size_within_rect(
+                Vec2::new(size.x.min(avail.width()), size.y.max(1.0)),
+                avail,
+            )
+        });
+        match rect {
+            Some(rect) => {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                content(&mut child);
+                let measured = child.min_rect();
+                ui.advance_cursor_after_rect(measured);
+                child
+                    .ctx()
+                    .data_mut(|d| d.insert_temp(size_id, measured.size()));
+            }
+            None => {
+                let inner = ui.scope(|child| content(child));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(size_id, inner.response.rect.size()));
+            }
+        }
     }
 }
 
@@ -193,8 +234,179 @@ impl PaginationLink {
 // PaginationPrevious / PaginationNext
 // ---------------------------------------------------------------------------
 
-/// "Previous" ghost button with a leading chevron (`gap-1 px-2.5`; rendered
-/// with the default Button padding).
+/// Which side the chevron sits on for the pager buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PagerSide {
+    /// `PaginationPrevious`: leading chevron, `sm:pl-2.5` (nova `pl-1.5!`).
+    Previous,
+    /// `PaginationNext`: trailing chevron, `sm:pr-2.5` (nova `pr-1.5!`).
+    Next,
+}
+
+/// Height of the Previous/Next buttons (`size="default"`): nova `h-8`,
+/// base recipe `h-9`. Same as [`crate::components::button::metrics`]'s
+/// default-size height for the active style.
+fn pager_height(style: Style) -> f32 {
+    button::metrics::height(ButtonSize::Default, style)
+}
+
+/// `(left, right)` padding from the source `gap-1 px-2.5` plus the
+/// `sm:pl-2.5` / `sm:pr-2.5` overrides (10px on the overridden side in the
+/// base recipe) and the nova `pl-1.5!` / `pr-1.5!` (6px).
+fn pager_padding(side: PagerSide, style: Style) -> (f32, f32) {
+    let edge = if style == Style::Nova { 6.0 } else { 10.0 };
+    match side {
+        PagerSide::Previous => (edge, 10.0),
+        PagerSide::Next => (10.0, edge),
+    }
+}
+
+/// Icon-label gap: the source `gap-1` overrides the button's own gap in
+/// every style.
+const PAGER_GAP: f32 = crate::theme::tokens::spacing::XS;
+
+/// Renders a ghost pager button with the source's size overrides. Mirrors
+/// the [`Button`] ghost rendering but with the pagination-specific paddings,
+/// which `Button`'s fixed per-size metrics cannot express.
+fn pager_button(
+    ui: &mut Ui,
+    side: PagerSide,
+    label: &str,
+    icon: Icon,
+    disabled: bool,
+    id_salt: Option<&str>,
+) -> Response {
+    let theme = ShadcnTheme::of_ui(ui);
+    let dark = theme.mode.is_dark();
+    let style = theme.style;
+    let nova = style == Style::Nova;
+    let p = theme.palette;
+
+    let height = pager_height(style);
+    let (pad_left, pad_right) = pager_padding(side, style);
+    let font = FontId::proportional(button::metrics::text_size(ButtonSize::Default, style));
+    let icon_size = button::metrics::icon_size(ButtonSize::Default, style);
+    let radius = button::metrics::radius(ButtonSize::Default, style, &theme.radius, false);
+    let text_w = if label.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    let desired = Vec2::new(
+        pad_left + pad_right + icon_size + PAGER_GAP + text_w,
+        height,
+    );
+
+    let (_, rect) = ui.allocate_space(desired);
+    let id = match id_salt {
+        Some(salt) => ui.scope_id().with(salt),
+        None => ui.auto_id_with("shadcn_pager_button"),
+    };
+    let response = if disabled {
+        // Disabled at the egui level too, like `Button` (no hover, clicks or
+        // focus); painting below keeps the explicit `disabled:opacity-50`.
+        let child = ui.new_child(egui::UiBuilder::new().disabled());
+        child.interact(rect, id, Sense::click())
+    } else {
+        ui.interact(rect, id, Sense::click())
+    };
+
+    if ui.is_rect_visible(rect) {
+        // Ghost variant colors (mirrors the `Button` Ghost arm).
+        let hovered = response.hovered() && !disabled;
+        let mut fill = if hovered {
+            if nova {
+                // `hover:bg-muted dark:hover:bg-muted/50`
+                if dark {
+                    color_alpha(p.muted, 0.5)
+                } else {
+                    p.muted
+                }
+            } else if dark {
+                color_alpha(p.accent, 0.5)
+            } else {
+                p.accent
+            }
+        } else {
+            Color32::TRANSPARENT
+        };
+        let mut fg = if hovered && !nova {
+            p.accent_foreground
+        } else {
+            p.foreground
+        };
+        if disabled {
+            fill = color_alpha(fill, 0.5);
+            fg = color_alpha(fg, 0.5);
+        }
+
+        let painter = ui.painter();
+        // `active:translate-y-px` (nova): the whole button shifts 1px down
+        // while pressed.
+        let mut draw_rect = rect;
+        if nova && !disabled && response.is_pointer_button_down_on() {
+            draw_rect.min.y += 1.0;
+            draw_rect.max.y += 1.0;
+        }
+        painter.rect_filled(draw_rect, CornerRadius::same(radius), fill);
+
+        // Content: [icon] gap [label] (Previous) or [label] gap [icon]
+        // (Next), centered.
+        let center = draw_rect.center();
+        let total_w = icon_size
+            + if label.is_empty() {
+                0.0
+            } else {
+                PAGER_GAP + text_w
+            };
+        let mut cursor_x = center.x - total_w * 0.5;
+        if side == PagerSide::Previous {
+            let r = egui::Rect::from_center_size(
+                egui::Pos2::new(cursor_x + icon_size * 0.5, center.y),
+                Vec2::splat(icon_size),
+            );
+            icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
+            cursor_x += icon_size + PAGER_GAP;
+        }
+        if !label.is_empty() {
+            painter.text(
+                egui::Pos2::new(cursor_x + text_w * 0.5, center.y),
+                Align2::CENTER_CENTER,
+                label,
+                font,
+                fg,
+            );
+            cursor_x += text_w + PAGER_GAP;
+        }
+        if side == PagerSide::Next {
+            let r = egui::Rect::from_center_size(
+                egui::Pos2::new(cursor_x + icon_size * 0.5, center.y),
+                Vec2::splat(icon_size),
+            );
+            icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
+        }
+
+        // `focus-visible:ring-[3px] focus-visible:ring-ring/50`.
+        if response.has_focus() && !disabled {
+            crate::utils::focus::paint_ring(
+                painter,
+                rect.expand2(egui::vec2(1.0, 1.0)),
+                color_alpha(p.ring, 0.5),
+                3.0,
+                radius as f32,
+            );
+        }
+    }
+
+    response
+}
+
+/// "Previous" ghost button with a leading chevron: `size="default"` +
+/// `gap-1 px-2.5 sm:pl-2.5` (nova `pl-1.5!`), so it is 32px tall under nova
+/// with a 6px left / 10px right padding and a 4px icon-label gap.
 #[derive(Debug)]
 pub struct PaginationPrevious {
     label: String,
@@ -232,16 +444,14 @@ impl PaginationPrevious {
 
     /// Renders the button.
     pub fn show(self, ui: &mut Ui) -> Response {
-        let mut button = Button::new(self.label.clone())
-            .variant(ButtonVariant::Ghost)
-            .icon_start(Icon::ChevronLeft);
-        if self.disabled {
-            button = button.disabled(true);
-        }
-        if let Some(salt) = self.id_salt.as_deref() {
-            button = button.id_salt(salt);
-        }
-        button.show(ui)
+        pager_button(
+            ui,
+            PagerSide::Previous,
+            &self.label,
+            Icon::ChevronLeft,
+            self.disabled,
+            self.id_salt.as_deref(),
+        )
     }
 }
 
@@ -251,8 +461,8 @@ impl Default for PaginationPrevious {
     }
 }
 
-/// "Next" ghost button with a trailing chevron (`gap-1 px-2.5`; rendered
-/// with the default Button padding).
+/// "Next" ghost button with a trailing chevron: `size="default"` + `gap-1
+/// px-2.5 sm:pr-2.5` (nova `pr-1.5!`), mirroring [`PaginationPrevious`].
 #[derive(Debug)]
 pub struct PaginationNext {
     label: String,
@@ -290,16 +500,14 @@ impl PaginationNext {
 
     /// Renders the button.
     pub fn show(self, ui: &mut Ui) -> Response {
-        let mut button = Button::new(self.label.clone())
-            .variant(ButtonVariant::Ghost)
-            .icon_end(Icon::ChevronRight);
-        if self.disabled {
-            button = button.disabled(true);
-        }
-        if let Some(salt) = self.id_salt.as_deref() {
-            button = button.id_salt(salt);
-        }
-        button.show(ui)
+        pager_button(
+            ui,
+            PagerSide::Next,
+            &self.label,
+            Icon::ChevronRight,
+            self.disabled,
+            self.id_salt.as_deref(),
+        )
     }
 }
 
@@ -326,7 +534,9 @@ impl PaginationEllipsis {
         Self { _private: () }
     }
 
-    /// Paints the ellipsis glyph.
+    /// Paints the ellipsis glyph. The source ellipsis `<span>` sets no text
+    /// color, so the glyph inherits `foreground` (unlike the breadcrumb
+    /// ellipsis, whose ancestors set `text-muted-foreground`).
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let size = PAGINATION_ELLIPSIS_SIZE;
@@ -337,7 +547,7 @@ impl PaginationEllipsis {
             Icon::MoreHorizontal.paint(
                 ui.painter(),
                 icon_rect,
-                theme.palette.muted_foreground,
+                theme.palette.foreground,
                 2.0 * icon_size / 24.0,
             );
         }
@@ -349,7 +559,7 @@ impl PaginationEllipsis {
 mod tests {
     use super::*;
     use crate::theme::Preset;
-    use egui::Pos2;
+    use egui::{Pos2, Rect};
 
     #[test]
     fn active_link_uses_outline_and_others_ghost() {
@@ -364,9 +574,30 @@ mod tests {
     fn links_default_to_icon_size() {
         let link = PaginationLink::new("2");
         assert_eq!(link.size, ButtonSize::Icon);
-        assert_eq!(link.size.height(), 36.0);
+        assert_eq!(link.size.height(), 36.0); // base recipe `size-9`
+                                              // Nova `.cn-button-size-icon { size-8 }` shrinks the square via the
+                                              // style-aware button metrics.
+        assert_eq!(button::metrics::height(ButtonSize::Icon, Style::Nova), 32.0);
         let wide = PaginationLink::new("…100").size(ButtonSize::Sm);
         assert_eq!(wide.size.height(), 32.0);
+    }
+
+    #[test]
+    fn pager_metrics_match_source() {
+        // `size="default"` height: nova `h-8`, base recipe `h-9`.
+        assert_eq!(pager_height(Style::Nova), 32.0);
+        assert_eq!(pager_height(Style::Vega), 36.0);
+        // `gap-1 px-2.5 sm:pl-2.5` / `sm:pr-2.5` (10px) with the nova
+        // `pl-1.5!` / `pr-1.5!` (6px) edge override.
+        assert_eq!(pager_padding(PagerSide::Previous, Style::Nova), (6.0, 10.0));
+        assert_eq!(pager_padding(PagerSide::Next, Style::Nova), (10.0, 6.0));
+        assert_eq!(
+            pager_padding(PagerSide::Previous, Style::Vega),
+            (10.0, 10.0)
+        );
+        assert_eq!(pager_padding(PagerSide::Next, Style::Vega), (10.0, 10.0));
+        // The icon-label gap is `gap-1` in every style.
+        assert_eq!(PAGER_GAP, 4.0);
     }
 
     #[test]
@@ -432,5 +663,47 @@ mod tests {
             });
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn content_row_is_centered() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let width = 400.0;
+        let mut row = Rect::ZERO;
+        // Frame 1 flows plainly while measuring the row; frame 2 centers it
+        // with that measured size.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("pagination_center_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 200.0))),
+                );
+                Pagination::new().show(ui, |ui| {
+                    PaginationContent::new().show(ui, |ui| {
+                        PaginationItem::new().show(ui, |ui| {
+                            PaginationLink::new("1").show(ui);
+                        });
+                        PaginationItem::new().show(ui, |ui| {
+                            PaginationLink::new("2").active(true).show(ui);
+                        });
+                        PaginationItem::new().show(ui, |ui| {
+                            PaginationNext::new().show(ui);
+                        });
+                    });
+                    row = ui.min_rect();
+                });
+            });
+            out.textures_delta.clear();
+        }
+        assert!(row.left() > 1.0, "the row is no longer left-aligned");
+        let left_gap = row.left();
+        let right_gap = width - row.right();
+        assert!(
+            (left_gap - right_gap).abs() < 1.5,
+            "the row is not centered: left gap {left_gap}, right gap {right_gap}"
+        );
     }
 }
