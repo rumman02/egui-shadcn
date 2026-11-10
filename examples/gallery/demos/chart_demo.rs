@@ -40,7 +40,9 @@ fn three_series_data() -> ChartData {
 }
 
 pub fn run(ui: &mut egui::Ui) {
-    ui.label("Area chart (hover for the tooltip; legend entries toggle series)");
+    ui.label(
+        "Area chart (hover for the tooltip; legend entries toggle series — gallery extension)",
+    );
     ui.add_space(4.0);
     Chart::new(visitors_data())
         .variant(ChartVariant::Area)
@@ -49,18 +51,21 @@ pub fn run(ui: &mut egui::Ui) {
         .show(ui);
 
     ui.add_space(16.0);
-    ui.label("Area chart, visitors-card style (0.15 fill, no legend)");
+    ui.label(
+        "Area chart, visitors-card style (0.15 fill, no legend, line indicator nests the label)",
+    );
     ui.add_space(4.0);
     Chart::new(visitors_data())
         .variant(ChartVariant::Area)
         .id_salt("demo_area_soft")
         .fill_alpha(0.15)
         .show_legend(false)
+        .tooltip_indicator(ChartIndicator::Line)
         .max_width(420.0)
         .show(ui);
 
     ui.add_space(16.0);
-    ui.label("Line chart, dot tooltip indicator");
+    ui.label("Line chart, dot tooltip indicator (chart.tsx default)");
     ui.add_space(4.0);
     Chart::new(multi_series_data())
         .variant(ChartVariant::Line)
@@ -76,6 +81,16 @@ pub fn run(ui: &mut egui::Ui) {
         .variant(ChartVariant::Bar)
         .id_salt("demo_bar")
         .tooltip_indicator(ChartIndicator::Dashed)
+        .max_width(420.0)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Line chart, straight segments (smooth off)");
+    ui.add_space(4.0);
+    Chart::new(multi_series_data())
+        .variant(ChartVariant::Line)
+        .id_salt("demo_line_straight")
+        .smooth(false)
         .max_width(420.0)
         .show(ui);
 

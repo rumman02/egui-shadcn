@@ -7,8 +7,8 @@
 //! The React component is a thin wrapper around recharts; here the plots are
 //! drawn directly with the egui `Painter`:
 //!
-//! - [`ChartContainer`] — the responsive `min-h-[200px] w-full text-xs`
-//!   frame with a rounded `Card`-style border and padding.
+//! - [`ChartContainer`] — the border-less responsive `min-h-[200px] w-full
+//!   text-xs` frame (the docs' border comes from wrapping it in a `Card`).
 //! - [`Chart`] — data + variant (`Area` / `Line` / `Bar`) rendered inside a
 //!   [`ChartContainer`]: horizontal grid lines (`stroke-border/50`), muted
 //!   `text-xs` axis ticks, a hover cursor (vertical line + active dots, or a
@@ -57,12 +57,14 @@ pub enum ChartVariant {
 /// (`dot` / `line` / `dashed`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChartIndicator {
-    /// A 10×10 rounded square in the series color.
+    /// A 10×10 rounded square in the series color (the source default,
+    /// chart.tsx `indicator = "dot"`).
     #[default]
     Dot,
     /// A 4px wide, row-height bar in the series color.
     Line,
-    /// A dashed 1.5px outlined square.
+    /// A vertical 1.5px dashed line spanning the row height (`w-0
+    /// border-[1.5px] border-dashed`, 3px total width).
     Dashed,
 }
 
@@ -140,7 +142,8 @@ impl ChartData {
 }
 
 /// `ChartContainer` — the responsive chart frame: `min-h-[200px] w-full
-/// text-xs`, drawn with the docs' `Card`-style rounded border and padding.
+/// text-xs`. Border-less like the source (`flex aspect-video justify-center
+/// text-xs`); the framed look in the docs comes from wrapping it in a `Card`.
 ///
 /// Lower-level than [`Chart`]; use it to compose custom plots.
 pub struct ChartContainer {
@@ -184,31 +187,22 @@ impl ChartContainer {
         self
     }
 
-    /// Renders the bordered frame around the chart content.
+    /// Renders the frame around the chart content.
     pub fn show<R>(
         self,
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
-        let theme = ShadcnTheme::of_ui(ui);
-        let p = theme.palette;
-        let pad = crate::theme::tokens::spacing::SM; // p-2
-
         let width = self
             .max_width
             .unwrap_or(ui.available_width())
             .min(ui.available_width());
 
-        egui::Frame::new()
-            .corner_radius(theme.radius.lg_u8()) // rounded-lg
-            .stroke(Stroke::new(1.0, p.border))
-            .inner_margin(egui::Margin::same(pad as i8))
-            .show(ui, |ui| {
-                let inner_w = (width - pad * 2.0).max(0.0);
-                ui.set_width(inner_w);
-                ui.set_min_size(Vec2::new(inner_w, (self.min_height - pad * 2.0).max(0.0)));
-                content(ui)
-            })
+        egui::Frame::new().show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_min_size(Vec2::new(width, self.min_height));
+            content(ui)
+        })
     }
 }
 
@@ -286,6 +280,113 @@ pub(crate) fn series_color(p: &Palette, color_index: usize) -> Color32 {
     }
 }
 
+/// `shadow-xl` (the chart tooltip, chart.tsx `shadow-xl`). Mirrors
+/// `utils::shadow` presets: a deeper `shadow-lg` (Tailwind xl = y-offset 20,
+/// blur 25).
+fn shadow_xl(dark: bool) -> egui::epaint::Shadow {
+    let mut s = crate::utils::shadow::shadow_lg(dark);
+    s.offset[1] += 4;
+    s.blur += 8;
+    s.color = Color32::from_black_alpha((s.color.a() as f32 * 1.15) as u8);
+    s
+}
+
+/// Fritsch–Carlson monotone tangents, one slope per point (y units per
+/// x-unit, x spacing `dx`). Reproduces recharts' `type="monotone"` curves:
+/// smooth, and guaranteed not to overshoot the data points.
+fn monotone_tangents(y: &[f64], dx: f64) -> Vec<f64> {
+    let n = y.len();
+    let mut m = vec![0.0; n];
+    if n < 2 || dx <= 0.0 {
+        return m;
+    }
+    let delta: Vec<f64> = y.windows(2).map(|w| (w[1] - w[0]) / dx).collect();
+    if n == 2 {
+        // Only one interval: a straight line.
+        m[0] = delta[0];
+        m[1] = delta[0];
+        return m;
+    }
+    // Endpoints use the adjacent slope; interior pivots (slope sign change)
+    // get a zero tangent so the curve flattens through them.
+    m[0] = delta[0];
+    m[n - 1] = delta[n - 2];
+    for k in 1..n - 1 {
+        m[k] = if delta[k - 1] * delta[k] <= 0.0 {
+            0.0
+        } else {
+            (delta[k - 1] + delta[k]) * 0.5
+        };
+    }
+    // Fritsch–Carlson limiting: tangents may not overshoot three intervals.
+    for k in 0..n - 1 {
+        if delta[k] == 0.0 {
+            m[k] = 0.0;
+            m[k + 1] = 0.0;
+            continue;
+        }
+        let a = m[k] / delta[k];
+        let b = m[k + 1] / delta[k];
+        let s = a * a + b * b;
+        if s > 9.0 {
+            let tau = 3.0 / s.sqrt();
+            m[k] = tau * a * delta[k];
+            m[k + 1] = tau * b * delta[k];
+        }
+    }
+    m
+}
+
+/// Monotone cubic Hermite → cubic Bézier segments (`[p0, c1, c2, p1]`) for
+/// x-monotone points. Empty when there are fewer than two points.
+fn monotone_bezier_segments(pts: &[Pos2]) -> Vec<[Pos2; 4]> {
+    let n = pts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let dx = (pts[1].x - pts[0].x) as f64;
+    let y: Vec<f64> = pts.iter().map(|p| p.y as f64).collect();
+    let m = monotone_tangents(&y, dx);
+    let mut segs = Vec::with_capacity(n - 1);
+    for k in 0..n - 1 {
+        let (p0, p1) = (pts[k], pts[k + 1]);
+        let step = ((p1.x - p0.x) / 3.0) as f64;
+        let c1 = Pos2::new(p0.x + step as f32, (y[k] + m[k] * step) as f32);
+        let c2 = Pos2::new(p1.x - step as f32, (y[k + 1] - m[k + 1] * step) as f32);
+        segs.push([p0, c1, c2, p1]);
+    }
+    segs
+}
+
+/// Flattens cubic Bézier segments into a dense polyline (`samples` per
+/// segment) so the area fill can be built from thin convex strips.
+fn flatten_segments(segs: &[[Pos2; 4]], samples: usize) -> Vec<Pos2> {
+    let samples = samples.max(2);
+    let mut pts = Vec::with_capacity(segs.len() * samples + 1);
+    for (k, s) in segs.iter().enumerate() {
+        let steps = if k == 0 { samples } else { samples - 1 };
+        for step in 0..steps {
+            let t = step as f32 / (samples - 1) as f32;
+            pts.push(cubic_bezier_at(s, t));
+        }
+    }
+    pts.push(segs[segs.len() - 1][3]);
+    pts
+}
+
+/// The point on a cubic Bézier at parameter `t`.
+fn cubic_bezier_at(s: &[Pos2; 4], t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let b0 = u * u * u;
+    let b1 = 3.0 * u * u * t;
+    let b2 = 3.0 * u * t * t;
+    let b3 = t * t * t;
+    Pos2::new(
+        b0 * s[0].x + b1 * s[1].x + b2 * s[2].x + b3 * s[3].x,
+        b0 * s[0].y + b1 * s[1].y + b2 * s[2].y + b3 * s[3].y,
+    )
+}
+
 /// Hidden-series state persisted per chart id (`legend` toggles).
 fn hidden_id(id: Id) -> Id {
     id.with("hidden_series")
@@ -308,6 +409,7 @@ fn write_hidden(ctx: &egui::Context, id: Id, hidden: Vec<bool>) {
 
 /// The chart: [`ChartData`] + [`ChartVariant`] inside a
 /// [`ChartContainer`], with legend, hover cursor and tooltip.
+#[derive(Clone)]
 pub struct Chart {
     data: ChartData,
     variant: ChartVariant,
@@ -315,6 +417,7 @@ pub struct Chart {
     height: f32,
     max_width: Option<f32>,
     legend: bool,
+    smooth: bool,
     fill_alpha: f32,
     tooltip_indicator: ChartIndicator,
     tooltip_hide_label: bool,
@@ -331,8 +434,9 @@ impl Chart {
             height: 200.0,
             max_width: None,
             legend: true,
+            smooth: true,
             fill_alpha: 0.4,
-            tooltip_indicator: ChartIndicator::Line,
+            tooltip_indicator: ChartIndicator::Dot,
             tooltip_hide_label: false,
             tick_count: 5,
         }
@@ -369,6 +473,14 @@ impl Chart {
         self
     }
 
+    /// Smooths Area/Line series with monotone cubic curves (recharts'
+    /// `type="monotone"` default; on by default). `false` draws straight
+    /// polylines.
+    pub fn smooth(mut self, smooth: bool) -> Self {
+        self.smooth = smooth;
+        self
+    }
+
     /// Area fill opacity (`fillOpacity`, default 0.4 like the docs example;
     /// the `visitors` card uses 0.15).
     pub fn fill_alpha(mut self, alpha: f32) -> Self {
@@ -376,7 +488,8 @@ impl Chart {
         self
     }
 
-    /// The tooltip indicator shape (default `Line`, per the docs examples).
+    /// The tooltip indicator shape (default `Dot`, per chart.tsx
+    /// `indicator = "dot"`).
     pub fn tooltip_indicator(mut self, indicator: ChartIndicator) -> Self {
         self.tooltip_indicator = indicator;
         self
@@ -541,7 +654,10 @@ impl Chart {
         ui.allocate_space(Vec2::new(plot_w, height));
         let plot_interact = ui.interact(plot, id.with("plot"), Sense::hover());
 
-        // --- series painting -------------------------------------------------
+        // Paint slots: the hover cursor sits *behind* the series (recharts
+        // draws the tooltip cursor behind the bars), so its slot is reserved
+        // first and filled in the hover block below.
+        let cursor_idx = painter.add(egui::Shape::Noop);
         let series_idx = painter.add(egui::Shape::Noop);
         let mut shapes: Vec<egui::Shape> = Vec::new();
 
@@ -589,18 +705,61 @@ impl Chart {
                     if pts.is_empty() {
                         continue;
                     }
+                    let stroke = Stroke::new(2.0, color);
+                    let segs = if self.smooth {
+                        monotone_bezier_segments(&pts)
+                    } else {
+                        Vec::new()
+                    };
                     if self.variant == ChartVariant::Area {
-                        // Fill down to the baseline.
-                        let mut fill = pts.clone();
-                        fill.push(Pos2::new(pts[pts.len() - 1].x, plot.bottom()));
-                        fill.push(Pos2::new(pts[0].x, plot.bottom()));
-                        shapes.push(egui::Shape::convex_polygon(
-                            fill,
-                            color_alpha(color, self.fill_alpha),
-                            Stroke::NONE,
-                        ));
+                        // Fill down to the baseline. Smooth fills are built
+                        // from thin convex strips that follow the curve.
+                        let fill: Vec<egui::Shape> = if self.smooth && !segs.is_empty() {
+                            let samples = flatten_segments(&segs, 16);
+                            samples
+                                .windows(2)
+                                .map(|w| {
+                                    egui::Shape::convex_polygon(
+                                        vec![
+                                            w[0],
+                                            w[1],
+                                            Pos2::new(w[1].x, plot.bottom()),
+                                            Pos2::new(w[0].x, plot.bottom()),
+                                        ],
+                                        color_alpha(color, self.fill_alpha),
+                                        Stroke::NONE,
+                                    )
+                                })
+                                .collect()
+                        } else {
+                            let mut fill = pts.clone();
+                            fill.push(Pos2::new(pts[pts.len() - 1].x, plot.bottom()));
+                            fill.push(Pos2::new(pts[0].x, plot.bottom()));
+                            vec![egui::Shape::convex_polygon(
+                                fill,
+                                color_alpha(color, self.fill_alpha),
+                                Stroke::NONE,
+                            )]
+                        };
+                        shapes.push(egui::Shape::Vec(fill));
                     }
-                    shapes.push(egui::Shape::line(pts, Stroke::new(2.0, color)));
+                    let line_shapes: Vec<egui::Shape> = if self.smooth && !segs.is_empty() {
+                        segs.iter()
+                            .map(|s| {
+                                egui::Shape::CubicBezier(
+                                    egui::epaint::CubicBezierShape::from_points_stroke(
+                                        *s,
+                                        false,
+                                        Color32::TRANSPARENT,
+                                        stroke,
+                                    ),
+                                )
+                            })
+                            .collect()
+                    } else {
+                        vec![egui::Shape::line(pts, stroke)]
+                    };
+                    shapes.push(egui::Shape::Vec(line_shapes));
                 }
             }
         }
@@ -613,7 +772,6 @@ impl Chart {
                     .floor()
                     .clamp(0.0, (n - 1) as f32)) as usize;
 
-                let cursor_idx = painter.add(egui::Shape::Noop);
                 let mut cursor: Vec<egui::Shape> = Vec::new();
                 match self.variant {
                     ChartVariant::Bar => {
@@ -637,9 +795,10 @@ impl Chart {
                             if let Some(v) = self.data.series[si].points.get(band) {
                                 let color =
                                     series_color(p, self.data.series[si].resolved_color_index(si));
+                                // recharts activeDot r=4 in the docs examples.
                                 cursor.push(egui::Shape::circle_filled(
                                     Pos2::new(x, y_at(*v)),
-                                    3.5,
+                                    4.0,
                                     color,
                                 ));
                             }
@@ -790,7 +949,12 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
     );
     let mono_font = FontId::new(crate::theme::tokens::type_scale::XS, FontFamily::Monospace);
 
-    let show_label = !hide_label && label.is_some();
+    // `nestLabel`: with a single series and a non-dot indicator the label
+    // nests inside the series row (chart.tsx `payload.length === 1 &&
+    // indicator !== "dot"`).
+    let nest = visible.len() == 1 && indicator != ChartIndicator::Dot;
+    let nest_label = nest && !hide_label && label.is_some();
+    let show_label = !hide_label && label.is_some() && !nest;
 
     // Measure: label row + one row per visible series.
     let mut w: f32 = 128.0; // min-w-[8rem]
@@ -808,7 +972,20 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
             .size()
             .x;
         w = w.max(14.0 + 8.0 + name_w + 12.0 + value_w + 10.0);
+        if nest_label {
+            if let Some(l) = &label {
+                let label_w = ui
+                    .painter()
+                    .layout_no_wrap(l.clone(), x_font.clone(), Color32::WHITE)
+                    .size()
+                    .x;
+                w = w.max(14.0 + label_w.max(name_w) + 12.0 + value_w + 10.0);
+            }
+        }
         rows_h += 10.0_f32.max(x_font.size) + 6.0; // indicator row + gap-1.5
+        if nest_label {
+            rows_h += 16.0 + 6.0; // nested label + gap-1.5 under it
+        }
     }
     let label_h = if show_label { 16.0 + 6.0 } else { 0.0 };
     let size = Vec2::new(w + 20.0, rows_h + label_h + 12.0); // + px-2.5/py-1.5
@@ -834,10 +1011,15 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
                 .fill(p.background)
                 .stroke(Stroke::new(1.0, color_alpha(p.border, 0.5)))
                 .inner_margin(egui::Margin::symmetric(10, 6)) // px-2.5 py-1.5
-                .shadow(crate::utils::shadow::shadow_lg(theme.mode.is_dark())) // shadow-xl
+                .shadow(shadow_xl(theme.mode.is_dark())) // shadow-xl
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0; // gap-1.5
                     ui.set_min_width(w);
+                    // The nested label galley (rendered inside the single row).
+                    let nested = label
+                        .clone()
+                        .filter(|_| nest_label)
+                        .map(|l| ui.painter().layout_no_wrap(l, x_font.clone(), p.foreground));
                     if let Some(label) = label.filter(|_| show_label) {
                         let galley =
                             ui.painter()
@@ -861,7 +1043,8 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
                             mono_font.clone(),
                             p.foreground,
                         );
-                        let row_h = 10.0_f32.max(name_g.size().y).max(value_g.size().y);
+                        let row_h = 10.0_f32.max(name_g.size().y).max(value_g.size().y)
+                            + nested.as_ref().map_or(0.0, |g| g.size().y + 6.0);
                         let row_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(w, row_h));
                         let painter = ui.painter();
                         let cy = row_rect.center().y;
@@ -877,6 +1060,8 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
                                 );
                             }
                             ChartIndicator::Line => {
+                                // `w-1` stretched to the row height
+                                // (items-stretch).
                                 painter.rect_filled(
                                     Rect::from_min_size(
                                         Pos2::new(row_rect.left(), row_rect.top()),
@@ -887,57 +1072,70 @@ fn draw_tooltip(ui: &Ui, t: TooltipCtx<'_>) {
                                 );
                             }
                             ChartIndicator::Dashed => {
-                                // Dashed 1.5px outlined square.
-                                let r = Rect::from_min_size(
-                                    Pos2::new(row_rect.left(), cy - 5.0),
-                                    Vec2::splat(10.0),
-                                );
-                                for k in 0..3 {
-                                    let seg_w = r.width() / 3.0;
-                                    let x0 = r.left() + seg_w * k as f32;
-                                    let x1 = r.left() + seg_w * (k as f32 + 0.6);
-                                    painter.line_segment(
-                                        [Pos2::new(x0, r.top()), Pos2::new(x1, r.top())],
-                                        Stroke::new(1.5, color),
-                                    );
-                                    painter.line_segment(
-                                        [Pos2::new(x0, r.bottom()), Pos2::new(x1, r.bottom())],
-                                        Stroke::new(1.5, color),
+                                // `w-0 border-[1.5px] border-dashed`: two 1.5px
+                                // vertical dashed borders spanning the row
+                                // height; `my-0.5` insets it when nested.
+                                let stroke = Stroke::new(1.5, color);
+                                let (top, bottom) = if nest_label {
+                                    (row_rect.top() + 2.0, row_rect.bottom() - 2.0)
+                                } else {
+                                    (row_rect.top(), row_rect.bottom())
+                                };
+                                for dx in [0.75, 2.25] {
+                                    paint_dashed_vline(
+                                        painter,
+                                        row_rect.left() + dx,
+                                        top,
+                                        bottom,
+                                        stroke,
                                     );
                                 }
-                                painter.line_segment(
-                                    [
-                                        Pos2::new(r.left(), r.top()),
-                                        Pos2::new(r.left(), r.bottom()),
-                                    ],
-                                    Stroke::new(1.5, color),
-                                );
-                                painter.line_segment(
-                                    [
-                                        Pos2::new(r.right(), r.top()),
-                                        Pos2::new(r.right(), r.bottom()),
-                                    ],
-                                    Stroke::new(1.5, color),
-                                );
                             }
                         }
-                        painter.galley(
-                            Pos2::new(row_rect.left() + 14.0, cy - name_g.size().y * 0.5),
-                            name_g,
-                            p.muted_foreground,
-                        );
-                        painter.galley(
+                        // `items-end` when nested (label on top, name bottom),
+                        // `items-center` otherwise.
+                        let name_pos = if nest_label {
+                            Pos2::new(row_rect.left() + 14.0, row_rect.bottom() - name_g.size().y)
+                        } else {
+                            Pos2::new(row_rect.left() + 14.0, cy - name_g.size().y * 0.5)
+                        };
+                        painter.galley(name_pos, name_g, p.muted_foreground);
+                        if let Some(g) = &nested {
+                            painter.galley(
+                                Pos2::new(row_rect.left() + 14.0, row_rect.top()),
+                                g.clone(),
+                                p.foreground,
+                            );
+                        }
+                        let value_pos = if nest_label {
+                            Pos2::new(
+                                row_rect.right() - value_g.size().x,
+                                row_rect.bottom() - value_g.size().y,
+                            )
+                        } else {
                             Pos2::new(
                                 row_rect.right() - value_g.size().x,
                                 cy - value_g.size().y * 0.5,
-                            ),
-                            value_g,
-                            p.foreground,
-                        );
+                            )
+                        };
+                        painter.galley(value_pos, value_g, p.foreground);
                         ui.advance_cursor_after_rect(row_rect);
                     }
                 });
         });
+}
+
+/// Paints a dashed vertical line (CSS `border-dashed`-like: dash and gap
+/// lengths scale with the stroke width).
+fn paint_dashed_vline(painter: &egui::Painter, x: f32, top: f32, bottom: f32, stroke: Stroke) {
+    let dash = (stroke.width * 3.0).max(2.0);
+    let gap = dash;
+    let mut y = top;
+    while y < bottom {
+        let y1 = (y + dash).min(bottom);
+        painter.line_segment([Pos2::new(x, y), Pos2::new(x, y1)], stroke);
+        y = y1 + gap;
+    }
 }
 
 #[cfg(test)]
@@ -1033,6 +1231,7 @@ mod tests {
             .height(180.0)
             .max_width(320.0)
             .show_legend(false)
+            .smooth(false)
             .fill_alpha(0.15)
             .tooltip_indicator(ChartIndicator::Dot)
             .tooltip_hide_label(true)
@@ -1042,10 +1241,61 @@ mod tests {
         assert_eq!(chart.height, 180.0);
         assert_eq!(chart.max_width, Some(320.0));
         assert!(!chart.legend);
+        assert!(!chart.smooth);
         assert_eq!(chart.fill_alpha, 0.15);
         assert_eq!(chart.tooltip_indicator, ChartIndicator::Dot);
         assert!(chart.tooltip_hide_label);
         assert_eq!(chart.tick_count, 3);
+    }
+
+    #[test]
+    fn defaults_match_chart_tsx() {
+        // chart.tsx:118 `indicator = "dot"`, recharts `type="monotone"`.
+        let chart = Chart::new(test_data());
+        assert_eq!(chart.tooltip_indicator, ChartIndicator::Dot);
+        assert!(chart.smooth);
+    }
+
+    #[test]
+    fn monotone_tangents_never_overshoot() {
+        // Strictly increasing: the Fritsch–Carlson limiting keeps each
+        // interval's tangent ratio inside the 3× circle.
+        let y = [0.0, 10.0, 30.0, 31.0];
+        let m = monotone_tangents(&y, 1.0);
+        assert_eq!(m.len(), 4);
+        for k in 0..3 {
+            let d = y[k + 1] - y[k];
+            let a = m[k] / d;
+            let b = m[k + 1] / d;
+            assert!(a * a + b * b <= 9.0 + 1e-9);
+        }
+        // A slope sign change flattens the pivot tangent (no overshoot).
+        let m = monotone_tangents(&[0.0, 10.0, 0.0], 1.0);
+        assert_eq!(m[1], 0.0);
+        // Flat data stays flat.
+        assert!(monotone_tangents(&[5.0, 5.0, 5.0], 1.0)
+            .iter()
+            .all(|t| *t == 0.0));
+        // Two points: a straight line.
+        assert_eq!(monotone_tangents(&[0.0, 6.0], 1.0), vec![6.0, 6.0]);
+    }
+
+    #[test]
+    fn monotone_bezier_segments_cover_all_points() {
+        let pts: Vec<Pos2> = (0..4)
+            .map(|i| Pos2::new(i as f32 * 10.0, i as f32 * 5.0))
+            .collect();
+        let segs = monotone_bezier_segments(&pts);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0][0], pts[0]);
+        assert_eq!(segs[2][3], pts[3]);
+        // Fewer than two points produce no segments.
+        assert!(monotone_bezier_segments(&[pts[0]]).is_empty());
+        assert!(monotone_bezier_segments(&[]).is_empty());
+        // The flattened polyline starts and ends on the data points.
+        let samples = flatten_segments(&segs, 16);
+        assert_eq!(samples.first(), Some(&pts[0]));
+        assert_eq!(samples.last(), Some(&pts[3]));
     }
 
     #[test]
@@ -1105,17 +1355,32 @@ mod tests {
     fn hover_shows_cursor_and_tooltip() {
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
-        // Warm up one frame so the plot rect exists, then hover inside it.
-        run_ui(&ctx, "chart_hover_test", |ui| {
-            Chart::new(test_data()).id_salt("hover").show(ui);
-        });
-        run_ui(&ctx, "chart_hover_test", |ui| {
-            let r = Chart::new(test_data()).id_salt("hover").show(ui);
-            let center = Pos2::new(r.rect.center().x, r.rect.top() + 60.0);
-            ctx.input_mut(|i| i.events.push(egui::Event::PointerMoved(center)));
-        });
-        run_ui(&ctx, "chart_hover_test", |ui| {
-            Chart::new(test_data()).id_salt("hover").show(ui);
-        });
+        let single = ChartData::new(vec!["Jan", "Feb", "Mar", "Apr"])
+            .series(ChartSeries::new("Desktop", vec![186.0, 305.0, 237.0, 73.0]));
+        // Configurations covering dot/line/dashed indicators, the nested
+        // single-series label, straight lines and the bar cursor band.
+        let configs = [
+            Chart::new(test_data()),
+            Chart::new(test_data()).smooth(false),
+            Chart::new(single.clone()).tooltip_indicator(ChartIndicator::Line),
+            Chart::new(single.clone()).tooltip_indicator(ChartIndicator::Dashed),
+            Chart::new(test_data()).variant(ChartVariant::Bar),
+        ];
+        for (i, chart) in configs.into_iter().enumerate() {
+            let salt = format!("hover_{i}");
+            let salt = salt.as_str();
+            // Warm up one frame so the plot rect exists, then hover inside it.
+            run_ui(&ctx, "chart_hover_test", |ui| {
+                chart.clone().id_salt(salt).show(ui);
+            });
+            run_ui(&ctx, "chart_hover_test", |ui| {
+                let r = chart.clone().id_salt(salt).show(ui);
+                let center = Pos2::new(r.rect.center().x, r.rect.top() + 60.0);
+                ctx.input_mut(|i| i.events.push(egui::Event::PointerMoved(center)));
+            });
+            run_ui(&ctx, "chart_hover_test", |ui| {
+                chart.clone().id_salt(salt).show(ui);
+            });
+        }
     }
 }
