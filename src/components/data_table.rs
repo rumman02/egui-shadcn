@@ -10,9 +10,12 @@
 //!   closure drawing the cell content, and an optional `sort_key` (which
 //!   also marks the column sortable).
 //! - [`DataTable`] — generic over the row type `T`. Sorting + page state
-//!   persist per `id_salt`; the filter text and the selection are controlled
-//!   (`&mut String` / `&mut Vec<usize>`), like the source's
-//!   `columnFilters` / `rowSelection` state.
+//!   persist per `id_salt`; the filter text, the column visibility and the
+//!   selection are controlled (`&mut String` / `&mut Vec<bool>` /
+//!   `&mut Vec<usize>`), like the source's `columnFilters` /
+//!   `columnVisibility` / `rowSelection` state. When column visibility is
+//!   enabled the toolbar gains the `Columns <ChevronDown>` dropdown
+//!   (`DropdownMenuCheckboxItem` per hideable column).
 //! - [`SortValue`] — the comparable extracted per row (`Text` / `Number`).
 //!
 //! ```ignore
@@ -150,6 +153,10 @@ pub struct DataTableColumn<'a, T> {
     pub cell: Option<CellRenderer<'a, T>>,
     /// The sort extractor; when present the header becomes clickable.
     pub sort_key: Option<SortKeyFn<'a, T>>,
+    /// Whether the column appears in the column-visibility dropdown
+    /// (`enableHiding`, default `true`; the source's selection/actions
+    /// display columns are `false` — those aren't [`DataTableColumn`]s here).
+    pub hideable: bool,
 }
 
 impl<'a, T> DataTableColumn<'a, T> {
@@ -162,6 +169,7 @@ impl<'a, T> DataTableColumn<'a, T> {
             align: DataTableCellAlign::Start,
             cell: None,
             sort_key: None,
+            hideable: true,
         }
     }
 
@@ -180,6 +188,13 @@ impl<'a, T> DataTableColumn<'a, T> {
     /// Marks the column sortable with the value to sort by.
     pub fn sort_key(mut self, key: impl Fn(&T) -> SortValue + 'a) -> Self {
         self.sort_key = Some(Box::new(key));
+        self
+    }
+
+    /// Excludes the column from the column-visibility dropdown
+    /// (`enableHiding: false`).
+    pub fn hideable(mut self, hideable: bool) -> Self {
+        self.hideable = hideable;
         self
     }
 
@@ -324,6 +339,7 @@ pub struct DataTable<'a, T> {
     filter: Option<&'a mut String>,
     filter_fn: Option<FilterFn<'a, T>>,
     filter_placeholder: String,
+    visibility: Option<&'a mut Vec<bool>>,
     selection: Option<&'a mut Vec<usize>>,
     actions: Option<CellRenderer<'a, T>>,
     default_page_size: Option<usize>,
@@ -340,6 +356,7 @@ impl<'a, T> DataTable<'a, T> {
             filter: None,
             filter_fn: None,
             filter_placeholder: "Filter...".to_owned(),
+            visibility: None,
             selection: None,
             actions: None,
             default_page_size: None,
@@ -379,6 +396,15 @@ impl<'a, T> DataTable<'a, T> {
         self
     }
 
+    /// Enables the `Columns <ChevronDown>` toolbar dropdown with a controlled
+    /// visibility vector, index-matched to [`Self::columns`]
+    /// (`columnVisibility` + `DropdownMenuCheckboxItem` per hideable column;
+    /// `true` = visible).
+    pub fn column_visibility(mut self, visibility: &'a mut Vec<bool>) -> Self {
+        self.visibility = Some(visibility);
+        self
+    }
+
     /// Enables pagination with the default page size (mirrors
     /// `rowPaginationFeature`).
     pub fn page_size(mut self, size: usize) -> Self {
@@ -415,6 +441,7 @@ impl<'a, T> DataTable<'a, T> {
             filter,
             filter_fn,
             filter_placeholder,
+            mut visibility,
             mut selection,
             actions,
             default_page_size,
@@ -473,38 +500,74 @@ impl<'a, T> DataTable<'a, T> {
         };
         let page_rows: Vec<usize> = filtered[start..end].to_vec();
 
+        // --- column visibility --------------------------------------------------
+        // `columnVisibility` state: index-matched to the columns, `true` =
+        // visible. Synced back to the caller's vector after the toolbar.
+        let mut vis: Vec<bool> = visibility.as_deref().cloned().unwrap_or_default();
+        vis.resize(columns.len(), true);
+
         // --- column widths -----------------------------------------------------
         let total = ui.available_width();
         let selection_w = if selection.is_some() { 40.0 } else { 0.0 };
         let actions_w = if actions.is_some() { 56.0 } else { 0.0 };
-        let fixed: f32 =
-            columns.iter().filter_map(|c| c.width).sum::<f32>() + selection_w + actions_w;
-        let flexible = columns.iter().filter(|c| c.width.is_none()).count().max(1);
+        let visible = |ci: usize| vis.get(ci).copied().unwrap_or(true);
+        let fixed: f32 = columns
+            .iter()
+            .enumerate()
+            .filter(|(ci, _)| visible(*ci))
+            .filter_map(|(_, c)| c.width)
+            .sum::<f32>()
+            + selection_w
+            + actions_w;
+        let flexible = columns
+            .iter()
+            .enumerate()
+            .filter(|(ci, c)| visible(*ci) && c.width.is_none())
+            .count()
+            .max(1);
         let flex_w = ((total - fixed) / flexible as f32).max(40.0);
 
         let mut widths: Vec<f32> = Vec::with_capacity(columns.len() + 2);
         if selection.is_some() {
             widths.push(selection_w);
         }
-        for c in &columns {
+        // Data-index -> widths index (`usize::MAX` = hidden).
+        let mut display_of_column: Vec<usize> = Vec::with_capacity(columns.len());
+        for (ci, c) in columns.iter().enumerate() {
+            if !visible(ci) {
+                display_of_column.push(usize::MAX);
+                continue;
+            }
+            display_of_column.push(widths.len());
             widths.push(c.width.unwrap_or(flex_w).min(total));
         }
         if actions.is_some() {
             widths.push(actions_w);
         }
-        let cell_offset = usize::from(selection.is_some());
         let actions_w_idx = widths.len().saturating_sub(1);
 
         // --- toolbar ---------------------------------------------------------
-        if let Some(f) = filter {
+        if filter.is_some() || visibility.is_some() {
             ui.add_space(crate::theme::tokens::spacing::LG); // py-4 band
             ui.horizontal(|ui| {
-                crate::components::input::Input::new(f)
-                    .placeholder(filter_placeholder)
-                    .width(384.0_f32.min(ui.available_width())) // max-w-sm
-                    .show(ui);
+                ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
+                if let Some(f) = filter {
+                    crate::components::input::Input::new(f)
+                        .placeholder(filter_placeholder)
+                        .width(384.0_f32.min(ui.available_width())) // max-w-sm
+                        .show(ui);
+                }
+                if visibility.is_some() {
+                    // `ml-auto`: the Columns button hugs the right edge.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        columns_menu(ui, id, &columns, &mut vis);
+                    });
+                }
             });
             ui.add_space(crate::theme::tokens::spacing::LG);
+        }
+        if let Some(dest) = &mut visibility {
+            **dest = vis;
         }
 
         // --- table -------------------------------------------------------------
@@ -523,8 +586,12 @@ impl<'a, T> DataTable<'a, T> {
                     header_select_cell(ui, id, selection.as_deref_mut(), &page_rows, w);
                 }
                 for (ci, col) in columns.iter().enumerate() {
-                    let w = widths[cell_offset + ci];
-                    header_sort_cell(ui, id, &mut state, ci, col, w, &p);
+                    let w_idx = display_of_column[ci];
+                    if w_idx == usize::MAX {
+                        continue;
+                    }
+                    let w = widths[w_idx];
+                    header_sort_cell(ui, id, &mut state, ci, col, w, &theme);
                 }
                 if actions.is_some() {
                     let w = widths[actions_w_idx];
@@ -567,7 +634,11 @@ impl<'a, T> DataTable<'a, T> {
                             }
                         }
                         for (ci, col) in columns.iter().enumerate() {
-                            let w = widths[cell_offset + ci];
+                            let w_idx = display_of_column[ci];
+                            if w_idx == usize::MAX {
+                                continue;
+                            }
+                            let w = widths[w_idx];
                             body_cell(ui, row_ref(rows, ri), col, w);
                         }
                         if let Some(action) = &actions {
@@ -710,7 +781,10 @@ fn header_select_cell(
     }
 }
 
-/// Header cell with the sortable label + sort icon click target.
+/// Header cell with the sortable label. The source wraps the label + icon in
+/// a ghost `Button` (`hover:bg-accent`), so the whole 40 px cell is the click
+/// target and the crate's ghost hover fill (accent light / accent/50 dark)
+/// is painted behind it.
 fn header_sort_cell<T>(
     ui: &mut Ui,
     table_id: Id,
@@ -718,20 +792,41 @@ fn header_sort_cell<T>(
     col_index: usize,
     col: &DataTableColumn<'_, T>,
     width: f32,
-    p: &Palette,
+    theme: &ShadcnTheme,
 ) {
+    let p = theme.palette;
     let rect = Rect::from_min_size(
         Pos2::new(ui.cursor().left(), ui.cursor().top()),
         Vec2::new(width, TABLE_HEAD_HEIGHT),
     );
     ui.allocate_space(Vec2::new(width, TABLE_HEAD_HEIGHT));
 
+    let sorted = state.sort_col == Some(col_index);
+    let sortable = col.sort_key.is_some();
+    let response = if sortable {
+        Some(ui.interact(rect, table_id.with(("sort", col_index)), Sense::click()))
+    } else {
+        None
+    };
+    if response.as_ref().is_some_and(|r| r.hovered()) {
+        let dark = theme.mode.is_dark();
+        ui.painter().rect_filled(
+            rect,
+            theme.radius.md_u8(), // ghost button rounded-md
+            if dark {
+                color_alpha(p.accent, 0.5)
+            } else {
+                p.accent
+            },
+        );
+    }
+
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
     let galley = ui
         .painter()
         .layout_no_wrap(col.header.clone(), font, p.foreground);
 
-    let icon_w = if col.sort_key.is_some() { 18.0 } else { 0.0 };
+    let icon_w = if sortable { 18.0 } else { 0.0 };
     let content_w = galley.size().x + icon_w;
     let x = match col.align {
         DataTableCellAlign::Start => rect.left() + TABLE_CELL_PADDING,
@@ -741,16 +836,11 @@ fn header_sort_cell<T>(
     let text_w = galley.size().x;
     ui.painter().galley(text_pos, galley, p.foreground);
 
-    if col.sort_key.is_some() {
-        // The icon doubles as the click target (the source wraps header +
-        // icon in a ghost button).
+    if sortable {
         let icon_rect = Rect::from_min_size(
             Pos2::new(text_pos.x + text_w + 4.0, rect.center().y - 8.0),
             Vec2::splat(16.0),
         );
-        let hit = icon_rect.expand(6.0);
-        let response = ui.interact(hit, table_id.with(("sort", col_index)), Sense::click());
-        let sorted = state.sort_col == Some(col_index);
         let icon_color = if sorted {
             p.foreground
         } else {
@@ -764,14 +854,68 @@ fn header_sort_cell<T>(
             _ => crate::icons::Icon::ArrowUpDown,
         };
         icon.paint(ui.painter(), icon_rect, icon_color, 2.0);
-        if response.clicked() {
-            if sorted {
-                state.sort_dir = state.sort_dir.toggle();
-            } else {
-                state.sort_col = Some(col_index);
-                state.sort_dir = SortDirection::Ascending;
+        if let Some(response) = response {
+            if response.clicked() {
+                if sorted {
+                    state.sort_dir = state.sort_dir.toggle();
+                } else {
+                    state.sort_col = Some(col_index);
+                    state.sort_dir = SortDirection::Ascending;
+                }
             }
         }
+    }
+}
+
+/// The toolbar's `Columns <ChevronDown>` dropdown (data-table-demo.tsx
+/// `ml-auto`): an outline Button trigger opening a dropdown of checkbox
+/// items, one per hideable column (`checked` = visible, capitalized id).
+fn columns_menu<T>(
+    ui: &mut Ui,
+    table_id: Id,
+    columns: &[DataTableColumn<'_, T>],
+    visibility: &mut [bool],
+) {
+    // Temp per-column flags so every CheckboxItem can hold a disjoint
+    // `&mut bool` (the borrow checker needs separate allocations); synced
+    // back into `visibility` after the menu renders.
+    let mut flags: Vec<Box<bool>> = visibility.iter().map(|b| Box::new(*b)).collect();
+    let hideable: Vec<bool> = columns.iter().map(|c| c.hideable).collect();
+    crate::components::dropdown_menu::DropdownMenu::new("")
+        .id_salt(format!("{}_columns", table_id.value()))
+        .align(crate::components::dropdown_menu::MenuAlign::End)
+        .trigger_widget(|ui| {
+            crate::components::button::Button::new("Columns")
+                .variant(crate::components::button::ButtonVariant::Outline)
+                .icon_end(crate::icons::Icon::ChevronDown)
+                .id_salt(format!("{}_columns_trigger", table_id.value()))
+                .show(ui)
+        })
+        .show(ui, |menu| {
+            for (ci, flag) in flags.iter_mut().enumerate() {
+                if ci >= hideable.len() || !hideable[ci] {
+                    continue;
+                }
+                menu.checkbox_item(crate::components::dropdown_menu::CheckboxItem::new(
+                    capitalize(&columns[ci].id),
+                    flag.as_mut(),
+                ));
+            }
+        });
+    for (ci, flag) in flags.iter().enumerate() {
+        if ci < visibility.len() && ci < hideable.len() && hideable[ci] {
+            visibility[ci] = **flag;
+        }
+    }
+}
+
+/// The source's `capitalize` class: uppercase the first letter of the
+/// column id.
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -867,19 +1011,28 @@ fn footer_controls(
             color_alpha(p.muted_foreground, 0.5)
         };
         if ui.is_rect_visible(rect) {
-            ui.painter().rect_filled(
-                rect,
-                theme.radius.sm_u8(),
-                if response.hovered() && enabled {
-                    p.accent
-                } else {
-                    p.background
-                },
-            );
+            let fill = if response.hovered() && enabled {
+                p.accent
+            } else {
+                p.background
+            };
+            // `disabled:opacity-50` dims the whole button (fill + border),
+            // keeping the `input` border color.
+            let fill = if enabled {
+                fill
+            } else {
+                color_alpha(fill, 0.5)
+            };
+            let stroke = if enabled {
+                p.input
+            } else {
+                color_alpha(p.input, 0.5)
+            };
+            ui.painter().rect_filled(rect, theme.radius.md_u8(), fill);
             ui.painter().rect_stroke(
                 rect,
-                theme.radius.sm_u8(),
-                egui::Stroke::new(1.0, if enabled { p.input } else { p.border }),
+                theme.radius.md_u8(),
+                egui::Stroke::new(1.0, stroke),
                 egui::epaint::StrokeKind::Inside,
             );
             icon.paint(
@@ -1163,5 +1316,49 @@ mod tests {
             assert_eq!(res.total_count, 5);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn column_visibility_hides_columns() {
+        use crate::theme::{Mode, Preset};
+        let rows = rows();
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("dt_vis_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(700.0, 500.0))),
+            );
+            // Hide "status", show "amount"; the row model is unaffected.
+            let mut visibility = vec![false, true];
+            let res = DataTable::new(&rows)
+                .id_salt("vis")
+                .column_visibility(&mut visibility)
+                .column(
+                    DataTableColumn::new("status", "Status").cell(|ui, p: &Payment| {
+                        ui.label(p.status.clone());
+                    }),
+                )
+                .column(
+                    DataTableColumn::new("amount", "Amount").cell(|ui, p: &Payment| {
+                        ui.label(format!("${:.2}", p.amount));
+                    }),
+                )
+                .show(ui);
+            assert_eq!(res.total_count, 5);
+            assert_eq!(res.filtered_count, 5);
+            // The caller's vector is synced back with the render state.
+            assert_eq!(visibility, vec![false, true]);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn capitalize_uppercases_first_char() {
+        assert_eq!(capitalize("status"), "Status");
+        assert_eq!(capitalize("amountUSD"), "AmountUSD");
+        assert_eq!(capitalize(""), "");
     }
 }

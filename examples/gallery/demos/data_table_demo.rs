@@ -70,12 +70,15 @@ fn status_badge(status: &str) -> Badge {
 pub fn run(ui: &mut egui::Ui) {
     let rows = payments();
 
-    // Controlled filter + selection, like the source's table state.
+    // Controlled filter + visibility + selection, like the source's table
+    // state.
     let store = egui::Id::unique("data_table_demo_values");
     #[derive(Clone, Default)]
     struct DemoState {
         filter: String,
+        visibility: Vec<bool>,
         selected: Vec<usize>,
+        filter2: String,
     }
     let mut state: DemoState = ui
         .ctx()
@@ -87,6 +90,7 @@ pub fn run(ui: &mut egui::Ui) {
             p.email.to_lowercase().contains(&needle.to_lowercase())
         })
         .filter_placeholder("Filter emails...")
+        .column_visibility(&mut state.visibility)
         .page_size(5)
         .selection(&mut state.selected)
         .column(
@@ -135,10 +139,9 @@ pub fn run(ui: &mut egui::Ui) {
     ui.add_space(16.0);
     ui.label("Without pagination or selection (sort + filter only)");
     ui.add_space(4.0);
-    let mut filter2 = String::new();
     DataTable::new(&rows)
         .id_salt("demo_plain")
-        .filter(&mut filter2, |p, needle| {
+        .filter(&mut state.filter2, |p, needle| {
             p.status.to_lowercase().contains(&needle.to_lowercase())
         })
         .filter_placeholder("Filter status...")
