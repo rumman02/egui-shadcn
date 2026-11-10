@@ -3796,43 +3796,101 @@ pub fn carousel_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp::<usize>(store).unwrap_or(0));
 
-    ui.label("Horizontal (drag, arrows, dots, ArrowLeft/Right)");
+    ui.label("Horizontal (drag, arrows, ArrowLeft/Right; opt-in dots)");
     ui.add_space(4.0);
-    let res = Carousel::new().id_salt("demo").show(ui, |ui| {
-        for i in 0..5 {
-            CarouselItem::new().show(ui, |ui| {
-                ui.add_space(4.0);
-                Card::new().show(ui, |ui| {
-                    CardContent::new().show(ui, |ui| {
-                        ui.allocate_ui(egui::Vec2::new(ui.available_width(), 160.0), |ui| {
-                            ui.with_layout(
-                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{}", i + 1))
-                                            .size(32.0)
-                                            .strong(),
-                                    );
-                                },
-                            );
+    let res = Carousel::new()
+        .id_salt("demo")
+        .show_dots(true)
+        .show(ui, |ui| {
+            for i in 0..5 {
+                CarouselItem::new().show(ui, |ui| {
+                    ui.add_space(4.0);
+                    Card::new().show(ui, |ui| {
+                        CardContent::new().show(ui, |ui| {
+                            ui.allocate_ui(egui::Vec2::new(ui.available_width(), 160.0), |ui| {
+                                ui.with_layout(
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{}", i + 1))
+                                                .size(32.0)
+                                                .strong(),
+                                        );
+                                    },
+                                );
+                            });
                         });
                     });
                 });
-            });
-        }
-    });
+            }
+        });
     if res.changed {
         selected = res.selected;
     }
     ui.add_space(4.0);
-    ui.label(format!("Slide {} of 5", selected + 1));
+    // The carousel-api demo's indicator: `py-2 text-center text-sm
+    // text-muted-foreground`.
+    let theme = egui_shadcn_ui::theme::ShadcnTheme::of_ui(ui);
+    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!("Slide {} of 5", selected + 1))
+                .size(14.0)
+                .color(theme.palette.muted_foreground),
+        );
+    });
 
     ui.add_space(16.0);
-    ui.label("Vertical (drag or ArrowUp/ArrowDown)");
+    ui.label("Size — two slides per view (md:basis-1/2)");
+    ui.add_space(4.0);
+    Carousel::new()
+        .id_salt("demo_half")
+        .per_view(2)
+        .show(ui, |ui| {
+            for i in 0..5 {
+                CarouselItem::new().show(ui, |ui| {
+                    Card::new().show(ui, |ui| {
+                        CardContent::new().show(ui, |ui| {
+                            ui.set_min_height(72.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(format!("Slide {}", i + 1));
+                            });
+                        });
+                    });
+                });
+            }
+        });
+
+    ui.add_space(16.0);
+    ui.label("Size — three slides per view, tight 4 px gutters (carousel-spacing)");
+    ui.add_space(4.0);
+    Carousel::new()
+        .id_salt("demo_third")
+        .per_view(3)
+        .item_gap(4.0)
+        .show(ui, |ui| {
+            for i in 0..6 {
+                CarouselItem::new().show(ui, |ui| {
+                    Card::new().show(ui, |ui| {
+                        CardContent::new().show(ui, |ui| {
+                            ui.set_min_height(72.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(format!("Slide {}", i + 1));
+                            });
+                        });
+                    });
+                });
+            }
+        });
+
+    ui.add_space(16.0);
+    ui.label("Vertical (h-[200px] viewport, two slides per view, ArrowUp/ArrowDown)");
     ui.add_space(4.0);
     Carousel::new()
         .id_salt("demo_vertical")
         .orientation(CarouselOrientation::Vertical)
+        .viewport_height(200.0)
+        .per_view(2)
         .show(ui, |ui| {
             for i in 0..3 {
                 CarouselItem::new().show(ui, |ui| {
@@ -3850,12 +3908,11 @@ pub fn carousel_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(16.0);
-    ui.label("Without arrows or dots");
+    ui.label("Without arrows (dots are opt-in and off by default)");
     ui.add_space(4.0);
     Carousel::new()
         .id_salt("demo_plain")
         .show_arrows(false)
-        .show_dots(false)
         .show(ui, |ui| {
             for i in 0..3 {
                 CarouselItem::new().show(ui, |ui| {
