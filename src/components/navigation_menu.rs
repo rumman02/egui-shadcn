@@ -1,26 +1,32 @@
 //! shadcn `navigation-menu.tsx` — a site-navigation bar with panels.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/navigation-menu.tsx`
-//! (Radix NavigationMenu): triggers are `h-9 px-4 py-2 rounded-md text-sm
-//! font-medium bg-background hover:bg-accent hover:text-accent-foreground
-//! focus:bg-accent focus:text-accent-foreground
-//! data-[state=open]:bg-accent/50 data-[state=open]:text-accent-foreground`
-//! (nova: `rounded-lg px-2.5 py-1.5`, muted hovers) with a `size-3` chevron
-//! that rotates when open, an animated viewport below the bar
-//! (`mt-1.5 rounded-md border bg-popover shadow`, nova `rounded-lg ring-1
-//! ring-foreground/10`) plus the little `bg-border` diamond indicator under
-//! the open trigger, and links styled `p-2 rounded-sm hover:bg-accent
-//! data-[active=true]:bg-accent/50` with a `text-muted-foreground`
-//! description.
+//! (Radix NavigationMenu). Triggers are `h-9 text-sm font-medium
+//! bg-background` with a `size-3` chevron that rotates when open; the base
+//! recipe adds `px-4 py-2 rounded-md hover:bg-accent`, while the nova
+//! recipe (`style-nova.css .cn-navigation-menu-trigger`) is `rounded-lg
+//! px-2.5 py-1.5` with `list gap-0`, muted hovers (`hover:bg-muted
+//! focus:bg-muted data-open:bg-muted/50 data-popup-open:bg-muted/50`) and
+//! no accent foreground. The viewport below the bar is `mt-1.5 bg-popover
+//! shadow` (`rounded-md border` base, nova `rounded-lg ring-1
+//! ring-foreground/10`) plus the little `bg-border rounded-tl-sm shadow-md`
+//! diamond indicator under the open trigger; links are `p-2 rounded-sm
+//! hover:bg-accent data-[active=true]:bg-accent/50` (nova `rounded-lg ...
+//! hover:bg-muted data-active:bg-muted/50`, `rounded-md` inside panels)
+//! with a `text-muted-foreground` description.
 //!
 //! A `viewport(false)` menu renders each panel next to its trigger instead
 //! of in the shared viewport (the source's inline mode). An `orientation`
 //! of [`NavOrientation::Vertical`] stacks the triggers and floats panels to
 //! the side.
 //!
-//! Opening: click a trigger or hover it (hover also switches while open);
-//! closing: click the trigger again, Escape, or any click outside. Content
-//! panels are closures, mirroring the JSX composition.
+//! Opening: click a trigger or hover it (hover also switches while open).
+//! Closing: click the trigger again, Escape, or any click outside; a
+//! hover-opened menu also closes once the pointer has left the trigger, the
+//! bar and the panel for ~150 ms (Radix pointer-leave). Keyboard: the
+//! ArrowLeft/Right switch the open trigger; ArrowUp/Down (with Home/End)
+//! move a highlight through the open panel's links and Enter clicks it.
+//! Content panels are closures, mirroring the JSX composition.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -40,8 +46,8 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::utils::animation::{nova_overlay_progress, overlay_progress, Duration};
 use crate::utils::shadow;
 use egui::emath::RectAlign;
 use egui::{
@@ -63,6 +69,37 @@ pub const NAV_GAP: f32 = 4.0;
 pub const NAV_VIEWPORT_OFFSET: f32 = 6.0;
 /// Content padding: `p-2` (8 px, `pr-2.5` on the right).
 const CONTENT_PAD: f32 = 8.0;
+/// Content right padding: `pr-2.5` (10 px).
+const CONTENT_PAD_RIGHT: f32 = 10.0;
+/// Grace period before a hover-opened menu closes on pointer-leave.
+const NAV_HOVER_CLOSE_GRACE_SECS: f64 = 0.15;
+
+/// Trigger horizontal padding per style: nova `px-2.5` (10 px), base `px-4`
+/// ([`NAV_TRIGGER_PAD_X`]).
+pub(crate) fn trigger_pad_x(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0,
+        _ => NAV_TRIGGER_PAD_X,
+    }
+}
+
+/// Gap between bar items per style: nova `.cn-navigation-menu-list` is
+/// `gap-0`, the base list is `gap-1` ([`NAV_GAP`]).
+pub(crate) fn bar_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => 0.0,
+        _ => NAV_GAP,
+    }
+}
+
+/// Corner radius of bar items (triggers and standalone links): nova
+/// `rounded-lg`, base `rounded-md`.
+pub(crate) fn bar_radius(theme: &ShadcnTheme) -> u8 {
+    match theme.style {
+        Style::Nova => theme.radius.lg_u8(),
+        _ => theme.radius.md_u8(),
+    }
+}
 /// Link padding: `p-2` (8 px).
 const LINK_PAD: f32 = 8.0;
 /// Link row spacing: `gap-1` inside a link, `gap-3` between links.
@@ -201,9 +238,10 @@ pub enum NavOrientation {
     Vertical,
 }
 
-/// Resolved trigger colors: `hover:bg-accent focus:bg-accent
-/// data-[state=open]:bg-accent/50` (nova uses muted tints) over
-/// `bg-background`, `text-sm font-medium`.
+/// Resolved trigger colors: base `hover:bg-accent focus:bg-accent
+/// data-[state=open]:bg-accent/50`, nova `hover:bg-muted focus:bg-muted
+/// data-open:bg-muted/50 data-popup-open:bg-muted/50` over `bg-background`,
+/// `text-sm font-medium` (nova keeps the text foreground).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TriggerColors {
     pub fill: Color32,
@@ -214,18 +252,30 @@ pub(crate) struct TriggerColors {
 
 pub(crate) fn resolve_trigger_colors(
     p: &Palette,
+    style: Style,
     open: bool,
     hovered: bool,
     disabled: bool,
 ) -> TriggerColors {
     let mut fill = Color32::TRANSPARENT;
     let mut text = p.foreground;
-    if open {
-        fill = color_alpha(p.accent, 0.5);
-        text = p.accent_foreground;
-    } else if hovered {
-        fill = p.accent;
-        text = p.accent_foreground;
+    match style {
+        Style::Nova => {
+            if open {
+                fill = color_alpha(p.muted, 0.5);
+            } else if hovered {
+                fill = p.muted;
+            }
+        }
+        _ => {
+            if open {
+                fill = color_alpha(p.accent, 0.5);
+                text = p.accent_foreground;
+            } else if hovered {
+                fill = p.accent;
+                text = p.accent_foreground;
+            }
+        }
     }
     if disabled {
         fill = color_alpha(fill, 0.5);
@@ -239,8 +289,9 @@ pub(crate) fn resolve_trigger_colors(
     }
 }
 
-/// Resolved link-row colors: `hover:bg-accent focus:bg-accent
-/// data-[active=true]:bg-accent/50`.
+/// Resolved link-row colors: base `hover:bg-accent focus:bg-accent
+/// data-[active=true]:bg-accent/50`, nova `hover:bg-muted
+/// data-active:bg-muted/50` (no foreground swap).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LinkColors {
     pub fill: Color32,
@@ -248,24 +299,54 @@ pub(crate) struct LinkColors {
     pub description: Color32,
 }
 
-pub(crate) fn resolve_link_colors(p: &Palette, active: bool, hovered: bool) -> LinkColors {
-    if hovered {
-        LinkColors {
-            fill: p.accent,
-            title: p.accent_foreground,
-            description: color_alpha(p.accent_foreground, 0.7),
+pub(crate) fn resolve_link_colors(
+    p: &Palette,
+    style: Style,
+    active: bool,
+    hovered: bool,
+) -> LinkColors {
+    match style {
+        Style::Nova => {
+            if hovered {
+                LinkColors {
+                    fill: p.muted,
+                    title: p.popover_foreground,
+                    description: p.muted_foreground,
+                }
+            } else if active {
+                LinkColors {
+                    fill: color_alpha(p.muted, 0.5),
+                    title: p.popover_foreground,
+                    description: p.muted_foreground,
+                }
+            } else {
+                LinkColors {
+                    fill: Color32::TRANSPARENT,
+                    title: p.popover_foreground,
+                    description: p.muted_foreground,
+                }
+            }
         }
-    } else if active {
-        LinkColors {
-            fill: color_alpha(p.accent, 0.5),
-            title: p.accent_foreground,
-            description: color_alpha(p.accent_foreground, 0.7),
-        }
-    } else {
-        LinkColors {
-            fill: Color32::TRANSPARENT,
-            title: p.popover_foreground,
-            description: p.muted_foreground,
+        _ => {
+            if hovered {
+                LinkColors {
+                    fill: p.accent,
+                    title: p.accent_foreground,
+                    description: color_alpha(p.accent_foreground, 0.7),
+                }
+            } else if active {
+                LinkColors {
+                    fill: color_alpha(p.accent, 0.5),
+                    title: p.accent_foreground,
+                    description: color_alpha(p.accent_foreground, 0.7),
+                }
+            } else {
+                LinkColors {
+                    fill: Color32::TRANSPARENT,
+                    title: p.popover_foreground,
+                    description: p.muted_foreground,
+                }
+            }
         }
     }
 }
@@ -281,6 +362,11 @@ struct NavState {
     open: Option<usize>,
     /// Whether the open state came from hover (hover switches targets).
     hover_open: bool,
+    /// When the pointer last left the trigger/bar/panel area of a
+    /// hover-opened menu (`None` while the pointer is inside).
+    hover_left_at: Option<f64>,
+    /// Highlighted link index inside the open panel (keyboard/hover).
+    link_highlight: Option<usize>,
     /// Trigger rects captured this frame (per entry index).
     trigger_rects: Vec<Option<Rect>>,
     /// The whole bar/root rect captured this frame.
@@ -369,8 +455,6 @@ impl<'a> NavigationMenu<'a> {
 
     fn show_builder(self, ui: &mut Ui, mut entries: Vec<NavEntry<'a>>) -> NavigationMenuResponse {
         let theme = ShadcnTheme::of_ui(ui);
-        let dark = theme.mode.is_dark();
-        let p = theme.palette;
 
         let state_id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -394,12 +478,12 @@ impl<'a> NavigationMenu<'a> {
         let bar = ui.scope(|ui| {
             if horizontal {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = NAV_GAP;
+                    ui.spacing_mut().item_spacing.x = bar_gap(theme.style);
                     for (i, entry) in entries.iter().enumerate() {
                         match entry {
                             NavEntry::Link(label) => {
                                 let res = paint_bar_item(
-                                    ui, state_id, i, label, None, false, false, &p, dark,
+                                    ui, state_id, i, label, None, false, false, &theme,
                                 );
                                 if res.clicked() {
                                     link_clicked = Some(label.clone());
@@ -417,8 +501,7 @@ impl<'a> NavigationMenu<'a> {
                                     Some(is_open),
                                     *disabled,
                                     true,
-                                    &p,
-                                    dark,
+                                    &theme,
                                 );
                                 state.trigger_rects[i] = Some(res.rect);
                                 if *disabled {
@@ -436,12 +519,12 @@ impl<'a> NavigationMenu<'a> {
                 });
             } else {
                 ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = NAV_GAP;
+                    ui.spacing_mut().item_spacing.y = bar_gap(theme.style);
                     for (i, entry) in entries.iter().enumerate() {
                         match entry {
                             NavEntry::Link(label) => {
                                 let res = paint_bar_item(
-                                    ui, state_id, i, label, None, false, false, &p, dark,
+                                    ui, state_id, i, label, None, false, false, &theme,
                                 );
                                 if res.clicked() {
                                     link_clicked = Some(label.clone());
@@ -459,8 +542,7 @@ impl<'a> NavigationMenu<'a> {
                                     Some(is_open),
                                     *disabled,
                                     true,
-                                    &p,
-                                    dark,
+                                    &theme,
                                 );
                                 state.trigger_rects[i] = Some(res.rect);
                                 if *disabled {
@@ -490,13 +572,16 @@ impl<'a> NavigationMenu<'a> {
                     // The menu was hover-opened by this press; a click
                     // adopts it into click-mode instead of closing.
                     state.hover_open = false;
+                    state.hover_left_at = None;
                 } else {
                     state.open = None;
                     state.hover_open = false;
+                    state.hover_left_at = None;
                 }
             } else {
                 state.open = Some(i);
                 state.hover_open = false;
+                state.hover_left_at = None;
             }
         } else if let Some(i) = hover_switch {
             if state.open.is_none() {
@@ -504,7 +589,11 @@ impl<'a> NavigationMenu<'a> {
                 state.hover_open = true;
             } else if state.hover_open && state.open != Some(i) {
                 state.open = Some(i);
+                state.hover_left_at = None;
             }
+        }
+        if state.open != open_at_start {
+            state.link_highlight = None;
         }
 
         // ArrowLeft/Right (horizontal) switch the open trigger.
@@ -526,6 +615,7 @@ impl<'a> NavigationMenu<'a> {
                 let next = next_trigger_index(&entries, state.open, delta);
                 if next != state.open {
                     state.open = next;
+                    state.link_highlight = None;
                 }
             }
         }
@@ -540,17 +630,62 @@ impl<'a> NavigationMenu<'a> {
         }
 
         // ------------------------------------------------------------------
+        // The open panel's links (built once, shared by the keyboard model
+        // and the panel renderers).
+        // ------------------------------------------------------------------
+        let open_panel: Option<Vec<NavLink>> = state.open.and_then(|i| {
+            if !matches!(entries.get(i), Some(NavEntry::Trigger { .. })) {
+                return None;
+            }
+            let links = panel_content(take_panel_content(&mut entries, i));
+            (!links.is_empty()).then_some(links)
+        });
+
+        // Panel link keyboard: ArrowUp/Down move the highlight, Home/End
+        // jump, Enter clicks the highlighted link (Radix roves focus
+        // through the panel's links).
+        if let Some(links) = &open_panel {
+            let (down, up, home, end, enter) = ctx.input(|i| {
+                (
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::ArrowUp),
+                    i.key_pressed(Key::Home),
+                    i.key_pressed(Key::End),
+                    i.key_pressed(Key::Enter),
+                )
+            });
+            if down {
+                state.link_highlight = next_link_index(links.len(), state.link_highlight, 1);
+            }
+            if up {
+                state.link_highlight = next_link_index(links.len(), state.link_highlight, -1);
+            }
+            if home && !links.is_empty() {
+                state.link_highlight = Some(0);
+            }
+            if end && !links.is_empty() {
+                state.link_highlight = Some(links.len() - 1);
+            }
+            if enter {
+                if let Some(idx) = state.link_highlight {
+                    if let Some(link) = links.get(idx) {
+                        link_clicked = Some(link.title.clone());
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
         // Panels: the shared viewport (below the bar) or per-trigger floats.
         // ------------------------------------------------------------------
+        let links_slice: &[NavLink] = open_panel.as_deref().unwrap_or(&[]);
         let popup_rects = if horizontal && self.viewport {
             render_viewport(
                 ui,
                 &ctx,
-                &mut entries,
-                &state,
+                &mut state,
                 state_id,
-                &p,
-                dark,
+                links_slice,
                 &theme,
                 &mut link_clicked,
             )
@@ -558,12 +693,10 @@ impl<'a> NavigationMenu<'a> {
             render_float_panels(
                 ui,
                 &ctx,
-                &mut entries,
-                &state,
+                &mut state,
                 state_id,
                 horizontal,
-                &p,
-                dark,
+                links_slice,
                 &theme,
                 &mut link_clicked,
             )
@@ -581,9 +714,37 @@ impl<'a> NavigationMenu<'a> {
             state.open = None;
         }
 
-        // Expire hover-open when the pointer rests on neither trigger nor
-        // panel (Radix keeps menus open on the viewport, so only close when
-        // the pointer left everything AND a click happened — handled above).
+        // A hover-opened menu closes once the pointer has left the trigger,
+        // the bar and every open panel for a grace period (Radix
+        // pointer-leave with delay).
+        if state.hover_open {
+            if let Some(open_idx) = state.open {
+                let pointer = ctx.input(|i| i.pointer.latest_pos());
+                let inside = pointer.is_some_and(|pos| {
+                    state
+                        .trigger_rects
+                        .get(open_idx)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|r| r.contains(pos))
+                        || state.root_rect.is_some_and(|r| r.contains(pos))
+                        || popup_rects.iter().any(|r| r.contains(pos))
+                });
+                if inside {
+                    state.hover_left_at = None;
+                } else {
+                    let now = ctx.input(|i| i.time);
+                    let left_at = *state.hover_left_at.get_or_insert(now);
+                    if now - left_at >= NAV_HOVER_CLOSE_GRACE_SECS {
+                        state.open = None;
+                        state.hover_open = false;
+                        state.hover_left_at = None;
+                        state.link_highlight = None;
+                    }
+                }
+            }
+        }
+
         let open_now = state.open;
         let open_label = open_now.and_then(|i| entry_label(&entries, i).map(str::to_owned));
         closed = closed || (open_at_start.is_some() && open_now.is_none());
@@ -643,6 +804,26 @@ pub(crate) fn next_trigger_index(
     triggers.get(next).copied()
 }
 
+/// The panel link highlighted after moving from `current` by `delta`
+/// (wrapping; `None` starts at the first row for `delta > 0`, the last for
+/// `delta < 0`). Returns `None` when there are no links.
+pub(crate) fn next_link_index(len: usize, current: Option<usize>, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let next = match current {
+        Some(i) => (i as isize + delta).rem_euclid(len as isize) as usize,
+        None => {
+            if delta < 0 {
+                len - 1
+            } else {
+                0
+            }
+        }
+    };
+    Some(next.min(len - 1))
+}
+
 // ---------------------------------------------------------------------------
 // Painters
 // ---------------------------------------------------------------------------
@@ -657,12 +838,12 @@ fn paint_bar_item(
     open: Option<bool>,
     disabled: bool,
     with_chevron: bool,
-    p: &Palette,
-    _dark: bool,
+    theme: &ShadcnTheme,
 ) -> Response {
-    let theme = ShadcnTheme::of_ui(ui);
+    let p = theme.palette;
     let id = ui.scope_id().with(("nav_item", index));
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+    let pad_x = trigger_pad_x(theme.style);
 
     // Measure: px-4 + text + (ml-1 size-3 chevron).
     let text_w = ui
@@ -670,7 +851,7 @@ fn paint_bar_item(
         .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
         .size()
         .x;
-    let width = NAV_TRIGGER_PAD_X * 2.0
+    let width = pad_x * 2.0
         + text_w
         + if with_chevron {
             4.0 + CHEVRON_SIZE
@@ -687,12 +868,19 @@ fn paint_bar_item(
     let response = ui.interact(rect, id, sense);
 
     if ui.is_rect_visible(rect) {
-        let c = resolve_trigger_colors(p, open.unwrap_or(false), response.hovered(), disabled);
+        let c = resolve_trigger_colors(
+            &p,
+            theme.style,
+            open.unwrap_or(false),
+            response.hovered(),
+            disabled,
+        );
+        let radius = bar_radius(theme);
         let painter = ui.painter();
         if c.fill != Color32::TRANSPARENT {
-            painter.rect_filled(rect, CornerRadius::same(theme.radius.md_u8()), c.fill);
+            painter.rect_filled(rect, CornerRadius::same(radius), c.fill);
         }
-        let text_x = rect.min.x + NAV_TRIGGER_PAD_X;
+        let text_x = rect.min.x + pad_x;
         painter.text(
             Pos2::new(text_x, rect.center().y),
             Align2::LEFT_CENTER,
@@ -703,10 +891,7 @@ fn paint_bar_item(
         if with_chevron {
             // `size-3 ml-1`, rotated when open.
             let chev_rect = Rect::from_center_size(
-                Pos2::new(
-                    rect.max.x - NAV_TRIGGER_PAD_X - CHEVRON_SIZE * 0.5,
-                    rect.center().y,
-                ),
+                Pos2::new(rect.max.x - pad_x - CHEVRON_SIZE * 0.5, rect.center().y),
                 Vec2::splat(CHEVRON_SIZE),
             );
             let chev_icon = if open.unwrap_or(false) {
@@ -718,27 +903,30 @@ fn paint_bar_item(
         }
         if response.has_focus() && !disabled {
             let ring_rect = rect.expand2(egui::vec2(1.0, 1.0));
-            crate::utils::focus::paint_ring(painter, ring_rect, c.ring, 3.0, theme.radius.md());
+            crate::utils::focus::paint_ring(painter, ring_rect, c.ring, 3.0, radius as f32);
         }
     }
     response
 }
 
 /// The link rows inside a panel (`NavigationMenuLink`); returns the clicked
-/// title.
+/// title. Reports the hovered row index so the keyboard highlight follows
+/// the pointer.
 fn paint_links(
     ui: &mut Ui,
     links: &[NavLink],
     panel_width: f32,
+    highlight: Option<usize>,
     p: &Palette,
     theme: &ShadcnTheme,
+    hover: &mut Option<usize>,
 ) -> Option<String> {
     let mut clicked = None;
     for (i, link) in links.iter().enumerate() {
         let row_id = ui.scope_id().with(("nav_link", i));
         // Measure the description wrap at the panel width.
         let desc_font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let inner_w = panel_width - 2.0 * CONTENT_PAD - 2.0 * LINK_PAD;
+        let inner_w = panel_width - CONTENT_PAD - CONTENT_PAD_RIGHT - 2.0 * LINK_PAD;
         let desc_galley = if link.description.is_empty() {
             None
         } else {
@@ -760,12 +948,20 @@ fn paint_links(
                 .map(|g| LINK_GAP + g.size().y)
                 .unwrap_or(0.0);
 
-        let (_, rect) = ui.allocate_space(Vec2::new(panel_width - 2.0 * CONTENT_PAD, row_h));
+        let (_, rect) = ui.allocate_space(Vec2::new(
+            panel_width - CONTENT_PAD - CONTENT_PAD_RIGHT,
+            row_h,
+        ));
         let response = ui.interact(rect, row_id, Sense::click());
-        let hovered = response.hovered();
-        let active = hovered;
-        let c = resolve_link_colors(p, active, hovered);
-        let radius = theme.radius.sm_u8();
+        let hovered = response.hovered() || highlight == Some(i);
+        let active = response.hovered();
+        let c = resolve_link_colors(p, theme.style, active, hovered);
+        // Nova links are `rounded-md` inside a panel (`rounded-lg` only for
+        // standalone bar links); the base recipe is `rounded-sm`.
+        let radius = match theme.style {
+            Style::Nova => theme.radius.md_u8(),
+            _ => theme.radius.sm_u8(),
+        };
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
@@ -785,6 +981,9 @@ fn paint_links(
                 y += LINK_GAP;
                 painter.galley(Pos2::new(rect.min.x + LINK_PAD, y), g, c.description);
             }
+        }
+        if response.hovered() {
+            *hover = Some(i);
         }
         if response.clicked() {
             clicked = Some(link.title.clone());
@@ -832,12 +1031,12 @@ fn panel_width(links: &[NavLink], ui: &Ui) -> f32 {
                     link.description.clone(),
                     font.clone(),
                     Color32::WHITE,
-                    CONTENT_MAX_WIDTH - 2.0 * CONTENT_PAD - 2.0 * LINK_PAD,
+                    CONTENT_MAX_WIDTH - CONTENT_PAD - CONTENT_PAD_RIGHT - 2.0 * LINK_PAD,
                 )
                 .size()
                 .x
         };
-        w = w.max(title_w.max(desc_w) + 2.0 * CONTENT_PAD + 2.0 * LINK_PAD);
+        w = w.max(title_w.max(desc_w) + CONTENT_PAD + CONTENT_PAD_RIGHT + 2.0 * LINK_PAD);
     }
     w.min(CONTENT_MAX_WIDTH)
 }
@@ -847,11 +1046,9 @@ fn panel_width(links: &[NavLink], ui: &Ui) -> f32 {
 fn render_viewport(
     ui: &mut Ui,
     ctx: &Context,
-    entries: &mut [NavEntry<'_>],
-    state: &NavState,
+    state: &mut NavState,
     state_id: Id,
-    p: &Palette,
-    dark: bool,
+    links: &[NavLink],
     theme: &ShadcnTheme,
     link_clicked: &mut Option<String>,
 ) -> Vec<Rect> {
@@ -859,25 +1056,30 @@ fn render_viewport(
     let Some(open_idx) = state.open else {
         return rects;
     };
-    if !matches!(entries.get(open_idx), Some(NavEntry::Trigger { .. })) {
-        return rects;
-    }
     let Some(root_rect) = state.root_rect else {
         return rects;
     };
-    let links = panel_content(take_panel_content(entries, open_idx));
     if links.is_empty() {
         return rects;
     }
-    let width = panel_width(&links, ui);
+    let width = panel_width(links, ui);
+    let p = theme.palette;
+    let dark = theme.mode.is_dark();
+    let nova = theme.style == Style::Nova;
 
     let viewport_id = state_id.with("viewport");
-    let progress = overlay_progress(ctx, viewport_id.with("anim"), true);
+    // Nova viewport is `duration-100`; the base recipe runs at 150 ms.
+    let progress = if nova {
+        nova_overlay_progress(ctx, viewport_id.with("anim"), true)
+    } else {
+        overlay_progress(ctx, viewport_id.with("anim"), true)
+    };
     if progress.alpha <= 0.002 {
         return rects;
     }
 
-    // Diamond indicator under the open trigger (`bg-border rotate-45`).
+    // Diamond indicator under the open trigger (`bg-border rotate-45
+    // rounded-tl-sm shadow-md`).
     if let Some(Some(trigger_rect)) = state.trigger_rects.get(open_idx) {
         let center = Pos2::new(trigger_rect.center().x, root_rect.max.y + 3.0);
         let painter = ui.painter();
@@ -889,6 +1091,14 @@ fn render_viewport(
             Pos2::new(center.x, center.y + half),
             Pos2::new(center.x - half, center.y),
         ];
+        // `shadow-md` stand-in: a shadow-colored duplicate shifted down.
+        let sh = shadow::shadow_md(dark);
+        let shadow_pts: Vec<Pos2> = pts.iter().map(|pt| *pt + egui::vec2(0.0, 2.0)).collect();
+        painter.add(egui::Shape::convex_polygon(
+            shadow_pts,
+            sh.color,
+            Stroke::NONE,
+        ));
         painter.add(egui::Shape::convex_polygon(
             pts.to_vec(),
             color,
@@ -898,10 +1108,23 @@ fn render_viewport(
 
     let frame = egui::Frame::new()
         .fill(p.popover)
-        .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
-        .corner_radius(CornerRadius::same(theme.radius.lg_u8()))
-        .inner_margin(Margin::same(CONTENT_PAD as i8))
-        .shadow(shadow::shadow_md(dark));
+        .stroke(if nova {
+            Stroke::new(1.0, color_alpha(p.foreground, 0.10))
+        } else {
+            Stroke::new(1.0, p.border)
+        })
+        .corner_radius(CornerRadius::same(if nova {
+            theme.radius.lg_u8()
+        } else {
+            theme.radius.md_u8()
+        }))
+        .inner_margin(Margin {
+            left: CONTENT_PAD as i8,
+            right: CONTENT_PAD_RIGHT as i8,
+            top: CONTENT_PAD as i8,
+            bottom: CONTENT_PAD as i8,
+        })
+        .shadow(shadow::shadow_sm(dark));
 
     let popup = egui::Popup::new(
         viewport_id,
@@ -922,10 +1145,22 @@ fn render_viewport(
     let inner = popup.show(|ui| {
         ui.set_opacity(progress.alpha);
         frame.show(ui, |ui| {
-            ui.set_min_width(width - 2.0 * CONTENT_PAD);
-            ui.set_max_width(width - 2.0 * CONTENT_PAD);
-            if let Some(title) = paint_links(ui, &links, width, p, theme) {
+            ui.set_min_width(width - CONTENT_PAD - CONTENT_PAD_RIGHT);
+            ui.set_max_width(width - CONTENT_PAD - CONTENT_PAD_RIGHT);
+            let mut hover = None;
+            if let Some(title) = paint_links(
+                ui,
+                links,
+                width,
+                state.link_highlight,
+                &p,
+                theme,
+                &mut hover,
+            ) {
                 *link_clicked = Some(title);
+            }
+            if let Some(idx) = hover {
+                state.link_highlight = Some(idx);
             }
         });
     });
@@ -941,12 +1176,10 @@ fn render_viewport(
 fn render_float_panels(
     ui: &mut Ui,
     ctx: &Context,
-    entries: &mut [NavEntry<'_>],
-    state: &NavState,
+    state: &mut NavState,
     state_id: Id,
     horizontal: bool,
-    p: &Palette,
-    dark: bool,
+    links: &[NavLink],
     theme: &ShadcnTheme,
     link_clicked: &mut Option<String>,
 ) -> Vec<Rect> {
@@ -954,30 +1187,47 @@ fn render_float_panels(
     let Some(open_idx) = state.open else {
         return rects;
     };
-    if !matches!(entries.get(open_idx), Some(NavEntry::Trigger { .. })) {
-        return rects;
-    }
     let Some(Some(trigger_rect)) = state.trigger_rects.get(open_idx) else {
         return rects;
     };
-    let links = panel_content(take_panel_content(entries, open_idx));
     if links.is_empty() {
         return rects;
     }
-    let width = panel_width(&links, ui);
+    let width = panel_width(links, ui);
+    let p = theme.palette;
+    let dark = theme.mode.is_dark();
+    let nova = theme.style == Style::Nova;
 
     let popup_id = state_id.with(("panel", open_idx));
-    let progress = overlay_progress(ctx, popup_id.with("anim"), true);
-    if progress.alpha <= 0.002 {
+    // Nova float panels run at `duration-300`; the base content at 150 ms.
+    let alpha = if nova {
+        ctx.animate_value_with_time(popup_id.with("anim"), 1.0, Duration::Slow.secs())
+    } else {
+        overlay_progress(ctx, popup_id.with("anim"), true).alpha
+    };
+    if alpha <= 0.002 {
         return rects;
     }
 
     let frame = egui::Frame::new()
         .fill(p.popover)
-        .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
-        .corner_radius(CornerRadius::same(theme.radius.lg_u8()))
-        .inner_margin(Margin::same(CONTENT_PAD as i8))
-        .shadow(shadow::shadow_md(dark));
+        .stroke(if nova {
+            Stroke::new(1.0, color_alpha(p.foreground, 0.10))
+        } else {
+            Stroke::new(1.0, p.border)
+        })
+        .corner_radius(CornerRadius::same(if nova {
+            theme.radius.lg_u8()
+        } else {
+            theme.radius.md_u8()
+        }))
+        .inner_margin(Margin {
+            left: CONTENT_PAD as i8,
+            right: CONTENT_PAD_RIGHT as i8,
+            top: CONTENT_PAD as i8,
+            bottom: CONTENT_PAD as i8,
+        })
+        .shadow(shadow::shadow_sm(dark));
 
     let align = if horizontal {
         RectAlign::BOTTOM_START
@@ -994,17 +1244,29 @@ fn render_float_panels(
     .open(true)
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .align(align)
-    .gap(crate::components::dropdown_menu::DROPDOWN_SIDE_OFFSET + (1.0 - progress.alpha) * 8.0)
+    .gap(crate::components::dropdown_menu::DROPDOWN_SIDE_OFFSET + (1.0 - alpha) * 8.0)
     .width(width)
     .frame(egui::Frame::new());
 
     let inner = popup.show(|ui| {
-        ui.set_opacity(progress.alpha);
+        ui.set_opacity(alpha);
         frame.show(ui, |ui| {
-            ui.set_min_width(width - 2.0 * CONTENT_PAD);
-            ui.set_max_width(width - 2.0 * CONTENT_PAD);
-            if let Some(title) = paint_links(ui, &links, width, p, theme) {
+            ui.set_min_width(width - CONTENT_PAD - CONTENT_PAD_RIGHT);
+            ui.set_max_width(width - CONTENT_PAD - CONTENT_PAD_RIGHT);
+            let mut hover = None;
+            if let Some(title) = paint_links(
+                ui,
+                links,
+                width,
+                state.link_highlight,
+                &p,
+                theme,
+                &mut hover,
+            ) {
                 *link_clicked = Some(title);
+            }
+            if let Some(idx) = hover {
+                state.link_highlight = Some(idx);
             }
         });
     });
@@ -1072,39 +1334,65 @@ mod tests {
     #[test]
     fn trigger_colors_follow_state() {
         let p = palette(Mode::Light);
-        let rest = resolve_trigger_colors(&p, false, false, false);
+        // Nova: muted family, foreground text kept.
+        let rest = resolve_trigger_colors(&p, Style::Nova, false, false, false);
         assert_eq!(rest.fill, Color32::TRANSPARENT);
         assert_eq!(rest.text, p.foreground);
-        let open = resolve_trigger_colors(&p, true, false, false);
-        assert_eq!(open.fill, color_alpha(p.accent, 0.5));
-        assert_eq!(open.text, p.accent_foreground);
-        let hovered = resolve_trigger_colors(&p, false, true, false);
-        assert_eq!(hovered.fill, p.accent);
-        let disabled = resolve_trigger_colors(&p, false, false, true);
+        let open = resolve_trigger_colors(&p, Style::Nova, true, false, false);
+        assert_eq!(open.fill, color_alpha(p.muted, 0.5));
+        assert_eq!(open.text, p.foreground, "nova keeps the foreground text");
+        let hovered = resolve_trigger_colors(&p, Style::Nova, false, true, false);
+        assert_eq!(hovered.fill, p.muted);
+        let disabled = resolve_trigger_colors(&p, Style::Nova, false, false, true);
         assert_eq!(disabled.text, color_alpha(p.foreground, 0.5));
+        // Base: accent family with accent foreground.
+        let base_open = resolve_trigger_colors(&p, Style::Vega, true, false, false);
+        assert_eq!(base_open.fill, color_alpha(p.accent, 0.5));
+        assert_eq!(base_open.text, p.accent_foreground);
+        let base_hovered = resolve_trigger_colors(&p, Style::Vega, false, true, false);
+        assert_eq!(base_hovered.fill, p.accent);
     }
 
     #[test]
     fn link_colors_follow_state() {
         let p = palette(Mode::Light);
-        let rest = resolve_link_colors(&p, false, false);
+        let rest = resolve_link_colors(&p, Style::Nova, false, false);
         assert_eq!(rest.fill, Color32::TRANSPARENT);
         assert_eq!(rest.title, p.popover_foreground);
         assert_eq!(rest.description, p.muted_foreground);
-        let hovered = resolve_link_colors(&p, false, true);
-        assert_eq!(hovered.fill, p.accent);
-        assert_eq!(hovered.title, p.accent_foreground);
-        let active = resolve_link_colors(&p, true, false);
-        assert_eq!(active.fill, color_alpha(p.accent, 0.5));
+        let hovered = resolve_link_colors(&p, Style::Nova, false, true);
+        assert_eq!(hovered.fill, p.muted);
+        assert_eq!(hovered.title, p.popover_foreground, "nova keeps the text");
+        let active = resolve_link_colors(&p, Style::Nova, true, false);
+        assert_eq!(active.fill, color_alpha(p.muted, 0.5));
+        // Base: accent family.
+        let base_hovered = resolve_link_colors(&p, Style::Vega, false, true);
+        assert_eq!(base_hovered.fill, p.accent);
+        assert_eq!(base_hovered.title, p.accent_foreground);
+        let base_active = resolve_link_colors(&p, Style::Vega, true, false);
+        assert_eq!(base_active.fill, color_alpha(p.accent, 0.5));
+    }
+
+    #[test]
+    fn link_highlight_wraps_and_starts_at_edges() {
+        assert_eq!(next_link_index(3, None, 1), Some(0));
+        assert_eq!(next_link_index(3, Some(2), 1), Some(0), "wraps forward");
+        assert_eq!(next_link_index(3, Some(0), -1), Some(2), "wraps backward");
+        assert_eq!(next_link_index(3, None, -1), Some(2), "starts at the end");
+        assert_eq!(next_link_index(0, None, 1), None);
+        assert_eq!(next_link_index(1, Some(0), 1), Some(0));
     }
 
     #[test]
     fn geometry_constants_match_source() {
         assert_eq!(NAV_TRIGGER_HEIGHT, 36.0, "h-9");
-        assert_eq!(NAV_TRIGGER_PAD_X, 16.0, "px-4");
-        assert_eq!(NAV_GAP, 4.0, "gap-1");
+        assert_eq!(NAV_TRIGGER_PAD_X, 16.0, "base px-4");
+        assert_eq!(trigger_pad_x(Style::Nova), 10.0, "nova px-2.5");
+        assert_eq!(NAV_GAP, 4.0, "base gap-1");
+        assert_eq!(bar_gap(Style::Nova), 0.0, "nova gap-0");
         assert_eq!(NAV_VIEWPORT_OFFSET, 6.0, "mt-1.5");
         assert_eq!(CONTENT_MAX_WIDTH, 400.0, "w-[400px]");
+        assert_eq!(CONTENT_PAD_RIGHT, 10.0, "pr-2.5");
         assert_eq!(CHEVRON_SIZE, 12.0, "size-3");
     }
 
@@ -1132,10 +1420,15 @@ mod tests {
             Self { ctx, time: 0.0 }
         }
 
-        fn run(&mut self, mut f: impl FnMut(&mut Ui)) {
+        fn run(&mut self, f: impl FnMut(&mut Ui)) {
+            self.run_with_events(Vec::new(), f);
+        }
+
+        fn run_with_events(&mut self, events: Vec<egui::Event>, mut f: impl FnMut(&mut Ui)) {
             self.time += 0.1;
             let input = egui::RawInput {
                 time: Some(self.time),
+                events,
                 ..Default::default()
             };
             let mut out = self.ctx.run_ui(input, |ctx| {
@@ -1373,5 +1666,68 @@ mod tests {
             let _ = ctx.clone();
         });
         assert!(hit, "clicking the panel link reports link_clicked");
+    }
+
+    #[test]
+    fn hover_open_menu_closes_after_pointer_leave_grace() {
+        let mut h = Harness::new();
+        let rect = trigger_rect(&mut h, "leave", 1);
+        // Hover opens.
+        h.run_with_events(vec![egui::Event::PointerMoved(rect.center())], |ui| {
+            let _ = menu_ui(ui, "leave");
+        });
+        assert_eq!(h.state("leave").open, Some(1), "hover opens the menu");
+
+        // The pointer moves off everything: the grace timer starts (frame 1),
+        // waits ~150 ms, then closes.
+        for frame in 0..4 {
+            h.run_with_events(
+                vec![egui::Event::PointerMoved(Pos2::new(550.0, 550.0))],
+                |ui| {
+                    let _ = menu_ui(ui, "leave");
+                },
+            );
+            if frame < 2 {
+                assert_eq!(
+                    h.state("leave").open,
+                    Some(1),
+                    "still within the grace period"
+                );
+            }
+        }
+        assert!(
+            h.state("leave").open.is_none(),
+            "pointer-leave closes a hover-opened menu"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_link_highlight_and_enter_clicks() {
+        let mut h = Harness::new();
+        let rect = trigger_rect(&mut h, "keys", 1);
+        h.click(rect.center(), |ui| {
+            let _ = menu_ui(ui, "keys");
+        });
+        assert_eq!(h.state("keys").open, Some(1));
+
+        h.key(Key::ArrowDown, |ui| {
+            let _ = menu_ui(ui, "keys");
+        });
+        assert_eq!(
+            h.state("keys").link_highlight,
+            Some(0),
+            "ArrowDown highlights the first link"
+        );
+        h.key(Key::ArrowDown, |ui| {
+            let _ = menu_ui(ui, "keys");
+        });
+        h.key(Key::Enter, |ui| {
+            let res = menu_ui(ui, "keys");
+            assert_eq!(
+                res.link_clicked.as_deref(),
+                Some("Library"),
+                "Enter clicks the highlighted link"
+            );
+        });
     }
 }
