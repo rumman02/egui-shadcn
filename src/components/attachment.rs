@@ -280,11 +280,15 @@ impl<'a> AttachmentMedia<'a> {
         let scope = scope::current(ui);
         let state = scope.map(|s| s.state).unwrap_or_default();
         let (side, radius, icon_size) = match scope.map(|s| (s.size, s.orientation)) {
-            Some((_, AttachmentOrientation::Vertical)) => (
-                VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::default().pad().x,
-                theme.radius.lg_u8(),
-                24.0, // `size-6`
-            ),
+            Some((_, AttachmentOrientation::Vertical)) => {
+                // `w-full` inside the chip's inner width (per-size padding).
+                let size = scope.map(|s| s.size).unwrap_or_default();
+                (
+                    VERTICAL_CHIP_WIDTH - 2.0 * size.pad().x,
+                    theme.radius.lg_u8(),
+                    24.0, // `size-6`
+                )
+            }
             _ => {
                 let size = scope.map(|s| s.size).unwrap_or_default();
                 let radius = if size == AttachmentSize::Xs {
@@ -399,14 +403,26 @@ impl AttachmentContent {
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
         let max_width = self.max_width;
+        let vertical =
+            scope::current(ui).map(|s| s.orientation) == Some(AttachmentOrientation::Vertical);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_max_width(max_width);
-            if scope::current(ui).map(|s| s.orientation) == Some(AttachmentOrientation::Vertical) {
-                ui.set_min_width(VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::default().pad().x);
-                ui.add_space(4.0); // `px-1`
-            }
             ui.spacing_mut().item_spacing.y = 2.0; // `mt-0.5` between slots
-            content(ui)
+            if vertical {
+                // Vertical chips pin the column to the chip's inner width.
+                let pad_x = scope::current(ui)
+                    .map(|s| s.size.pad().x)
+                    .unwrap_or_else(|| AttachmentSize::default().pad().x);
+                ui.set_min_width(VERTICAL_CHIP_WIDTH - 2.0 * pad_x);
+                // `px-1` — a horizontal 4px inset on each side of the text
+                // column (not vertical space).
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(4, 0))
+                    .show(ui, content)
+                    .inner
+            } else {
+                content(ui)
+            }
         })
     }
 }
@@ -448,7 +464,10 @@ impl AttachmentTitle {
             let phase = shimmer_phase(ui.input(|i| i.time));
             color = mix(p.muted_foreground, p.card_foreground, phase);
         }
-        let text = RichText::new(self.text).size(size.text_size()).color(color);
+        let text = RichText::new(self.text)
+            .size(size.text_size())
+            .strong() // `font-medium` (no medium font is configured)
+            .color(color);
         ui.add(egui::Label::new(text).truncate())
     }
 }
@@ -563,11 +582,15 @@ impl AttachmentActions {
 
 /// `AttachmentAction` — a ghost `icon-xs`
 /// [`Button`](crate::components::button::Button) inside [`AttachmentActions`]
-/// (remove, retry, cancel...).
+/// (remove, retry, cancel...). The source accepts any `Button`
+/// `variant`/`size`; override the ghost/`icon-xs` defaults with
+/// [`AttachmentAction::variant`] / [`AttachmentAction::size`].
 #[derive(Clone, Debug)]
 pub struct AttachmentAction {
     icon: Icon,
     disabled: bool,
+    variant: crate::components::button::ButtonVariant,
+    size: crate::components::button::ButtonSize,
     id_salt: Option<String>,
 }
 
@@ -577,6 +600,8 @@ impl AttachmentAction {
         Self {
             icon,
             disabled: false,
+            variant: crate::components::button::ButtonVariant::Ghost,
+            size: crate::components::button::ButtonSize::IconXs,
             id_salt: None,
         }
     }
@@ -584,6 +609,18 @@ impl AttachmentAction {
     /// Disables the action.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Overrides the button variant (default `ghost`).
+    pub fn variant(mut self, variant: crate::components::button::ButtonVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// Overrides the button size (default `icon-xs`).
+    pub fn size(mut self, size: crate::components::button::ButtonSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -596,8 +633,8 @@ impl AttachmentAction {
     /// Renders the action button.
     pub fn show(self, ui: &mut Ui) -> Response {
         let mut button = crate::components::button::Button::new("")
-            .variant(crate::components::button::ButtonVariant::Ghost)
-            .size(crate::components::button::ButtonSize::IconXs)
+            .variant(self.variant)
+            .size(self.size)
             .icon_start(self.icon);
         if let Some(salt) = self.id_salt.as_deref() {
             button = button.id_salt(salt);
@@ -663,7 +700,10 @@ impl Attachment {
         self
     }
 
-    /// Makes the whole chip a click target (`AttachmentTrigger`).
+    /// Makes the whole chip a click target (`AttachmentTrigger`). The
+    /// interact uses `Sense::click()`, which is focusable in egui — matching
+    /// the source's focusable `<button>` (and `:focus-within` matches the
+    /// focused element itself too).
     pub fn trigger(mut self, trigger: bool) -> Self {
         self.trigger = trigger;
         self
@@ -794,8 +834,11 @@ impl Attachment {
                 ]
             };
             painter.set(bg_idx, Shape::Vec(shapes));
-            // `focus-within:ring-1 focus-within:ring-ring/50`.
-            if scope_now.map(|s| s.focus_within).unwrap_or(false) {
+            // `focus-within:ring-1 focus-within:ring-ring/50` — matches when
+            // a descendant (action) or the trigger chip itself holds focus.
+            let focused = scope_now.map(|s| s.focus_within).unwrap_or(false)
+                || (self.trigger && response.has_focus());
+            if focused {
                 crate::utils::focus::paint_ring(
                     painter,
                     chip_rect.expand(1.0),
@@ -844,12 +887,14 @@ impl AttachmentGroup {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
-        // `py-1` breathing room inside the scroll strip.
+        // `py-1` breathing room inside the scroll strip; `scrollbar-none` —
+        // the source hides the scrollbar (the fade still shows overflow).
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(0, 4))
             .show(ui, |ui| {
                 egui::ScrollArea::horizontal()
                     .auto_shrink([false, true])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 12.0; // gap-3
@@ -1108,6 +1153,23 @@ mod tests {
     }
 
     #[test]
+    fn vertical_media_side_follows_chip_size() {
+        // `w-full` inside the chip's inner width: 120 − 2·px.
+        assert_eq!(
+            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Default.pad().x,
+            100.0
+        );
+        assert_eq!(
+            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Sm.pad().x,
+            104.0
+        );
+        assert_eq!(
+            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Xs.pad().x,
+            108.0
+        );
+    }
+
+    #[test]
     fn renders_in_light_and_dark() {
         for mode in [Mode::Light, Mode::Dark] {
             let ctx = egui::Context::default();
@@ -1149,6 +1211,45 @@ mod tests {
                             AttachmentAction::new(Icon::X).show(ui);
                         });
                     });
+                // Image media (`opacity-60` while uploading) + size-aware
+                // vertical chips (Sm/Xs).
+                let tex = ctx.load_texture(
+                    "attachment_test_img",
+                    {
+                        let mut pixels = Vec::new();
+                        for y in 0..8u8 {
+                            for x in 0..8u8 {
+                                pixels.push(Color32::from_rgb(40 + x * 20, 60 + y * 20, 120));
+                            }
+                        }
+                        egui::ColorImage::new([8, 8], pixels)
+                    },
+                    egui::TextureOptions::default(),
+                );
+                let img_src =
+                    ImageSource::Texture(egui::load::SizedTexture::new(tex.id(), tex.size_vec2()));
+                Attachment::new()
+                    .state(AttachmentState::Uploading)
+                    .show(ui, |ui| {
+                        AttachmentMedia::new().image(img_src).show(ui);
+                        AttachmentContent::new().show(ui, |ui| {
+                            AttachmentTitle::new("photo.png").show(ui);
+                        });
+                    });
+                for size in [AttachmentSize::Sm, AttachmentSize::Xs] {
+                    Attachment::new()
+                        .size(size)
+                        .orientation(AttachmentOrientation::Vertical)
+                        .show(ui, |ui| {
+                            AttachmentMedia::new().icon(Icon::FileText).show(ui);
+                            AttachmentContent::new().show(ui, |ui| {
+                                AttachmentTitle::new("note.md").show(ui);
+                            });
+                            AttachmentActions::new().show(ui, |ui| {
+                                AttachmentAction::new(Icon::X).show(ui);
+                            });
+                        });
+                }
                 AttachmentGroup::new().show(ui, |ui| {
                     Attachment::new().trigger(true).show(ui, |ui| {
                         AttachmentMedia::new().icon(Icon::Paperclip).show(ui);

@@ -4075,6 +4075,32 @@ pub fn attachment_demo(ui: &mut egui::Ui) {
             });
         }
     });
+
+    ui.add_space(12.0);
+    ui.label("Image media + extra-small vertical chip");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        Attachment::new().show(ui, |ui| {
+            AttachmentMedia::new().image(card_demo_texture(ui)).show(ui);
+            AttachmentContent::new().show(ui, |ui| {
+                AttachmentTitle::new("photo.png").show(ui);
+                AttachmentDescription::new("Image · 3.1 MB").show(ui);
+            });
+            AttachmentActions::new().show(ui, |ui| {
+                AttachmentAction::new(Icon::X).show(ui);
+            });
+        });
+        Attachment::new()
+            .size(AttachmentSize::Xs)
+            .orientation(AttachmentOrientation::Vertical)
+            .show(ui, |ui| {
+                AttachmentMedia::new().icon(Icon::FileText).show(ui);
+                AttachmentContent::new().show(ui, |ui| {
+                    AttachmentTitle::new("note.md").show(ui);
+                });
+            });
+    });
 }
 pub fn bubble_demo(ui: &mut egui::Ui) {
     ui.label("Variants");
