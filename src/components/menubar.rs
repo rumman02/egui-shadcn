@@ -44,6 +44,7 @@
 use crate::components::dropdown_menu::{
     apply_activation, handle_menu_escape, handle_menu_keys, handle_outside_click, render_level,
     IndicatorSide, LevelShared, MenuActivated, MenuBuilder, MenuEntry, MenuSpec, MenuState,
+    TypeaheadState, MENU_LABEL_HEIGHT, SUB_MENU_MIN_WIDTH,
 };
 use crate::theme::ShadcnTheme;
 use crate::utils::shadow;
@@ -115,7 +116,7 @@ impl<'m> MenubarBuilder<'m> {
 
 /// Per-instance state: which menu is open, the highlight path inside it and
 /// the menu playing its close animation (if any).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct MenubarState {
     /// The currently open menu index, if any.
     pub open_index: Option<usize>,
@@ -130,6 +131,8 @@ pub(crate) struct MenubarState {
     /// Per-trigger hover state from the previous frame; hover-switching only
     /// fires when the pointer *enters* a trigger (Radix behavior).
     pub hovered: Vec<bool>,
+    /// Radix-style typeahead inside the open menu (shared model).
+    pub typeahead: TypeaheadState,
 }
 
 fn read_menubar_state(ctx: &Context, state_id: Id) -> MenubarState {
@@ -262,11 +265,13 @@ impl<'a> Menubar<'a> {
             });
             let mut tmp = MenuState {
                 open: true,
-                trigger: None,
                 highlight: std::mem::take(&mut state.highlight),
+                typeahead: std::mem::take(&mut state.typeahead),
+                ..Default::default()
             };
             handle_menu_keys(&ctx, entries, &mut tmp, &mut activation);
             state.highlight = tmp.highlight;
+            state.typeahead = tmp.typeahead;
             // ArrowRight switches to the next menu unless it opened a
             // sub-menu; ArrowLeft switches to the previous one unless it
             // closed one.
@@ -287,8 +292,8 @@ impl<'a> Menubar<'a> {
             let hl_before = state.highlight.len();
             let mut tmp = MenuState {
                 open: true,
-                trigger: None,
                 highlight: std::mem::take(&mut state.highlight),
+                ..Default::default()
             };
             let esc = handle_menu_escape(&ctx, &mut tmp);
             state.highlight = tmp.highlight;
@@ -474,6 +479,9 @@ fn render_menubar_level(
         min_width: MENUBAR_MIN_WIDTH,
         indicator: IndicatorSide::Left,
         label_muted: false,
+        label_height: MENU_LABEL_HEIGHT,
+        sub_min_width: SUB_MENU_MIN_WIDTH,
+        sub_border_is_ring: true,
     };
     let mut shared = LevelShared {
         p: theme.palette,
@@ -500,6 +508,7 @@ fn render_menubar_level(
         MENUBAR_SIDE_OFFSET,
         false,
         open,
+        None,
         &mut shared,
     );
 

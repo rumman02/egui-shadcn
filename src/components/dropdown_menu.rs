@@ -13,7 +13,11 @@
 //! `show` renders the trigger plus the anchored popup. Keyboard support
 //! mirrors Radix: ArrowUp/Down move the highlight (skipping disabled items,
 //! wrapping), ArrowRight opens a sub-menu, ArrowLeft closes it, Enter/Space
-//! activate, Home/End jump, Escape closes (deepest sub-menu first).
+//! activate, Home/End jump, Escape closes (deepest sub-menu first), and
+//! typing printable characters jumps the highlight to the first matching
+//! entry (Radix typeahead, ~1 s buffer). Long menus clamp to the window
+//! space under the trigger and scroll (`max-h … overflow-y-auto`); the
+//! popup plays the nova `duration-100` fade+slide in both directions.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -55,7 +59,7 @@
 
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
+use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
 use egui::emath::RectAlign;
 use egui::{
@@ -89,6 +93,14 @@ const MENU_ICON_GAP: f32 = 6.0;
 pub(crate) const MENU_ICON_SIZE: f32 = 16.0;
 /// Separator total height: `my-1` (4 px top and bottom) + 1 px line.
 pub(crate) const MENU_SEPARATOR_HEIGHT: f32 = 9.0;
+/// Typeahead buffer timeout (Radix `useTypeahead` default: 1 s of idle time).
+pub(crate) const MENU_TYPEAHEAD_TIMEOUT_SECS: f64 = 1.0;
+/// Collision margin kept between the clamped menu viewport and the window
+/// edge (stand-in for Radix `collisionPadding`).
+const MENU_SCROLL_MARGIN: f32 = 16.0;
+/// Lower bound for the viewport-derived max content height, so long menus
+/// remain usable even when the anchor sits near the window edges.
+const MENU_SCROLL_MIN_HEIGHT: f32 = 128.0;
 
 // ---------------------------------------------------------------------------
 // Item model
@@ -114,6 +126,17 @@ pub(crate) struct MenuSpec {
     /// `true` for dropdown/context (`text-muted-foreground text-xs` label),
     /// `false` for menubar (`text-sm` foreground label).
     pub label_muted: bool,
+    /// Section label row height: `py-1` + one `text-xs` line (20 px) for
+    /// dropdown/context, `py-1` + one `text-sm` line (28 px) for menubar
+    /// (`.cn-menubar-label`).
+    pub label_height: f32,
+    /// Sub-menu content min width: `min-w-[96px]` for dropdown nova,
+    /// `min-w-32` for context nova, base `min-w-[8rem]` for menubar.
+    pub sub_min_width: f32,
+    /// Whether the sub-menu popup stroke is `ring-foreground/10` (dropdown
+    /// nova sub-content, menubar) or the `border` token (`.cn-context-menu-
+    /// sub-content` and the base menubar sub-content both use `border`).
+    pub sub_border_is_ring: bool,
 }
 
 /// A plain menu entry (`DropdownMenuItem`).
@@ -378,6 +401,25 @@ impl<'m> MenuBuilder<'m> {
                 items: inner.entries,
                 disabled: true,
                 inset: false,
+            },
+        });
+    }
+
+    /// Appends a sub-menu trigger with `data-inset` (extra leading space,
+    /// `data-inset:pl-7` — aligns with checkable rows).
+    pub fn sub_menu_inset(
+        &mut self,
+        label: impl Into<String>,
+        build: impl FnOnce(&mut MenuBuilder<'m>),
+    ) {
+        let mut inner = MenuBuilder::new();
+        build(&mut inner);
+        self.entries.push(MenuEntry {
+            kind: EntryKind::Sub {
+                label: label.into(),
+                items: inner.entries,
+                disabled: false,
+                inset: true,
             },
         });
     }
@@ -739,7 +781,9 @@ pub(crate) struct LevelShared<'s> {
 
 /// Renders the popup of one menu level and returns its response while
 /// visible. `prefix` is the actionable path leading into this level (empty
-/// for the root level).
+/// for the root level). `min_width_override` replaces the spec min width —
+/// sub-menus use `MenuSpec::sub_min_width` (nova `min-w-[96px]` /
+/// `min-w-32`) instead of the root width.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_level(
     ui: &mut Ui,
@@ -753,18 +797,30 @@ pub(crate) fn render_level(
     gap: f32,
     shadow_lg: bool,
     open: bool,
+    min_width_override: Option<f32>,
     shared: &mut LevelShared<'_>,
 ) -> Option<Response> {
-    let progress = overlay_progress(ctx, popup_id.with("anim"), open);
+    // Nova popup transitions run at `duration-100` (0.1 s) in both
+    // directions (`.cn-dropdown-menu-content` et al).
+    let progress = nova_overlay_progress(ctx, popup_id.with("anim"), open);
     if !(open || progress.alpha > 0.002) {
         return None;
     }
 
     let p = shared.p;
     let radius = ShadcnTheme::of_ui(ui).radius;
+    // Root content is `ring-1 ring-foreground/10`; nova sub-content strokes
+    // with the `border` token for context-menu (`.cn-context-menu-sub-content`)
+    // and the base menubar sub-content (`menubar.tsx` `border shadow-lg`).
+    let is_sub_level = !prefix.is_empty();
+    let stroke_color = if is_sub_level && !shared.spec.sub_border_is_ring {
+        p.border
+    } else {
+        color_alpha(p.foreground, 0.10)
+    };
     let frame = egui::Frame::new()
         .fill(p.popover)
-        .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
+        .stroke(Stroke::new(1.0, stroke_color))
         .corner_radius(CornerRadius::same(radius.lg_u8()))
         .inner_margin(Margin::same(MENU_CONTENT_PADDING as i8))
         .shadow(if shadow_lg {
@@ -772,6 +828,11 @@ pub(crate) fn render_level(
         } else {
             shadow::shadow_md(shared.dark)
         });
+
+    let min_width = min_width_override.unwrap_or(shared.spec.min_width);
+    let screen_height = ctx
+        .input(|i| i.raw.screen_rect)
+        .map_or(f32::MAX, |rect| rect.height());
 
     let popup = Popup::new(
         popup_id,
@@ -783,14 +844,17 @@ pub(crate) fn render_level(
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .align(align)
     .gap(gap + (1.0 - progress.alpha) * 8.0)
-    .width(shared.spec.min_width)
+    .width(min_width)
     .frame(egui::Frame::new());
 
     let inner = popup.show(|ui| {
         ui.set_opacity(progress.alpha);
         frame.show(ui, |ui| {
-            ui.set_min_width(shared.spec.min_width - 2.0 * MENU_CONTENT_PADDING);
-            render_rows(ui, entries, prefix, popup_id, shared);
+            ui.set_min_width(min_width - 2.0 * MENU_CONTENT_PADDING);
+            // `max-h-(--radix-*-content-available-height) overflow-y-auto`
+            // — clamp the rows to the space under the anchor and scroll.
+            let max_height = available_content_height(screen_height, anchor_rect, gap);
+            paint_scrolled_rows(ui, popup_id, max_height, entries, prefix, shared);
         });
     });
 
@@ -798,6 +862,47 @@ pub(crate) fn render_level(
         shared.popup_rects.push(r.response.rect);
     }
     inner.map(|r| r.response)
+}
+
+/// Viewport-derived max content height — the source clamps menu content to
+/// `max-h-(--radix-dropdown-menu-content-available-height)` with
+/// `overflow-y-auto` (dropdown-menu.tsx:44, context-menu.tsx:104). Radix
+/// measures the available space around the anchor; this approximates it with
+/// the window height below the anchor rect minus the popup gap and a small
+/// collision margin.
+fn available_content_height(screen_height: f32, anchor_rect: Rect, gap: f32) -> f32 {
+    let below = screen_height - anchor_rect.bottom() - gap - MENU_SCROLL_MARGIN;
+    below.max(MENU_SCROLL_MIN_HEIGHT)
+}
+
+/// Wraps the rows of one level in a themed scroll area clamped to
+/// `max_height`. Uses the shadcn scrollbar look (rounded-full `bg-border`
+/// thumb) but shrinks to the content height when the rows fit — long menus
+/// clamp and scroll, short menus stay content-sized.
+fn paint_scrolled_rows(
+    ui: &mut Ui,
+    popup_id: Id,
+    max_height: f32,
+    entries: &[MenuEntry<'_>],
+    prefix: &[usize],
+    shared: &mut LevelShared<'_>,
+) {
+    let border = ShadcnTheme::of_ui(ui).palette.border;
+    let scroll = crate::components::scroll_area::ScrollArea::themed_scroll_style();
+    ui.scope(|ui| {
+        // Scoped style: only this menu's viewport inherits the shadcn
+        // scrollbar look.
+        ui.style_mut().spacing.scroll = scroll;
+        crate::components::scroll_area::ScrollArea::themed_scroll_visuals(
+            &mut ui.style_mut().visuals,
+            border,
+        );
+        egui::ScrollArea::new([true, false])
+            .auto_shrink([true, false])
+            .max_height(max_height)
+            .id_salt(popup_id.with("scroll"))
+            .show(ui, |ui| render_rows(ui, entries, prefix, popup_id, shared));
+    });
 }
 
 /// Renders the rows of one level (items, labels, separators, sub-menus).
@@ -854,7 +959,11 @@ fn render_rows(
                         shortcut: item.shortcut.as_deref(),
                         icon: None,
                         disabled: item.disabled,
-                        inset: item.inset,
+                        // Nova checkable rows are always `pl-7` when the
+                        // indicator sits on the left (menubar
+                        // `.cn-menubar-checkbox-item`: `pr-1.5 pl-7` is NOT
+                        // gated on `data-inset`).
+                        inset: item.inset || shared.spec.indicator == IndicatorSide::Left,
                         indicator: Some((shared.spec.indicator, checked_now, false)),
                         colors,
                     },
@@ -880,7 +989,9 @@ fn render_rows(
                             shortcut: item.shortcut.as_deref(),
                             icon: None,
                             disabled: item.disabled,
-                            inset: item.inset,
+                            // Same unconditional `pl-7` as checkbox rows
+                            // (`.cn-menubar-radio-item`).
+                            inset: item.inset || shared.spec.indicator == IndicatorSide::Left,
                             indicator: Some((
                                 shared.spec.indicator,
                                 selected == Some(radio_idx),
@@ -968,6 +1079,10 @@ fn render_rows(
                         4.0,
                         true,
                         true,
+                        // Sub-content min width: nova `min-w-[96px]`
+                        // (dropdown) / `min-w-32` (context) instead of the
+                        // root width.
+                        Some(shared.spec.sub_min_width),
                         shared,
                     );
                 }
@@ -1122,7 +1237,7 @@ fn paint_indicator(
     rect: Rect,
     side: IndicatorSide,
     checked: bool,
-    radio: bool,
+    _radio: bool,
     color: Color32,
 ) {
     if !checked {
@@ -1133,19 +1248,19 @@ fn paint_indicator(
         IndicatorSide::Right => rect.max.x - 8.0 - MENU_ICON_SIZE * 0.5, // right-2 + half icon
         IndicatorSide::Left => rect.min.x + 6.0 + MENU_ICON_SIZE * 0.5,  // left-1.5 + half icon
     };
-    if radio {
-        // `CircleIcon class="size-2 fill-current"` — an 8 px filled dot.
-        painter.circle_filled(Pos2::new(center_x, center_y), 4.0, color);
-    } else {
-        // `CheckIcon class="size-4"`.
-        let icon_rect =
-            Rect::from_center_size(Pos2::new(center_x, center_y), Vec2::splat(MENU_ICON_SIZE));
-        Icon::Check.paint(painter, icon_rect, color, 2.0 * MENU_ICON_SIZE / 24.0);
-    }
+    // Both checkbox and radio indicators render the 16 px Check icon under
+    // the nova recipe — the nova transform replaces the base
+    // `CircleIcon size-2 fill-current` dot with `CheckIcon` (canonical merge
+    // `radix-nova--context-menu.tsx:196-218`, `[&_svg]:size-4`).
+    let icon_rect =
+        Rect::from_center_size(Pos2::new(center_x, center_y), Vec2::splat(MENU_ICON_SIZE));
+    Icon::Check.paint(painter, icon_rect, color, 2.0 * MENU_ICON_SIZE / 24.0);
 }
 
 fn paint_label(ui: &mut Ui, text: &str, inset: bool, shared: &LevelShared<'_>) {
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), MENU_LABEL_HEIGHT));
+    // Label height is spec-driven: `py-1 text-xs` (20 px) for dropdown /
+    // context, `py-1 text-sm` (28 px) for menubar (`.cn-menubar-label`).
+    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), shared.spec.label_height));
     if ui.is_rect_visible(rect) {
         let (color, size) = if shared.spec.label_muted {
             (
@@ -1230,6 +1345,20 @@ pub(crate) struct MenuState {
     pub trigger: Option<TriggerInfo>,
     /// Highlight path; a length > depth encodes open sub-menus.
     pub highlight: Vec<usize>,
+    /// Radix-style typeahead buffer (printable-char search while open).
+    pub typeahead: TypeaheadState,
+}
+
+/// Typeahead buffer shared by all menu components (Radix `useTypeahead`):
+/// printable characters accumulate while the menu is open and the highlight
+/// jumps to the first entry whose label starts with the buffer; the buffer
+/// clears after [`MENU_TYPEAHEAD_TIMEOUT_SECS`] of idle time.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TypeaheadState {
+    /// Characters typed so far (cleared on timeout).
+    pub buffer: String,
+    /// Time of the last typed character.
+    pub at: Option<f64>,
 }
 
 /// Trigger geometry captured the frame the trigger was drawn.
@@ -1248,8 +1377,9 @@ pub(crate) fn write_menu_state(ctx: &Context, state_id: Id, state: MenuState) {
 }
 
 /// Root-level keyboard handling shared by dropdown, context-menu and
-/// menubar: ArrowUp/Down/Right/Left, Home/End, Enter/Space. Escape is handled
-/// by the caller (it closes the deepest level first).
+/// menubar: ArrowUp/Down/Right/Left, Home/End, Enter/Space plus the Radix
+/// typeahead (printable characters jump to the first matching entry).
+/// Escape is handled by the caller (it closes the deepest level first).
 pub(crate) fn handle_menu_keys(
     ctx: &Context,
     entries: &[MenuEntry<'_>],
@@ -1299,6 +1429,102 @@ pub(crate) fn handle_menu_keys(
             *activation = Some(state.highlight.clone());
         }
     }
+    handle_menu_typeahead(ctx, entries, state);
+}
+
+/// Radix typeahead: printable characters typed while the menu is open
+/// accumulate in a ~1 s buffer; the highlight moves to the first entry of
+/// the current level whose label starts with the buffer (searching after
+/// the current highlight, wrapping once). A focused text field elsewhere
+/// (`wants_keyboard_input`) suppresses the search.
+fn handle_menu_typeahead(ctx: &Context, entries: &[MenuEntry<'_>], state: &mut MenuState) {
+    if ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    let mut chars: Vec<char> = Vec::new();
+    ctx.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Text(text) = event {
+                chars.extend(text.chars().filter(|c| !c.is_control()));
+            }
+        }
+    });
+    if chars.is_empty() {
+        return;
+    }
+    let now = ctx.input(|i| i.time);
+    for ch in chars {
+        // Clear the buffer after the idle timeout (Radix `useTypeahead`).
+        if state
+            .typeahead
+            .at
+            .is_some_and(|t| now - t > MENU_TYPEAHEAD_TIMEOUT_SECS)
+        {
+            state.typeahead.buffer.clear();
+        }
+        state.typeahead.buffer.push(ch);
+        state.typeahead.at = Some(now);
+        let level = typeahead_level(entries, &state.highlight);
+        let start = state.highlight.last().map_or(0, |i| i + 1);
+        if let Some(idx) = action_index_of_prefix(level, start, &state.typeahead.buffer) {
+            if state.highlight.is_empty() {
+                state.highlight.push(idx);
+            } else {
+                let last = state.highlight.len() - 1;
+                state.highlight[last] = idx;
+            }
+        }
+    }
+}
+
+/// The level the typeahead searches: the root while nothing (or a top-level
+/// entry) is highlighted, the open sub-menu's items otherwise.
+fn typeahead_level<'a, 'm>(entries: &'a [MenuEntry<'m>], path: &[usize]) -> &'a [MenuEntry<'m>] {
+    match path.len() {
+        0 | 1 => entries,
+        _ => match resolve_action(entries, &path[..path.len() - 1]) {
+            Some(MenuEntry {
+                kind: EntryKind::Sub { items, .. },
+            }) => items,
+            _ => entries,
+        },
+    }
+}
+
+/// First actionable entry whose label starts with `query`
+/// (case-insensitive), searching from index `start` (exclusive) and
+/// wrapping once — the Radix menu typeahead match. Returns the action index
+/// within `entries`.
+pub(crate) fn action_index_of_prefix(
+    entries: &[MenuEntry<'_>],
+    start: usize,
+    query: &str,
+) -> Option<usize> {
+    let count = count_actionable(entries);
+    if count == 0 || query.is_empty() {
+        return None;
+    }
+    let q = query.to_lowercase();
+    for offset in 0..count {
+        let idx = (start + offset) % count;
+        if let Some(entry) = entry_at_level(entries, idx) {
+            if entry_disabled(entry) {
+                continue;
+            }
+            let matches = match &entry.kind {
+                EntryKind::Item { item } => item.label.to_lowercase().starts_with(&q),
+                EntryKind::Checkbox { item, .. } => item.label.to_lowercase().starts_with(&q),
+                EntryKind::Sub { label, .. } => label.to_lowercase().starts_with(&q),
+                EntryKind::RadioGroup { .. } | EntryKind::Label { .. } | EntryKind::Separator => {
+                    false
+                }
+            };
+            if matches {
+                return Some(idx);
+            }
+        }
+    }
+    None
 }
 
 /// First/last navigable index of the level the highlight path currently
@@ -1572,6 +1798,9 @@ impl<'a> DropdownMenu<'a> {
                 min_width: self.width.unwrap_or(DROPDOWN_MIN_WIDTH),
                 indicator: IndicatorSide::Right,
                 label_muted: true,
+                label_height: MENU_LABEL_HEIGHT,
+                sub_min_width: SUB_MENU_MIN_WIDTH,
+                sub_border_is_ring: true,
             };
             let mut shared = LevelShared {
                 p,
@@ -1596,6 +1825,7 @@ impl<'a> DropdownMenu<'a> {
                     self.side_offset.unwrap_or(DROPDOWN_SIDE_OFFSET),
                     false,
                     state.open,
+                    None,
                     &mut shared,
                 );
             }
@@ -1753,6 +1983,71 @@ mod tests {
         assert!(open_highlighted_sub(&e, &mut path).is_none());
         assert!(resolve_action(&e, &[0]).is_none());
         assert!(edge_actionable(&e, false).is_none());
+    }
+
+    #[test]
+    fn action_index_of_prefix_finds_case_insensitive_and_wraps() {
+        let mut b = MenuBuilder::new();
+        b.item(MenuItem::new("Alpha"));
+        b.item(MenuItem::new("beta"));
+        b.item(MenuItem::new("Gamma").disabled(true));
+        let e = b.entries;
+        assert_eq!(action_index_of_prefix(&e, 0, "al"), Some(0));
+        assert_eq!(action_index_of_prefix(&e, 1, "B"), Some(1));
+        assert_eq!(
+            action_index_of_prefix(&e, 2, "b"),
+            Some(1),
+            "wraps from Gamma past Alpha to Beta"
+        );
+        assert_eq!(
+            action_index_of_prefix(&e, 0, "g"),
+            None,
+            "disabled entries are skipped"
+        );
+        assert_eq!(action_index_of_prefix(&e, 0, ""), None);
+    }
+
+    #[test]
+    fn action_index_of_prefix_matches_sub_trigger_labels() {
+        let mut b = MenuBuilder::new();
+        b.item(MenuItem::new("Alpha"));
+        b.sub_menu("Invite users", |m| m.item(MenuItem::new("Email")));
+        let e = b.entries;
+        assert_eq!(
+            action_index_of_prefix(&e, 0, "inv"),
+            Some(1),
+            "sub triggers participate in typeahead"
+        );
+    }
+
+    #[test]
+    fn available_content_height_clamps_to_window() {
+        let anchor = Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 30.0));
+        assert_eq!(
+            available_content_height(600.0, anchor, 4.0),
+            600.0 - 30.0 - 4.0 - MENU_SCROLL_MARGIN,
+            "space below the anchor minus gap and collision margin"
+        );
+        let bottom_anchor = Rect::from_min_size(Pos2::new(0.0, 596.0), Vec2::new(100.0, 30.0));
+        assert_eq!(
+            available_content_height(600.0, bottom_anchor, 4.0),
+            MENU_SCROLL_MIN_HEIGHT,
+            "clamped to the usable minimum near the window edge"
+        );
+    }
+
+    #[test]
+    fn sub_menu_inset_builds_inset_trigger() {
+        let mut b = MenuBuilder::new();
+        b.sub_menu_inset("Preferences", |m| m.item(MenuItem::new("Font")));
+        assert_eq!(b.entries.len(), 1);
+        match &b.entries[0].kind {
+            EntryKind::Sub { label, inset, .. } => {
+                assert_eq!(label, "Preferences");
+                assert!(inset, "data-inset sub trigger");
+            }
+            other => panic!("expected inset sub-menu, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1963,6 +2258,27 @@ mod tests {
             out.textures_delta.clear();
         }
 
+        /// Types a text event (printable characters, as produced by a
+        /// keyboard).
+        fn text(&mut self, text: &str, mut f: impl FnMut(&mut Ui)) {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                events: vec![egui::Event::Text(text.to_owned())],
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("dropdown_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 600.0))),
+                );
+                f(ui);
+            });
+            out.textures_delta.clear();
+        }
+
         fn state(&self, salt: &str) -> MenuState {
             let id = Id::unique("dropdown_test_ui").with(salt);
             self.ctx
@@ -2137,6 +2453,69 @@ mod tests {
             .data_mut(|d| d.get_temp(Id::unique("kb_hit")).unwrap_or(false));
         assert!(hit, "Enter activates the highlighted item");
         assert!(!h.state("kb").open, "activation closes the menu");
+    }
+
+    #[test]
+    fn typeahead_moves_highlight_while_open() {
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "ta");
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open").id_salt("ta").show(ui, |m| {
+                m.item(MenuItem::new("Alpha"));
+                m.item(MenuItem::new("Beta"));
+                m.item(MenuItem::new("Gamma"));
+            });
+        };
+        h.click(rect.center(), egui::PointerButton::Primary, show);
+        assert!(h.state("ta").open);
+
+        h.text("b", show);
+        assert_eq!(
+            h.state("ta").highlight,
+            vec![1],
+            "typing 'b' highlights Beta"
+        );
+
+        // The buffer extends: "bg" matches nothing, highlight stays.
+        h.text("g", show);
+        assert_eq!(h.state("ta").highlight, vec![1], "'bg' matches nothing");
+
+        // After the 1s idle timeout the buffer clears: "a" matches Alpha.
+        for _ in 0..11 {
+            h.run(show);
+        }
+        h.text("a", show);
+        assert_eq!(
+            h.state("ta").highlight,
+            vec![0],
+            "stale buffer cleared; 'a' matches Alpha"
+        );
+    }
+
+    #[test]
+    fn typeahead_searches_after_the_highlight() {
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "ta2");
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open").id_salt("ta2").show(ui, |m| {
+                m.item(MenuItem::new("Red"));
+                m.item(MenuItem::new("Green"));
+                m.item(MenuItem::new("Blue"));
+            });
+        };
+        h.click(rect.center(), egui::PointerButton::Primary, show);
+        assert!(h.state("ta2").open);
+
+        h.key(Key::ArrowDown, show);
+        assert_eq!(h.state("ta2").highlight, vec![0]);
+
+        // "b" searches after Red: skips Green, lands on Blue.
+        h.text("b", show);
+        assert_eq!(
+            h.state("ta2").highlight,
+            vec![2],
+            "typeahead starts after the current highlight"
+        );
     }
 
     #[test]

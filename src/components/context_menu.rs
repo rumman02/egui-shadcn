@@ -44,7 +44,7 @@
 use crate::components::dropdown_menu::{
     apply_activation, handle_menu_escape, handle_menu_keys, handle_outside_click, read_menu_state,
     render_level, write_menu_state, IndicatorSide, LevelShared, MenuActivated, MenuBuilder,
-    MenuSpec, MenuState, TriggerInfo,
+    MenuSpec, MenuState, TriggerInfo, MENU_LABEL_HEIGHT, SUB_MENU_MIN_WIDTH,
 };
 use crate::theme::ShadcnTheme;
 use egui::emath::RectAlign;
@@ -183,6 +183,9 @@ impl<'a> ContextMenu<'a> {
                 min_width: CONTEXT_MENU_MIN_WIDTH,
                 indicator: IndicatorSide::Right,
                 label_muted: true,
+                label_height: MENU_LABEL_HEIGHT,
+                sub_min_width: SUB_MENU_MIN_WIDTH,
+                sub_border_is_ring: true,
             };
             let mut shared = LevelShared {
                 p,
@@ -207,6 +210,7 @@ impl<'a> ContextMenu<'a> {
                     0.0,
                     false,
                     state.open,
+                    None,
                     &mut shared,
                 );
             }

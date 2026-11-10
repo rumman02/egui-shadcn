@@ -2934,7 +2934,7 @@ pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
 
-    ui.label("Click a trigger to open. ArrowUp/Down navigate, ArrowRight opens sub-menus, Enter/Space activate, Escape closes.");
+    ui.label("Click a trigger to open. ArrowUp/Down navigate, ArrowRight opens sub-menus, Enter/Space activate, Escape closes, typing jumps to matching items.");
     ui.add_space(8.0);
 
     ui.label("Basic (docs demo, w-56, align start)");
@@ -3032,6 +3032,26 @@ pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
             .id_salt("dropdown_demo_align_end")
             .show(ui, |m| m.item(MenuItem::new("Aligned end")));
     });
+
+    ui.add_space(12.0);
+    ui.label("Inset sub-menu trigger and a long list (clamped to the window, scrollable)");
+    ui.add_space(4.0);
+    let res = DropdownMenu::new("Open")
+        .align(MenuAlign::Start)
+        .id_salt("dropdown_demo_scroll")
+        .show(ui, |m| {
+            m.sub_menu_inset("Nested preferences", |m| {
+                m.item(MenuItem::new("Editor font"));
+                m.item(MenuItem::new("Terminal font"));
+            });
+            m.separator();
+            for i in 1..=30 {
+                m.item(MenuItem::new(format!("Entry {i}")));
+            }
+        });
+    if let Some(a) = res.activated {
+        last_action = Some(a.id);
+    }
 
     ui.add_space(12.0);
     let mut open: bool = ui
