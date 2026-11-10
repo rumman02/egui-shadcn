@@ -4111,6 +4111,36 @@ pub fn bubble_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
+    ui.label("Custom content (show_with) — the pill recolors it to the variant's text token");
+    ui.add_space(4.0);
+    Bubble::new().show(ui, |ui| {
+        BubbleContent::new("").show_with(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Custom content inside the pill —")
+                    .size(14.0)
+                    .strong(),
+            );
+            ui.label(
+                egui::RichText::new("built-in labels and closures both follow the variant.")
+                    .size(14.0),
+            );
+        });
+    });
+    ui.add_space(8.0);
+    ui.label("End-aligned via the enclosing Message (group-data-[align=end]/message:self-end)");
+    ui.add_space(4.0);
+    Message::new().align(MessageAlign::End).show(ui, |ui| {
+        MessageContent::new().show(ui, |ui| {
+            Bubble::new()
+                .variant(BubbleVariant::Default)
+                .show(ui, |ui| {
+                    BubbleContent::new("Right-aligned by the message — no .align(End) needed.")
+                        .show(ui);
+                });
+        });
+    });
+
+    ui.add_space(12.0);
     ui.label("Group");
     ui.add_space(4.0);
     BubbleGroup::new().show(ui, |ui| {

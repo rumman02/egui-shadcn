@@ -7,7 +7,9 @@
 //! derivative of the primary hue, outline, ghost, destructive), grouped by
 //! [`BubbleGroup`] (`flex-col gap-2`). [`BubbleReactions`] floats a
 //! `rounded-full bg-muted ring-3 ring-card` pill over the bubble's top or
-//! bottom edge.
+//! bottom edge. Bubbles also follow the enclosing
+//! [`Message`](crate::components::message::Message) alignment
+//! (`group-data-[align=end]/message:self-end`).
 //!
 //! Web-only details are approximated: the `:hover` shifts only apply to
 //! button/link content (`[button,a]:hover:`), which static egui content
@@ -69,10 +71,14 @@ pub enum BubbleAlign {
 }
 
 /// Layout context pushed by [`Bubble`] for [`BubbleContent`] and
-/// [`BubbleReactions`].
+/// [`BubbleReactions`]. `align` is the *effective* alignment: the bubble's
+/// own `align`, or `End` when it sits inside an end-aligned
+/// [`Message`](crate::components::message::Message)
+/// (`group-data-[align=end]/message:self-end`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScopeState {
     pub variant: BubbleVariant,
+    pub align: BubbleAlign,
     pub content_rect: Option<Rect>,
 }
 
@@ -296,18 +302,27 @@ impl Bubble {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        // `group-data-[align=end]/message:self-end` — bubbles inside an
+        // end-aligned `Message` right-align even without their own
+        // `.align(End)`.
+        let in_end_message = crate::components::message::scope::current(ui)
+            .map(|s| s.align == crate::components::message::MessageAlign::End)
+            .unwrap_or(false);
+        let end = self.align == BubbleAlign::End || in_end_message;
         scope::push(
             ui,
             ScopeState {
                 variant: self.variant,
+                align: if end {
+                    BubbleAlign::End
+                } else {
+                    BubbleAlign::Start
+                },
                 content_rect: None,
             },
         );
         // `self-end` right-aligns the bubble; ghost bubbles take full width.
-        let align = match self.align {
-            BubbleAlign::Start => Align::Min,
-            BubbleAlign::End => Align::Max,
-        };
+        let align = if end { Align::Max } else { Align::Min };
         let max_width = if self.variant == BubbleVariant::Ghost {
             1.0
         } else {
@@ -369,6 +384,7 @@ impl BubbleContent {
         let dark = theme.mode.is_dark();
         let scope = scope::current(ui);
         let variant = scope.map(|s| s.variant).unwrap_or_default();
+        let end = scope.map(|s| s.align == BubbleAlign::End).unwrap_or(false);
         let ghost = variant == BubbleVariant::Ghost;
         // px-3 py-2; ghost is `p-0 rounded-none`.
         let pad = if ghost {
@@ -377,20 +393,44 @@ impl BubbleContent {
             Vec2::new(12.0, 8.0)
         };
         let radius = if ghost { 0.0 } else { theme.radius.xl() };
+        let (fill, text_color, border) = resolve_variant_colors(&p, dark, variant);
 
         // Reserve a shape slot behind the content for the pill fill.
         let bg_idx = ui.painter().add(Shape::Noop);
 
-        let laid_out = ui.with_layout(egui::Layout::top_down(Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            content(ui)
-        });
+        // The pill is painted `pad` outside the content on every side, so lay
+        // the content out in the pill's padding box (an inset of the bubble's
+        // max-width region). This keeps the pill inside the region — hugging
+        // its left edge for start-aligned bubbles and its right edge for
+        // end-aligned ones (`self-end`), and wrapping text at the pill width.
+        let laid_out = {
+            let region = ui.available_rect_before_wrap();
+            let min = Pos2::new(region.min.x + pad.x, region.min.y + pad.y);
+            let max = Pos2::new((region.max.x - pad.x).max(min.x), region.max.y);
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_max(min, max))
+                    .layout(egui::Layout::top_down(if end {
+                        Align::Max
+                    } else {
+                        Align::Min
+                    })),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    // `*:data-[slot=bubble-content]:text-primary-foreground`
+                    // etc.: the theme's global `override_text_color` is plain
+                    // `foreground`, so recolor this ui to the variant's text
+                    // token (covers both the built-in label and closure
+                    // content).
+                    ui.style_mut().visuals.override_text_color = Some(text_color);
+                    content(ui)
+                },
+            )
+        };
         let content_rect = laid_out.response.rect;
         let pill_rect = content_rect.expand2(pad);
 
         if ui.is_rect_visible(pill_rect) {
-            let (fill, text_color, border) = resolve_variant_colors(&p, dark, variant);
-            let _ = text_color;
             let mut shapes: Vec<Shape> = vec![Shape::Rect(RectShape::filled(
                 pill_rect,
                 egui::CornerRadius::same(radius.round() as u8),
@@ -660,6 +700,90 @@ mod tests {
         let (d_fill, ..) =
             resolve_variant_colors(&theme.palette, false, BubbleVariant::Destructive);
         assert!(d_fill.a() > 0 && d_fill.a() < 255);
+    }
+
+    #[test]
+    fn variant_text_contrasts_with_fill() {
+        // The P0 regression: the default pill must not paint `foreground`
+        // text on `bg-primary` (invisible in both modes). The pill recolors
+        // its content ui to the variant's text token instead.
+        for (mode, dark) in [(Mode::Light, false), (Mode::Dark, true)] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let theme = ShadcnTheme::of(&ctx);
+            for variant in [BubbleVariant::Default, BubbleVariant::Secondary] {
+                let (fill, text, _) = resolve_variant_colors(&theme.palette, dark, variant);
+                assert_ne!(
+                    fill, text,
+                    "{variant:?} text must contrast with its fill (dark={dark})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bubbles_hug_the_aligned_region_edge() {
+        // Start bubbles hug the region's left edge; end bubbles (own
+        // `.align(End)` or inherited from an end-aligned `Message`) hug the
+        // right edge — `self-end` on a `w-fit max-w-[80%]` flex item.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("bubble_align_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 700.0))),
+            );
+            let start_pill = Bubble::new().show(ui, |ui| {
+                BubbleContent::new("Hello").show(ui).rect
+            }).inner;
+            assert!(
+                (start_pill.left() - 0.0).abs() < 1.0,
+                "start pill should hug the left edge, got {start_pill:?}"
+            );
+            let end_pill = Bubble::new()
+                .align(BubbleAlign::End)
+                .show(ui, |ui| BubbleContent::new("Hello").show(ui).rect)
+                .inner;
+            assert!(
+                (end_pill.right() - 400.0).abs() < 1.0,
+                "end pill should hug the right edge, got {end_pill:?}"
+            );
+            // Inherited alignment: a plain bubble inside an end-aligned
+            // `Message` right-aligns too.
+            let (msg_pill, column_right) = crate::components::message::Message::new()
+                .align(crate::components::message::MessageAlign::End)
+                .show(ui, |ui| {
+                    let content = crate::components::message::MessageContent::new().show(ui, |ui| {
+                        Bubble::new().show(ui, |ui| BubbleContent::new("Hello").show(ui).rect)
+                    });
+                    (content.inner.inner, content.response.rect.right())
+                })
+                .inner;
+            assert!(
+                (msg_pill.right() - column_right).abs() < 1.0,
+                "bubble in an end-aligned message should hug the content column's right edge ({column_right}), got {msg_pill:?}"
+            );
+            // Explicit `.align(Start)` does not opt out of the message
+            // alignment (the source has no `self-start` counterpart).
+            let (forced_pill, forced_column_right) = crate::components::message::Message::new()
+                .align(crate::components::message::MessageAlign::End)
+                .show(ui, |ui| {
+                    let content = crate::components::message::MessageContent::new().show(ui, |ui| {
+                        Bubble::new()
+                            .align(BubbleAlign::Start)
+                            .show(ui, |ui| BubbleContent::new("Hello").show(ui).rect)
+                    });
+                    (content.inner.inner, content.response.rect.right())
+                })
+                .inner;
+            assert!(
+                (forced_pill.right() - forced_column_right).abs() < 1.0,
+                "start bubble in an end-aligned message should still self-end"
+            );
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
