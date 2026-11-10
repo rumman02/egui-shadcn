@@ -57,6 +57,7 @@
 //! [`RadioItem`]) is shared with the context-menu and menubar components,
 //! which reuse the level renderer and keyboard helpers from this module.
 
+use crate::components::direction;
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
 use crate::utils::animation::nova_overlay_progress;
@@ -1045,7 +1046,10 @@ fn render_rows(
                     } else {
                         shared.p.muted_foreground
                     };
-                    Icon::ChevronRight.paint(
+                    // RTL mirrors the sub-menu chevron (Radix
+                    // `dir="rtl"`: it then points left, into the
+                    // submenu that opens leftward).
+                    direction::mirrored_chevron(ui, Icon::ChevronRight, Icon::ChevronLeft).paint(
                         ui.painter(),
                         chev_rect,
                         chev_color,
@@ -1075,7 +1079,8 @@ fn render_rows(
                         sub_popup_id,
                         response.rect,
                         parent_layer,
-                        RectAlign::RIGHT_START,
+                        // RTL opens sub-menus to the left of the row.
+                        direction::popup_align(ui, RectAlign::RIGHT_START, RectAlign::LEFT_START),
                         4.0,
                         true,
                         true,
@@ -1327,6 +1332,22 @@ impl MenuAlign {
             MenuAlign::Start => RectAlign::BOTTOM_START,
             MenuAlign::Center => RectAlign::BOTTOM,
             MenuAlign::End => RectAlign::BOTTOM_END,
+        }
+    }
+
+    /// [`rect_align`](MenuAlign::rect_align) mirrored under the current
+    /// direction: inside an RTL [`DirectionProvider`](crate::components::direction::DirectionProvider)
+    /// scope `Start` hugs the trigger's right edge and `End` its left
+    /// (Radix flips inline popup alignment); `Center` is unchanged.
+    pub fn rect_align_in(self, ui: &Ui) -> RectAlign {
+        match self {
+            MenuAlign::Start => {
+                direction::popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END)
+            }
+            MenuAlign::Center => RectAlign::BOTTOM,
+            MenuAlign::End => {
+                direction::popup_align(ui, RectAlign::BOTTOM_END, RectAlign::BOTTOM_START)
+            }
         }
     }
 }
@@ -1821,7 +1842,7 @@ impl<'a> DropdownMenu<'a> {
                     popup_id,
                     trigger.rect,
                     trigger.layer_id,
-                    self.align.rect_align(),
+                    self.align.rect_align_in(ui),
                     self.side_offset.unwrap_or(DROPDOWN_SIDE_OFFSET),
                     false,
                     state.open,
@@ -2127,6 +2148,104 @@ mod tests {
         assert_eq!(MenuAlign::Start.rect_align(), RectAlign::BOTTOM_START);
         assert_eq!(MenuAlign::Center.rect_align(), RectAlign::BOTTOM);
         assert_eq!(MenuAlign::End.rect_align(), RectAlign::BOTTOM_END);
+    }
+
+    #[test]
+    fn align_mirrors_under_rtl() {
+        use crate::components::direction::DirectionProvider;
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("dropdown_rtl_align_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            assert_eq!(
+                MenuAlign::Start.rect_align_in(ui),
+                RectAlign::BOTTOM_START,
+                "LTR keeps Start at the trigger's left edge"
+            );
+            assert_eq!(MenuAlign::End.rect_align_in(ui), RectAlign::BOTTOM_END);
+            DirectionProvider::rtl().show(ui, |ui| {
+                assert_eq!(
+                    MenuAlign::Start.rect_align_in(ui),
+                    RectAlign::BOTTOM_END,
+                    "RTL Start hugs the trigger's right edge"
+                );
+                assert_eq!(MenuAlign::End.rect_align_in(ui), RectAlign::BOTTOM_START);
+                assert_eq!(
+                    MenuAlign::Center.rect_align_in(ui),
+                    RectAlign::BOTTOM,
+                    "Center is direction-neutral"
+                );
+            });
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn rtl_scope_mirrors_popup_alignment() {
+        let mut h = Harness::new();
+        let mut scope = Id::NULL;
+        let mut rect = Rect::ZERO;
+        // Capture the trigger rect and the RTL scope id: the provider's
+        // `with_layout` pushes a child scope, so the menu state (and the
+        // popup id) live one scope below the harness ui.
+        h.run(|ui| {
+            crate::components::direction::DirectionProvider::rtl().show(ui, |ui| {
+                scope = ui.scope_id();
+                rect = DropdownMenu::new("Open")
+                    .id_salt("rtl-start")
+                    .align(MenuAlign::Start)
+                    .show(ui, |m| m.item(MenuItem::new("Only item")))
+                    .trigger
+                    .rect;
+            });
+        });
+        let mut open = false;
+        h.click(rect.center(), egui::PointerButton::Primary, |ui| {
+            crate::components::direction::DirectionProvider::rtl().show(ui, |ui| {
+                open = DropdownMenu::new("Open")
+                    .id_salt("rtl-start")
+                    .align(MenuAlign::Start)
+                    .show(ui, |m| m.item(MenuItem::new("Only item")))
+                    .open;
+            });
+        });
+        assert!(open, "clicking the trigger opens the menu");
+        // Let the popup settle one frame (a popup's first pass is
+        // sizing-only).
+        h.run(|ui| {
+            crate::components::direction::DirectionProvider::rtl().show(ui, |ui| {
+                DropdownMenu::new("Open")
+                    .id_salt("rtl-start")
+                    .align(MenuAlign::Start)
+                    .show(ui, |m| m.item(MenuItem::new("Only item")));
+            });
+        });
+        let popup_id = scope.with("rtl-start").with("popup");
+        let popup_rect = h
+            .ctx
+            .read_response(popup_id)
+            .map(|r| r.rect)
+            .unwrap_or(Rect::NOTHING);
+        assert!(popup_rect != Rect::NOTHING, "popup must be on screen");
+        assert!(
+            (popup_rect.max.x - rect.max.x).abs() < 3.0,
+            "RTL Start aligns the popup's right edge with the trigger's \
+             (popup.max.x={}, trigger.max.x={})",
+            popup_rect.max.x,
+            rect.max.x
+        );
+        assert!(
+            popup_rect.min.x < rect.min.x,
+            "the popup extends leftward from the trigger (popup.min.x={}, \
+             trigger.min.x={})",
+            popup_rect.min.x,
+            rect.min.x
+        );
     }
 
     #[test]

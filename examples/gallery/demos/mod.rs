@@ -4430,4 +4430,19 @@ pub fn direction_demo(ui: &mut egui::Ui) {
         });
         ui.label("وإلى اليمين مرة أخرى");
     });
+
+    ui.add_space(16.0);
+    ui.label("RTL popups (dropdown-menu: Start hugs the right edge, sub-menus open left)");
+    ui.add_space(4.0);
+    DirectionProvider::rtl().show(ui, |ui| {
+        DropdownMenu::new("القائمة")
+            .align(MenuAlign::Start)
+            .show(ui, |m| {
+                m.item(MenuItem::new("الأول"));
+                m.item(MenuItem::new("الثاني"));
+                m.sub_menu("فرعي", |s| {
+                    s.item(MenuItem::new("داخلي"));
+                });
+            });
+    });
 }
