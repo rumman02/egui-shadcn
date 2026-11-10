@@ -2,10 +2,12 @@
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/sheet.tsx` (Radix Dialog on
 //! the side) with the nova recipe: `bg-popover text-popover-foreground
-//! shadow-lg text-sm`, `w-3/4 sm:max-w-sm` for the left/right sides (384 px),
-//! full-width auto-height for top/bottom, a single border on the inner edge,
-//! and the slide-in/out animation from the source
-//! (`data-[state=open]:duration-500`, `data-[state=closed]:duration-300`).
+//! shadow-lg text-sm flex flex-col gap-4`, `w-3/4 sm:max-w-sm` for the
+//! left/right sides (384 px), full-width auto-height for top/bottom, a single
+//! `border`-token edge on the inner side, and the slide-in/out animation from
+//! the source (`data-[state=open]:duration-500`,
+//! `data-[state=closed]:duration-300`) with the overlay fading separately at
+//! 150ms.
 //!
 //! Backdrop: `bg-black/10` (nova), fading with the panel; clicking it or
 //! pressing Escape dismisses the sheet; a ghost X sits at `top-3 right-3`.
@@ -40,10 +42,10 @@ use egui::{
 pub const SHEET_MAX_WIDTH: f32 = 384.0;
 /// Header/footer padding: `p-4`.
 const PAD: f32 = 16.0;
-/// nova ring: `ring-foreground/10` (used for the inner-edge border).
-const BORDER_ALPHA: f32 = 0.10;
 /// nova backdrop: `bg-black/10`.
 const BACKDROP_ALPHA: f32 = 0.10;
+/// nova overlay fade: `transition-opacity duration-150` (base-nova sheet).
+const OVERLAY_SECS: f32 = 0.15;
 /// Open duration: `data-[state=open]:duration-500`.
 const OPEN_SECS: f32 = 0.5;
 /// Close duration: `data-[state=closed]:duration-300`.
@@ -432,7 +434,14 @@ impl SheetContent {
             SheetSide::Bottom => (Align2::CENTER_BOTTOM, Vec2::new(0.0, slide)),
         };
 
-        let backdrop = color_alpha(Color32::from_black_alpha(255), BACKDROP_ALPHA * progress);
+        // nova overlay fades at its own 150ms (`duration-150`), while the
+        // panel slides 500/300ms.
+        let overlay_t = ctx.animate_value_with_time(
+            state_id.with("overlay"),
+            if open { 1.0 } else { 0.0 },
+            OVERLAY_SECS,
+        );
+        let backdrop = color_alpha(Color32::from_black_alpha(255), BACKDROP_ALPHA * overlay_t);
 
         let panel_frame = Frame::new()
             .fill(p.popover)
@@ -461,6 +470,8 @@ impl SheetContent {
                     ui.set_max_width(side_width);
                 }
                 ui.style_mut().visuals.override_text_color = Some(p.popover_foreground);
+                // nova `.cn-sheet-content`: `flex flex-col gap-4`.
+                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::LG;
                 content(ui);
             });
 
@@ -468,8 +479,9 @@ impl SheetContent {
             let panel = ui.min_rect();
             let painter = ui.painter();
 
-            // Single border on the inner edge (`border-l` for right, …).
-            let border = Stroke::new(1.0, color_alpha(p.foreground, BORDER_ALPHA));
+            // Single border on the inner edge (`border-l` for right, …); the
+            // color is the `border` token (nova keeps the base side borders).
+            let border = Stroke::new(1.0, p.border);
             match self.side {
                 SheetSide::Right => {
                     painter.line_segment([panel.left_top(), panel.left_bottom()], border);
@@ -485,11 +497,12 @@ impl SheetContent {
                 }
             }
 
-            // `absolute top-3 right-3` ghost X close button.
+            // `absolute top-3 right-3` nova ghost `size-7` (28px) icon button.
             if self.show_close_button {
+                const X_BOX: f32 = 28.0;
                 let x_rect = Rect::from_min_size(
-                    Pos2::new(panel.right() - 12.0 - 24.0, panel.top() + 12.0),
-                    Vec2::splat(24.0),
+                    Pos2::new(panel.right() - 12.0 - X_BOX, panel.top() + 12.0),
+                    Vec2::splat(X_BOX),
                 );
                 let x_id = state_id.with("sheet_close_x");
                 let x_resp = ui.interact(x_rect, x_id, Sense::click());
@@ -497,16 +510,18 @@ impl SheetContent {
                     WidgetInfo::labeled(egui::Role::Button, true, "Close".to_owned())
                 });
                 let fill = if x_resp.hovered() {
-                    p.secondary
+                    // `hover:bg-muted`
+                    p.muted
                 } else {
                     Color32::TRANSPARENT
                 };
                 let fg = if x_resp.hovered() {
-                    p.secondary_foreground
+                    // `hover:text-foreground`
+                    p.foreground
                 } else {
                     color_alpha(p.foreground, 0.7)
                 };
-                painter.rect_filled(x_rect, theme.radius.sm_u8(), fill);
+                painter.rect_filled(x_rect, theme.radius.md_u8(), fill);
                 let icon_rect = Rect::from_center_size(x_rect.center(), Vec2::splat(16.0));
                 Icon::X.paint(painter, icon_rect, fg, 16.0 / 24.0);
                 if x_resp.clicked() {
@@ -515,9 +530,11 @@ impl SheetContent {
             }
         });
 
-        // Cache the measured panel height for top/bottom slide math.
+        // Cache the measured panel height for top/bottom slide math, and the
+        // panel rect for the footer's bottom-anchored strip.
         let panel_h = modal_resp.response.rect.height();
         ctx.data_mut(|d| d.insert_temp(height_key, panel_h));
+        ctx.data_mut(|d| d.insert_temp(state_id.with("panel_rect"), modal_resp.response.rect));
 
         // Sheet is Dialog-based: Escape and backdrop clicks both dismiss.
         if modal_resp.should_close() && open {
@@ -623,9 +640,9 @@ impl SheetDescription {
     }
 }
 
-/// nova sheet footer: `mt-auto gap-2 p-4` — bottom-anchored in the panel for
-/// the left/right sides (full height), flowing after the content for
-/// top/bottom.
+/// nova sheet footer: `mt-auto flex flex-col gap-2 p-4` — a left-aligned
+/// column, bottom-anchored in the panel for the left/right sides (full
+/// height), flowing after the content for top/bottom.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SheetFooter {
     _private: (),
@@ -637,7 +654,12 @@ impl SheetFooter {
         Self { _private: () }
     }
 
-    /// Renders the footer, right-aligned.
+    /// Renders the footer: a left-aligned column with an 8 px row gap.
+    ///
+    /// For the full-height sides the strip is anchored flush to the panel
+    /// bottom (`mt-auto`) at an explicit rect, which keeps the layout
+    /// spacing-neutral: a trailing item gap after the push would otherwise
+    /// overshoot the panel bottom and grow the panel every frame.
     pub fn show<R>(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
         let side = current_scope(ui)
             .map(|id| read_state(ui.ctx(), id).side)
@@ -652,25 +674,48 @@ impl SheetFooter {
         let content_h = measure.min_rect().height();
 
         let full_height_panel = matches!(side, SheetSide::Left | SheetSide::Right);
+        let strip_h = content_h + PAD * 2.0;
+
+        // The strip's absolute rect: bottom-anchored for the full-height
+        // sides, flowing after the content for top/bottom.
+        let panel_rect = current_scope(ui)
+            .and_then(|id| {
+                ui.ctx()
+                    .data_mut(|d| d.get_temp::<Rect>(id.with("panel_rect")))
+            })
+            .unwrap_or(ui.max_rect());
+        let strip_rect = if full_height_panel {
+            Rect::from_min_max(
+                Pos2::new(panel_rect.left(), panel_rect.bottom() - strip_h),
+                Pos2::new(panel_rect.right(), panel_rect.bottom()),
+            )
+        } else {
+            Rect::from_min_size(
+                Pos2::new(flow_min.x, flow_min.y),
+                Vec2::new(flow_w, strip_h),
+            )
+        };
+
         if full_height_panel {
-            // Push the footer to the bottom of the panel (`mt-auto`).
-            let panel_bottom = ui.max_rect().bottom();
-            let footer_top = (panel_bottom - content_h - PAD * 2.0).max(flow_min.y);
-            if footer_top > flow_min.y {
-                ui.allocate_space(Vec2::new(flow_w, footer_top - flow_min.y));
+            // Push down to the strip (`mt-auto`).
+            let push_h = (strip_rect.top() - flow_min.y).max(0.0);
+            if push_h > 0.0 {
+                ui.allocate_space(Vec2::new(flow_w, push_h));
             }
+        } else {
+            // Reserve the strip's flow height before laying it out.
+            ui.allocate_space(Vec2::new(flow_w, strip_h));
         }
 
         let inner = Rect::from_min_size(
-            Pos2::new(ui.cursor().min.x + PAD, ui.cursor().min.y + PAD),
-            Vec2::new(flow_w - PAD * 2.0, content_h),
+            Pos2::new(strip_rect.left() + PAD, strip_rect.top() + PAD),
+            Vec2::new(strip_rect.width() - PAD * 2.0, content_h),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-        let real = child
-            .with_layout(egui::Layout::right_to_left(egui::Align::Center), content)
-            .inner;
-        ui.allocate_space(Vec2::new(flow_w, content_h + PAD * 2.0));
-        real
+        child.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::SM;
+        child
+            .with_layout(egui::Layout::top_down(egui::Align::LEFT), content)
+            .inner
     }
 }
 

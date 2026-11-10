@@ -40,7 +40,6 @@ pub fn sheet_demo(ui: &mut egui::Ui) {
                 SheetTitle::new("Edit profile").show(ui);
                 SheetDescription::new("Make changes to your profile.").show(ui);
             });
-            ui.add_space(4.0);
             ui.label("Name");
             let mut name = scratch(ui, "name");
             ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
