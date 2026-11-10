@@ -4,17 +4,24 @@
 //! pieces mirror the source's slots:
 //!
 //! - [`Field`] — a labeled control group (`vertical` / `horizontal` /
-//!   `responsive` orientation, `gap-3`); `invalid` tints the label and
-//!   title `text-destructive`, `disabled` dims them to 50%.
+//!   `responsive` orientation, `gap-3` base / `gap-2` nova); `invalid`
+//!   tints the label and title `text-destructive`, `disabled` dims them to
+//!   50%.
 //! - [`FieldLabel`] / [`FieldTitle`] — `text-sm font-medium` label styles.
+//!   [`FieldLabel::show_with_card`] renders the source's choice-card
+//!   composition: the label wraps a nested [`Field`], the card gains
+//!   `rounded-md border p-4` (base) / `rounded-lg border p-2.5` (nova), a
+//!   `bg-muted/50` hover fill, and a `bg-primary/5` fill with a
+//!   primary-tinted border while the wrapped control is checked.
 //! - [`FieldDescription`] — `text-sm text-muted-foreground` helper text.
 //! - [`FieldError`] — `text-sm text-destructive`; renders nothing when
 //!   empty, one message, or a bulleted list of messages.
 //! - [`FieldContent`] — stacks description/error under each other
-//!   (`gap-1.5`).
-//! - [`FieldGroup`] — stacks fields (`gap-7`), [`FieldSet`] — a bordered
-//!   form section (`gap-6`), [`FieldLegend`] — a section heading, and
-//!   [`FieldSeparator`] — a rule with optional centered text.
+//!   (`gap-1.5` base / `gap-0.5` nova).
+//! - [`FieldGroup`] — stacks fields (`gap-7` base / `gap-5` nova),
+//!   [`FieldSet`] — a form section (`gap-6` base / `gap-4` nova),
+//!   [`FieldLegend`] — a section heading (`mb-3` base / `mb-1.5` nova), and
+//!   [`FieldSeparator`] — a rule with optional centered text (`h-5`).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -26,9 +33,19 @@
 //!     Checkbox::new(&mut notifications).id_salt("notif").show(ui);
 //!     FieldError::new("Please choose at least one channel.").show(ui);
 //! });
+//!
+//! // Choice card: the label wraps a nested Field around a control.
+//! let mut plan = true;
+//! FieldLabel::new("")
+//!     .checked(Some(plan))
+//!     .show_with_card(ui, |ui| {
+//!         Field::new().orientation(FieldOrientation::Horizontal).show(ui, |ui| {
+//!             Checkbox::new(&mut plan).id_salt("plan").show(ui);
+//!         });
+//!     });
 //! ```
 
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{Color32, FontId, Id, Response, Sense, Ui, Vec2};
 
 /// Shared field state passed to children through the temp stack.
@@ -66,6 +83,101 @@ fn current_ctx(ui: &Ui) -> FieldCtx {
             invalid: false,
             disabled: false,
         })
+}
+
+/// Gap between the field's rows (`gap-3` base recipe, nova `gap-2`).
+pub(crate) fn field_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => crate::theme::tokens::spacing::SM,
+        _ => crate::theme::tokens::spacing::MD,
+    }
+}
+
+/// Gap inside a [`FieldContent`] column (`gap-1.5` base, nova `gap-0.5`).
+pub(crate) fn field_content_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => crate::theme::tokens::spacing::HALF,
+        _ => crate::theme::tokens::spacing::XS_HALF,
+    }
+}
+
+/// Gap between fields in a [`FieldGroup`] (`gap-7` base, nova `gap-5`).
+pub(crate) fn field_group_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => 20.0,
+        _ => crate::theme::tokens::spacing::X2L - crate::theme::tokens::spacing::XS,
+    }
+}
+
+/// Gap between fields in a [`FieldSet`] (`gap-6` base, nova `gap-4`).
+pub(crate) fn field_set_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => crate::theme::tokens::spacing::LG,
+        _ => crate::theme::tokens::spacing::XL,
+    }
+}
+
+/// Bottom spacing after a [`FieldLegend`] (`mb-3` base, nova `mb-1.5`).
+pub(crate) fn field_legend_mb(style: Style) -> f32 {
+    match style {
+        Style::Nova => crate::theme::tokens::spacing::XS_HALF,
+        _ => crate::theme::tokens::spacing::MD,
+    }
+}
+
+/// Padding around each nested field inside the [`FieldLabel`] choice card
+/// (`*:data-[slot=field]:p-4` base, nova `p-2.5`).
+pub(crate) fn field_label_card_padding(style: Style) -> f32 {
+    match style {
+        Style::Nova => crate::theme::tokens::spacing::SM_HALF,
+        _ => crate::theme::tokens::spacing::LG,
+    }
+}
+
+/// Corner radius of the [`FieldLabel`] choice card (`rounded-md` base,
+/// nova `rounded-lg`).
+pub(crate) fn field_label_card_radius(radius: &RadiusTokens, style: Style) -> u8 {
+    match style {
+        Style::Nova => radius.lg_u8(),
+        _ => radius.md_u8(),
+    }
+}
+
+/// Fill and border colors of the [`FieldLabel`] choice card (pure,
+/// testable): `has-data-[state=checked]:bg-primary/5 border-primary` base;
+/// nova softens the checked border to `border-primary/30` (dark `/20`),
+/// fills `bg-primary/10` in dark mode and adds a `bg-muted/50` hover fill
+/// while enabled.
+pub(crate) fn field_label_card_colors(
+    p: &Palette,
+    dark: bool,
+    style: Style,
+    checked: bool,
+    hovered: bool,
+    disabled: bool,
+) -> (Color32, Color32) {
+    let (mut fill, border) = if checked {
+        let fill = color_alpha(p.primary, if dark { 0.10 } else { 0.05 });
+        let border = match style {
+            // nova has-data-checked:border-primary/30 (dark /20)
+            Style::Nova => color_alpha(p.primary, if dark { 0.2 } else { 0.3 }),
+            // base has-data-[state=checked]:border-primary
+            _ => p.primary,
+        };
+        (fill, border)
+    } else {
+        let fill = if hovered && !disabled && style == Style::Nova {
+            color_alpha(p.muted, 0.5) // hover:bg-muted/50
+        } else {
+            Color32::TRANSPARENT
+        };
+        (fill, p.border)
+    };
+    if disabled {
+        // group-data-[disabled=true]/field:opacity-50
+        fill = color_alpha(fill, 0.5);
+    }
+    (fill, color_alpha(border, if disabled { 0.5 } else { 1.0 }))
 }
 
 /// The orientation preset of a [`Field`] (`fieldVariants.orientation`).
@@ -158,7 +270,7 @@ impl Field {
                 disabled: self.disabled,
             },
         );
-        let gap = crate::theme::tokens::spacing::MD; // gap-3
+        let gap = field_gap(ShadcnTheme::of_ui(ui).style); // gap-3 / nova gap-2
         let inner = match effective {
             FieldOrientation::Horizontal => ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
@@ -177,12 +289,17 @@ impl Field {
 /// `FieldLabel` — a `text-sm font-medium` label bound to the field state.
 ///
 /// Reads the enclosing [`Field`]: 50% opacity when the field is disabled,
-/// destructive color when it is invalid.
+/// destructive color when it is invalid. For the source's choice-card
+/// composition (the label wrapping a nested [`Field`], e.g. around a
+/// checkbox), use [`FieldLabel::show_with_card`].
 #[derive(Debug)]
 pub struct FieldLabel {
     text: String,
     for_id: Option<Id>,
     disabled: bool,
+    /// Checked state of the wrapped control for [`FieldLabel::show_with_card`]
+    /// (`has-data-[state=checked]`).
+    checked: Option<bool>,
     id_salt: Option<String>,
 }
 
@@ -193,6 +310,7 @@ impl FieldLabel {
             text: text.into(),
             for_id: None,
             disabled: false,
+            checked: None,
             id_salt: None,
         }
     }
@@ -206,6 +324,14 @@ impl FieldLabel {
     /// Forces the disabled look regardless of the enclosing field.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Sets the checked state of the wrapped control, driving the choice
+    /// card's `has-data-[state=checked]:bg-primary/5 border-primary` fill
+    /// (nova `border-primary/30`, dark `/10` fill and `/20` border).
+    pub fn checked(mut self, checked: Option<bool>) -> Self {
+        self.checked = checked;
         self
     }
 
@@ -263,6 +389,125 @@ impl FieldLabel {
             );
         }
         response
+    }
+
+    /// Renders the label as the source's choice-card composition: the label
+    /// wraps a nested [`Field`] (`has-[>[data-slot=field]]`), so the card
+    /// gets `rounded-md border` with `p-4` padding (base) or `rounded-lg
+    /// border` with `p-2.5` (nova), a nova-only `bg-muted/50` hover fill
+    /// while enabled, and — when [`FieldLabel::checked`] is `Some(true)` —
+    /// a `bg-primary/5` fill with a primary-tinted border. Under nova,
+    /// keyboard focus anywhere inside the card adds the 3pt `ring-ring/50`
+    /// halo and recolors the border to `ring`. Clicking the card focuses
+    /// [`FieldLabel::for_id`], like a `<label>` element.
+    ///
+    /// A non-empty label text renders above the wrapped field.
+    pub fn show_with_card<R>(
+        self,
+        ui: &mut Ui,
+        content: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        let theme = ShadcnTheme::of_ui(ui);
+        let p = theme.palette;
+        let dark = theme.mode.is_dark();
+        let style = theme.style;
+        let field_ctx = current_ctx(ui);
+        let disabled = self.disabled || field_ctx.disabled;
+        let label_color = field_label_color(&p, field_ctx.invalid, disabled);
+
+        // Card frame: `rounded-md` + `p-4` base; nova `rounded-lg` + `p-2.5`.
+        let radius = field_label_card_radius(&theme.radius, style);
+        let pad = field_label_card_padding(style);
+        let corner = egui::CornerRadius::same(radius);
+
+        // The fill and stroke must render BEHIND the content, but their
+        // colors depend on the content's final geometry (hover, focus).
+        // Reserve two shape slots now and swap in the real shapes after the
+        // content has been laid out.
+        let painter = ui.painter().clone();
+        let fill_idx = painter.add(egui::Shape::Noop);
+        let stroke_idx = painter.add(egui::Shape::Noop);
+
+        let frame = egui::Frame::new()
+            .inner_margin(egui::Margin::same(pad as i8))
+            .corner_radius(corner)
+            .show(ui, |ui| {
+                if !self.text.is_empty() {
+                    let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+                    let galley = painter.layout_no_wrap(self.text.clone(), font, Color32::WHITE);
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), galley.size().y),
+                        Sense::hover(),
+                    );
+                    painter.galley(rect.min, galley, label_color);
+                    // `gap-2` between the label text and the wrapped field.
+                    ui.add_space(crate::theme::tokens::spacing::SM);
+                }
+                content(ui)
+            });
+        let outer = frame.response.rect;
+
+        // Keyboard focus inside the card (`has-[:focus-visible]`).
+        let focus_inside = ui
+            .ctx()
+            .memory(|mem| mem.focused())
+            .and_then(|id| ui.ctx().read_response(id))
+            .is_some_and(|r| r.has_focus() && outer.contains(r.rect.center()));
+
+        let hovered = !disabled && ui.rect_contains_pointer(outer);
+        let (fill, border) = field_label_card_colors(
+            &p,
+            dark,
+            style,
+            self.checked.unwrap_or(false),
+            hovered,
+            disabled,
+        );
+
+        if ui.is_rect_visible(outer) {
+            // Swap the reserved slots so fill/stroke paint behind content.
+            painter.set(
+                fill_idx,
+                egui::Shape::Rect(egui::epaint::RectShape::filled(outer, corner, fill)),
+            );
+            painter.set(
+                stroke_idx,
+                egui::Shape::Rect(egui::epaint::RectShape::stroke(
+                    outer,
+                    corner,
+                    egui::Stroke::new(1.0, border),
+                    egui::epaint::StrokeKind::Inside,
+                )),
+            );
+
+            // Nova `has-[:focus-visible]:border-ring ring-3 ring-ring/50`.
+            if focus_inside && !disabled && style == Style::Nova {
+                crate::utils::focus::paint_ring(
+                    &painter,
+                    outer,
+                    color_alpha(p.ring, 0.5),
+                    3.0,
+                    radius as f32,
+                );
+            }
+        }
+
+        // `<label>` semantics: clicking anywhere in the card focuses the
+        // bound control (the click is read from pointer state so no
+        // click-sense interact steals hits from the nested widgets).
+        if let Some(target) = self.for_id {
+            if !disabled {
+                let clicked = ui.input(|i| {
+                    i.pointer.any_click()
+                        && i.pointer.press_origin().is_some_and(|o| outer.contains(o))
+                });
+                if clicked {
+                    ui.memory_mut(|mem| mem.request_focus(target));
+                }
+            }
+        }
+
+        frame
     }
 }
 
@@ -324,8 +569,9 @@ impl FieldTitle {
             .map(|_| crate::theme::tokens::spacing::SM)
             .unwrap_or(0.0);
         let width = icon_size * self.icon.is_some() as i32 as f32 + gap + text_w;
+        // `leading-snug` = 1.375 line height.
         let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(width, font.size * 1.3), Sense::hover());
+            ui.allocate_exact_size(Vec2::new(width, font.size * 1.375), Sense::hover());
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
@@ -377,14 +623,10 @@ impl FieldDescription {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let ctx = current_ctx(ui);
         // `text-muted-foreground` regardless of the invalid flag (it sets an
-        // explicit color, unlike the label which inherits).
-        let color = if ctx.disabled {
-            color_alpha(p.muted_foreground, 0.5)
-        } else {
-            p.muted_foreground
-        };
+        // explicit color, unlike the label which inherits); the source has no
+        // disabled rule on descriptions, so no fade.
+        let color = p.muted_foreground;
         let max_width = ui.available_width();
 
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
@@ -533,8 +775,10 @@ impl FieldContent {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        // `gap-1.5` base; nova `gap-0.5`.
+        let gap = field_content_gap(ShadcnTheme::of_ui(ui).style);
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::XS_HALF;
+            ui.spacing_mut().item_spacing.y = gap;
             content(ui)
         })
     }
@@ -564,9 +808,10 @@ impl FieldGroup {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        // `gap-7` base; nova `gap-5`.
+        let gap = field_group_gap(ShadcnTheme::of_ui(ui).style);
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y =
-                crate::theme::tokens::spacing::X2L - crate::theme::tokens::spacing::XS;
+            ui.spacing_mut().item_spacing.y = gap;
             content(ui)
         })
     }
@@ -596,8 +841,10 @@ impl FieldSet {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        // `gap-6` base; nova `gap-4`.
+        let gap = field_set_gap(ShadcnTheme::of_ui(ui).style);
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::XL;
+            ui.spacing_mut().item_spacing.y = gap;
             content(ui)
         })
     }
@@ -660,8 +907,8 @@ impl FieldLegend {
         if ui.is_rect_visible(rect) {
             ui.painter().galley(rect.min, galley, p.foreground);
         }
-        // `mb-3`
-        ui.add_space(crate::theme::tokens::spacing::MD);
+        // `mb-3` base; nova `mb-1.5`.
+        ui.add_space(field_legend_mb(theme.style));
         response
     }
 }
@@ -698,7 +945,7 @@ impl FieldSeparator {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let height = crate::theme::tokens::spacing::LG; // h-4 visual row
+        let height = 20.0; // `h-5` visual row
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         if ui.is_rect_visible(rect) {
@@ -752,6 +999,62 @@ mod tests {
 
     fn palette(mode: Mode) -> Palette {
         Preset::default().build(mode).palette
+    }
+
+    #[test]
+    fn nova_gaps_match_the_nova_recipe() {
+        // Field gap-3 -> gap-2; content gap-1.5 -> gap-0.5; group gap-7 -> gap-5;
+        // set gap-6 -> gap-4; legend mb-3 -> mb-1.5; card p-4 -> p-2.5.
+        assert_eq!(field_gap(Style::Vega), 12.0);
+        assert_eq!(field_gap(Style::Nova), 8.0);
+        assert_eq!(field_content_gap(Style::Vega), 6.0);
+        assert_eq!(field_content_gap(Style::Nova), 2.0);
+        assert_eq!(field_group_gap(Style::Vega), 28.0);
+        assert_eq!(field_group_gap(Style::Nova), 20.0);
+        assert_eq!(field_set_gap(Style::Vega), 24.0);
+        assert_eq!(field_set_gap(Style::Nova), 16.0);
+        assert_eq!(field_legend_mb(Style::Vega), 12.0);
+        assert_eq!(field_legend_mb(Style::Nova), 6.0);
+        assert_eq!(field_label_card_padding(Style::Vega), 16.0);
+        assert_eq!(field_label_card_padding(Style::Nova), 10.0);
+        let radius = crate::theme::RadiusTokens::new(10.0);
+        assert_eq!(field_label_card_radius(&radius, Style::Vega), 8); // rounded-md
+        assert_eq!(field_label_card_radius(&radius, Style::Nova), 10); // rounded-lg
+    }
+
+    #[test]
+    fn card_colors_follow_checked_and_style() {
+        let p = palette(Mode::Light);
+        // Base resting: transparent fill, 1px border.
+        let (fill, border) = field_label_card_colors(&p, false, Style::Vega, false, false, false);
+        assert_eq!(fill, Color32::TRANSPARENT);
+        assert_eq!(border, p.border);
+        // Base checked: bg-primary/5 with a full `border-primary`.
+        let (fill, border) = field_label_card_colors(&p, false, Style::Vega, true, false, false);
+        assert_eq!(fill, color_alpha(p.primary, 0.05));
+        assert_eq!(border, p.primary);
+        // Nova checked: bg-primary/5 with `border-primary/30`.
+        let (fill, border) = field_label_card_colors(&p, false, Style::Nova, true, false, false);
+        assert_eq!(fill, color_alpha(p.primary, 0.05));
+        assert_eq!(border, color_alpha(p.primary, 0.3));
+        // Nova dark checked: bg-primary/10 with `border-primary/20`.
+        let dark_p = palette(Mode::Dark);
+        let (fill, border) =
+            field_label_card_colors(&dark_p, true, Style::Nova, true, false, false);
+        assert_eq!(fill, color_alpha(dark_p.primary, 0.10));
+        assert_eq!(border, color_alpha(dark_p.primary, 0.2));
+        // Nova hover (enabled, unchecked): bg-muted/50; base has no hover fill.
+        let (fill, _) = field_label_card_colors(&p, false, Style::Nova, false, true, false);
+        assert_eq!(fill, color_alpha(p.muted, 0.5));
+        let (fill, _) = field_label_card_colors(&p, false, Style::Vega, false, true, false);
+        assert_eq!(fill, Color32::TRANSPARENT);
+        // Hover does not apply while disabled; disabled fades fill+border.
+        let (fill, border) = field_label_card_colors(&p, false, Style::Nova, false, true, true);
+        assert_eq!(fill, Color32::TRANSPARENT);
+        assert_eq!(border, color_alpha(p.border, 0.5));
+        // Disabled checked card fades the checked fill too.
+        let (fill, _) = field_label_card_colors(&p, false, Style::Nova, true, false, true);
+        assert_eq!(fill, color_alpha(color_alpha(p.primary, 0.05), 0.5));
     }
 
     #[test]
@@ -828,6 +1131,31 @@ mod tests {
     }
 
     #[test]
+    fn field_label_card_renders_around_content() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let checked = true;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("field_card_test"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(400.0, 400.0),
+                )),
+            );
+            FieldLabel::new("")
+                .checked(Some(checked))
+                .show_with_card(ui, |ui| {
+                    Field::new().show(ui, |ui| {
+                        ui.label("wrapped");
+                    });
+                });
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
     fn builders_keep_fields() {
         let f = Field::new()
             .orientation(FieldOrientation::Horizontal)
@@ -842,9 +1170,11 @@ mod tests {
         let l = FieldLabel::new("Email")
             .for_id(Id::unique("email"))
             .disabled(true)
+            .checked(Some(true))
             .id_salt("l");
         assert_eq!(l.for_id, Some(Id::unique("email")));
         assert!(l.disabled);
+        assert_eq!(l.checked, Some(true));
 
         let t = FieldTitle::new("Name")
             .icon(crate::icons::Icon::User)

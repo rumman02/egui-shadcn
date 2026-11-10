@@ -1347,6 +1347,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     let notif_store = egui::Id::unique("field_demo_notif");
     let email_store = egui::Id::unique("field_demo_email");
     let name_store = egui::Id::unique("field_demo_name");
+    let plan_store = egui::Id::unique("field_demo_plan");
     let mut notifications: bool = ui
         .ctx()
         .data_mut(|d| d.get_temp(notif_store).unwrap_or(false));
@@ -1356,6 +1357,9 @@ pub fn field_demo(ui: &mut egui::Ui) {
     let mut name: String = ui
         .ctx()
         .data_mut(|d| d.get_temp(name_store).unwrap_or_default());
+    let mut plan: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(plan_store).unwrap_or(true));
 
     FieldSet::new().show(ui, |ui| {
         FieldLegend::new("Notification settings").show(ui);
@@ -1420,10 +1424,62 @@ pub fn field_demo(ui: &mut egui::Ui) {
         FieldDescription::new("Manage your account details.").show(ui);
     });
 
+    ui.add_space(12.0);
+    ui.label("Responsive orientation (horizontal when the container is wide)");
+    ui.add_space(4.0);
+    Field::new()
+        .orientation(FieldOrientation::Responsive)
+        .show(ui, |ui| {
+            FieldLabel::new("Compact density").show(ui);
+            Switch::new(&mut notifications)
+                .id_salt("field_demo_switch_responsive")
+                .show(ui);
+        });
+
+    ui.add_space(12.0);
+    ui.label("Choice card (FieldLabel wrapping a nested Field)");
+    ui.add_space(4.0);
+    FieldLabel::new("")
+        .checked(Some(plan))
+        .show_with_card(ui, |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| {
+                    Checkbox::new(&mut plan).id_salt("field_demo_plan").show(ui);
+                    FieldContent::new().show(ui, |ui| {
+                        FieldTitle::new("Enable notifications").show(ui);
+                        FieldDescription::new(
+                            "You can enable or disable notifications at any time.",
+                        )
+                        .show(ui);
+                    });
+                });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Legend variants");
+    ui.add_space(4.0);
+    FieldSet::new().show(ui, |ui| {
+        FieldLegend::new("Section").show(ui);
+        FieldLegend::new("Sub-section")
+            .variant(FieldLegendVariant::Label)
+            .show(ui);
+        FieldDescription::new("The label variant renders at the smaller text size.").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled field (label dims to 50%)");
+    ui.add_space(4.0);
+    Field::new().disabled(true).show(ui, |ui| {
+        FieldLabel::new("Workspace URL").show(ui);
+        Input::new(&mut email).disabled(true).show(ui);
+    });
+
     ui.ctx().data_mut(|d| {
         d.insert_temp(notif_store, notifications);
         d.insert_temp(email_store, email);
         d.insert_temp(name_store, name);
+        d.insert_temp(plan_store, plan);
     });
 }
 
