@@ -762,9 +762,9 @@ pub fn textarea_demo(ui: &mut egui::Ui) {
 
 pub fn checkbox_demo(ui: &mut egui::Ui) {
     let store = egui::Id::unique("checkbox_demo_values");
-    let mut values: [bool; 5] = ui.ctx().data_mut(|d| {
+    let mut values: [bool; 6] = ui.ctx().data_mut(|d| {
         d.get_temp(store)
-            .unwrap_or([true, false, false, false, false])
+            .unwrap_or([true, false, false, false, false, false])
     });
 
     ui.label("Default");
@@ -806,7 +806,7 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
     ui.add_space(12.0);
     ui.label("Invalid");
     ui.add_space(4.0);
-    Checkbox::new(&mut values[4]).invalid(true).show(ui);
+    Checkbox::new(&mut values[5]).invalid(true).show(ui);
 
     ui.add_space(12.0);
     ui.label("Keyboard: Tab to a checkbox, press Space or Enter to toggle.");

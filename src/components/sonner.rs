@@ -44,6 +44,9 @@ pub const SONNER_DEFAULT_DURATION_SECS: f32 = 4.0;
 pub const SONNER_GAP: f32 = 14.0;
 /// Out-animation duration.
 const LEAVE_SECS: f32 = 0.2;
+/// In-animation duration (sonner's enter rise is slightly longer than the
+/// leave fade).
+const ENTER_SECS: f32 = 0.3;
 
 /// The toast variants the source configures icons for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -53,10 +56,9 @@ pub enum ToastVariant {
     Default,
     /// `CircleCheckIcon`.
     Success,
-    /// `OctagonXIcon` (rendered as the lucide circle-x in this port's icon
-    /// set).
+    /// `OctagonXIcon`.
     Error,
-    /// `TriangleAlertIcon` (rendered as the lucide circle-alert).
+    /// `TriangleAlertIcon`.
     Warning,
     /// `InfoIcon`.
     Info,
@@ -69,8 +71,8 @@ impl ToastVariant {
         match self {
             ToastVariant::Default => None,
             ToastVariant::Success => Some(Icon::CircleCheck),
-            ToastVariant::Error => Some(Icon::CircleX),
-            ToastVariant::Warning => Some(Icon::CircleAlert),
+            ToastVariant::Error => Some(Icon::OctagonX),
+            ToastVariant::Warning => Some(Icon::TriangleAlert),
             ToastVariant::Info => Some(Icon::Info),
             ToastVariant::Loading => Some(Icon::LoaderCircle),
         }
@@ -230,16 +232,22 @@ pub fn toast_id(entry_id: u64) -> Id {
 fn render_toast(ui: &mut Ui, entry: &ToastEntry, now: f64, theme: &ShadcnTheme, dark: bool) {
     let p = theme.palette;
     let anim_id = Id::unique(("shadcn_sonner_anim", entry.id));
-    // Slide up + fade in on enter; fade out on leave.
+    // Slide up + fade in on enter (0.3s); fade out on leave (0.2s).
     let progress = ui.ctx().animate_value_with_time(
         anim_id,
         if entry.leaving { 0.0 } else { 1.0 },
-        LEAVE_SECS,
+        if entry.leaving {
+            LEAVE_SECS
+        } else {
+            ENTER_SECS
+        },
     );
 
     let width = ui.available_width();
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-    let desc_font = FontId::proportional(crate::theme::tokens::type_scale::XS);
+    // Sonner's default description is ~13px at ~0.9 opacity; the port renders
+    // it at the 14px `text-sm` scale with 0.85 alpha.
+    let desc_font = FontId::proportional(crate::theme::tokens::type_scale::SM);
 
     // Measure the text block (layout color is irrelevant for sizing).
     let title_galley =
@@ -261,7 +269,9 @@ fn render_toast(ui: &mut Ui, entry: &ToastEntry, now: f64, theme: &ShadcnTheme, 
         let slide = (1.0 - progress) * 8.0;
         let rect = space.translate(Vec2::new(0.0, slide));
         painter.set_opacity(progress);
-        let corner = CornerRadius::same(theme.radius.lg_u8());
+        // Nova styles the toast with `rounded-2xl` (`.cn-toast`,
+        // style-nova.css) — 1.8 × the base radius.
+        let corner = CornerRadius::same(theme.radius.x2l_u8());
 
         // Shadow behind the card, then `--normal-bg` fill and border.
         let sh = crate::utils::shadow::shadow_lg(dark);
@@ -318,7 +328,7 @@ fn render_toast(ui: &mut Ui, entry: &ToastEntry, now: f64, theme: &ShadcnTheme, 
         painter.galley(Pos2::new(text_x, text_y), title, p.popover_foreground);
         text_y += title_h + 4.0;
         if let Some(desc) = &entry.toast.description {
-            let muted = color_alpha(p.popover_foreground, 0.7);
+            let muted = color_alpha(p.popover_foreground, 0.85);
             let galley = ui.painter().layout(
                 desc.clone(),
                 desc_font,
@@ -429,13 +439,24 @@ mod tests {
 
     #[test]
     fn variant_icons_match_source_config() {
-        // sonner.tsx maps success/info/warning/error/loading to lucide icons.
+        // sonner.tsx maps success/info/warning/error/loading to lucide icons:
+        // CircleCheck, Info, TriangleAlert, OctagonX, Loader2.
         assert_eq!(ToastVariant::Success.icon(), Some(Icon::CircleCheck));
         assert_eq!(ToastVariant::Info.icon(), Some(Icon::Info));
-        assert_eq!(ToastVariant::Warning.icon(), Some(Icon::CircleAlert));
-        assert_eq!(ToastVariant::Error.icon(), Some(Icon::CircleX));
+        assert_eq!(ToastVariant::Warning.icon(), Some(Icon::TriangleAlert));
+        assert_eq!(ToastVariant::Error.icon(), Some(Icon::OctagonX));
         assert_eq!(ToastVariant::Loading.icon(), Some(Icon::LoaderCircle));
         assert_eq!(ToastVariant::Default.icon(), None);
+    }
+
+    #[test]
+    fn toast_radius_is_nova_rounded_2xl() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let theme = ShadcnTheme::of(&ctx);
+        // Nova `.cn-toast` = `rounded-2xl` (18px at base radius 10).
+        assert_eq!(theme.radius.x2l_u8(), 18);
+        assert_ne!(theme.radius.lg_u8(), theme.radius.x2l_u8());
     }
 
     #[test]
