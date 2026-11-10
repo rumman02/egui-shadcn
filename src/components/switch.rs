@@ -5,8 +5,10 @@
 //! w-6`) rounded-full track, `data-[state=checked]:bg-primary
 //! data-[state=unchecked]:bg-input dark:data-[state=unchecked]:bg-input/80`,
 //! a `size-4` (sm: `size-3`) thumb that translates
-//! `translate-x-[calc(100%-2px)]` when checked, and the shared focus ring
-//! and `disabled:opacity-50` states.
+//! `translate-x-[calc(100%-2px)]` when checked, the `border
+//! border-transparent` track (`focus-visible:border-ring`,
+//! `aria-invalid:border-destructive`), the shared focus ring and
+//! `disabled:opacity-50` states.
 //!
 //! The thumb animates with `ctx.animate_value_with_time` (the source uses a
 //! CSS `transition-transform`).
@@ -113,6 +115,18 @@ pub(crate) fn resolve_switch_colors(
     SwitchColors { track, thumb, ring }
 }
 
+/// Resolves the track stroke: `aria-invalid:border-destructive` wins, then
+/// `focus-visible:border-ring`; the resting track is `border border-transparent`.
+pub(crate) fn track_stroke(p: &Palette, invalid: bool, focused: bool) -> Stroke {
+    if invalid {
+        Stroke::new(1.0, p.destructive)
+    } else if focused {
+        Stroke::new(1.0, p.ring)
+    } else {
+        Stroke::NONE
+    }
+}
+
 /// A shadcn switch. See the [module docs](self) for an example.
 #[derive(Debug)]
 pub struct Switch<'a> {
@@ -196,11 +210,7 @@ impl<'a> Switch<'a> {
         if ui.is_rect_visible(rect) {
             let checked = *self.checked;
             let mut c = resolve_switch_colors(&p, dark, checked, self.invalid);
-            let mut stroke = if self.invalid {
-                Stroke::new(1.0, p.destructive)
-            } else {
-                Stroke::NONE
-            };
+            let mut stroke = track_stroke(&p, self.invalid, response.has_focus() && !self.disabled);
             if self.disabled {
                 // `disabled:opacity-50`
                 c.track = color_alpha(c.track, 0.5);
@@ -314,6 +324,19 @@ mod tests {
         let dark = palette(Mode::Dark);
         let c = resolve_switch_colors(&dark, true, false, true);
         assert_eq!(c.ring, color_alpha(dark.destructive, 0.4));
+    }
+
+    #[test]
+    fn track_stroke_follows_focus_and_invalid() {
+        // `border border-transparent` at rest; `focus-visible:border-ring`
+        // when focused; `aria-invalid:border-destructive` wins.
+        let p = palette(Mode::Light);
+        assert_eq!(track_stroke(&p, false, false), Stroke::NONE);
+        assert_eq!(track_stroke(&p, false, true).color, p.ring);
+        assert_eq!(track_stroke(&p, false, true).width, 1.0);
+        assert_eq!(track_stroke(&p, true, false).color, p.destructive);
+        // invalid beats focus
+        assert_eq!(track_stroke(&p, true, true).color, p.destructive);
     }
 
     #[test]
