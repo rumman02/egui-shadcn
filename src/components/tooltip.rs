@@ -1,11 +1,12 @@
-//! shadcn `tooltip.tsx` — a small delayed hover popup.
+//! shadcn `tooltip.tsx` — a small hover popup.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/tooltip.tsx` (Radix Tooltip):
 //! `rounded-md bg-foreground px-3 py-1.5 text-xs text-background` (nova keeps
 //! the base colors), `sideOffset = 0`, and the distinctive rotated-square
-//! arrow. Opens after a small hover delay (default 300 ms, like typical
-//! Radix `delayDuration` setups), stays open while the pointer stays on the
-//! trigger or content, and closes on leave and on Escape.
+//! arrow. Opens immediately by default (`delayDuration = 0`, like the
+//! source's provider); a hover delay can be set via [`TooltipProvider`] or
+//! [`Tooltip::delay_ms`]. Stays open while the pointer stays on the trigger
+//! or content, and closes on leave and on Escape.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -28,11 +29,15 @@ use egui::{
     Rect, Response, Sense, Shape, Stroke, Ui,
 };
 
-/// Default hover delay before the tooltip opens.
-pub const TOOLTIP_DEFAULT_DELAY_MS: u64 = 300;
-/// nova padding: `px-3 py-1.5`.
+/// Default hover delay before the tooltip opens: the source's provider uses
+/// `delayDuration = 0`, so tooltips open immediately.
+pub const TOOLTIP_DEFAULT_DELAY_MS: u64 = 0;
+/// Padding: `px-3 py-1.5`.
 const PADDING_X: i8 = 12;
 const PADDING_Y: i8 = 6;
+/// nova `has-data-[slot=kbd]:pr-1.5` — right padding when the content
+/// contains a [`crate::components::kbd::Kbd`].
+const KBD_PADDING_RIGHT: i8 = 6;
 
 // ---------------------------------------------------------------------------
 // Scope plumbing (mirrors popover.rs)
@@ -337,6 +342,7 @@ impl<'a> TooltipTrigger<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TooltipContent {
     side: TooltipSide,
+    with_kbd: bool,
 }
 
 impl TooltipContent {
@@ -348,6 +354,13 @@ impl TooltipContent {
     /// Sets the side of the trigger the content appears on.
     pub fn side(mut self, side: TooltipSide) -> Self {
         self.side = side;
+        self
+    }
+
+    /// Tightens the right padding to 6px for content that ends with a
+    /// [`crate::components::kbd::Kbd`] (nova `has-data-[slot=kbd]:pr-1.5`).
+    pub fn with_kbd(mut self, with_kbd: bool) -> Self {
+        self.with_kbd = with_kbd;
         self
     }
 
@@ -382,7 +395,17 @@ impl TooltipContent {
             .fill(p.foreground)
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(theme.radius.md_u8()))
-            .inner_margin(Margin::symmetric(PADDING_X, PADDING_Y))
+            .inner_margin(Margin {
+                left: PADDING_X,
+                // nova `has-data-[slot=kbd]:pr-1.5`
+                right: if self.with_kbd {
+                    KBD_PADDING_RIGHT
+                } else {
+                    PADDING_X
+                },
+                top: PADDING_Y,
+                bottom: PADDING_Y,
+            })
             .outer_margin(Margin {
                 // Reserve room for the arrow tip outside the painted frame.
                 left: 0,
@@ -416,17 +439,27 @@ impl TooltipContent {
             ui.set_opacity(progress.alpha);
             frame.show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = Some(p.background);
+                // `text-xs`: the content body, buttons and small text all run
+                // at 12px (the theme's default is 14px).
+                let xs = egui::FontId::proportional(crate::theme::tokens::type_scale::XS);
+                for style in [
+                    egui::TextStyle::Body,
+                    egui::TextStyle::Button,
+                    egui::TextStyle::Small,
+                ] {
+                    ui.style_mut().text_styles.insert(style, xs.clone());
+                }
                 content(ui);
             });
             // Draw the rotated-square arrow in the reserved outer margin,
-            // centered on the frame's painted edge like the source's
+            // tucked 2px into the frame's painted edge like the source's
             // `translate-y-[calc(-50%-2px)] rotate-45`.
             let outer = ui.min_rect();
             let painted = match self.side {
-                TooltipSide::Bottom => Pos2::new(outer.center().x, outer.bottom() - arrow),
-                TooltipSide::Top => Pos2::new(outer.center().x, outer.top() + arrow),
-                TooltipSide::Left => Pos2::new(outer.left() + arrow, outer.center().y),
-                TooltipSide::Right => Pos2::new(outer.right() - arrow, outer.center().y),
+                TooltipSide::Bottom => Pos2::new(outer.center().x, outer.bottom() - arrow - 2.0),
+                TooltipSide::Top => Pos2::new(outer.center().x, outer.top() + arrow + 2.0),
+                TooltipSide::Left => Pos2::new(outer.left() + arrow + 2.0, outer.center().y),
+                TooltipSide::Right => Pos2::new(outer.right() - arrow - 2.0, outer.center().y),
             };
             paint_arrow(ui.painter(), painted, self.side, arrow, p.foreground);
         });
@@ -529,9 +562,11 @@ mod tests {
 
     #[test]
     fn delay_constants_match_source() {
-        assert_eq!(TOOLTIP_DEFAULT_DELAY_MS, 300);
+        // Source `TooltipProvider({ delayDuration = 0 })`.
+        assert_eq!(TOOLTIP_DEFAULT_DELAY_MS, 0);
         assert_eq!(PADDING_X, 12); // px-3
         assert_eq!(PADDING_Y, 6); // py-1.5
+        assert_eq!(KBD_PADDING_RIGHT, 6); // has-data-[slot=kbd]:pr-1.5
     }
 
     #[test]
@@ -565,7 +600,7 @@ mod tests {
 
         // Layout frame so the trigger registers.
         h.run(|ui| {
-            Tooltip::new().id_salt("t1").show(ui, |ui| {
+            Tooltip::new().delay_ms(300).id_salt("t1").show(ui, |ui| {
                 trigger_rect = TooltipTrigger::new("Hover").show(ui).rect;
                 TooltipContent::new().show(ui, |ui| {
                     ui.label("Tooltip text");
@@ -578,7 +613,7 @@ mod tests {
         // should cross it.
         for _ in 0..8 {
             h.hover(trigger_rect.center(), |ui| {
-                Tooltip::new().id_salt("t1").show(ui, |ui| {
+                Tooltip::new().delay_ms(300).id_salt("t1").show(ui, |ui| {
                     TooltipTrigger::new("Hover").show(ui);
                     TooltipContent::new().show(ui, |ui| {
                         ui.label("Tooltip text");
@@ -591,7 +626,7 @@ mod tests {
         // Leave the trigger (and the popup): the tooltip closes.
         for _ in 0..2 {
             h.hover(Pos2::new(550.0, 550.0), |ui| {
-                Tooltip::new().id_salt("t1").show(ui, |ui| {
+                Tooltip::new().delay_ms(300).id_salt("t1").show(ui, |ui| {
                     TooltipTrigger::new("Hover").show(ui);
                     TooltipContent::new().show(ui, |ui| {
                         ui.label("Tooltip text");
@@ -603,12 +638,42 @@ mod tests {
     }
 
     #[test]
+    fn default_delay_zero_opens_immediately() {
+        let mut h = Harness::new();
+        let mut trigger_rect = Rect::ZERO;
+
+        h.run(|ui| {
+            Tooltip::new().id_salt("t0").show(ui, |ui| {
+                trigger_rect = TooltipTrigger::new("Hover").show(ui).rect;
+                TooltipContent::new().show(ui, |ui| {
+                    ui.label("Tooltip text");
+                });
+            });
+        });
+
+        // The source provider defaults to `delayDuration = 0`: the very first
+        // hover frame opens the tooltip.
+        h.hover(trigger_rect.center(), |ui| {
+            Tooltip::new().id_salt("t0").show(ui, |ui| {
+                TooltipTrigger::new("Hover").show(ui);
+                TooltipContent::new().show(ui, |ui| {
+                    ui.label("Tooltip text");
+                });
+            });
+        });
+        assert!(
+            h.state("t0").open,
+            "the default delay of 0 must open immediately"
+        );
+    }
+
+    #[test]
     fn short_hover_below_delay_stays_closed() {
         let mut h = Harness::new();
         let mut trigger_rect = Rect::ZERO;
 
         h.run(|ui| {
-            Tooltip::new().id_salt("t2").show(ui, |ui| {
+            Tooltip::new().delay_ms(300).id_salt("t2").show(ui, |ui| {
                 trigger_rect = TooltipTrigger::new("Hover").show(ui).rect;
                 TooltipContent::new().show(ui, |ui| {
                     ui.label("Tooltip text");
@@ -618,7 +683,7 @@ mod tests {
 
         // One hover frame = 50ms < 300ms delay, then leave.
         h.hover(trigger_rect.center(), |ui| {
-            Tooltip::new().id_salt("t2").show(ui, |ui| {
+            Tooltip::new().delay_ms(300).id_salt("t2").show(ui, |ui| {
                 TooltipTrigger::new("Hover").show(ui);
                 TooltipContent::new().show(ui, |ui| {
                     ui.label("Tooltip text");
@@ -626,7 +691,7 @@ mod tests {
             });
         });
         h.hover(Pos2::new(550.0, 550.0), |ui| {
-            Tooltip::new().id_salt("t2").show(ui, |ui| {
+            Tooltip::new().delay_ms(300).id_salt("t2").show(ui, |ui| {
                 TooltipTrigger::new("Hover").show(ui);
                 TooltipContent::new().show(ui, |ui| {
                     ui.label("Tooltip text");
@@ -656,8 +721,9 @@ mod tests {
         let t = Tooltip::new().delay_ms(500).id_salt("x");
         assert_eq!(t.delay_ms, Some(500));
         assert_eq!(t.id_salt.as_deref(), Some("x"));
-        let c = TooltipContent::new().side(TooltipSide::Top);
+        let c = TooltipContent::new().side(TooltipSide::Top).with_kbd(true);
         assert_eq!(c.side, TooltipSide::Top);
+        assert!(c.with_kbd);
         let tr = TooltipTrigger::new("hi").disabled(true).id_salt("t");
         assert!(tr.disabled);
     }

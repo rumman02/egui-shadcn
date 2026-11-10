@@ -1,4 +1,4 @@
-//! Tooltip demo: simple, sides, delay and rich content.
+//! Tooltip demo: simple, sides, kbd content, immediate and delayed.
 
 use egui_shadcn_ui::prelude::*;
 
@@ -77,13 +77,26 @@ pub fn tooltip_demo(ui: &mut egui::Ui) {
                 .show(ui)
         })
         .show(ui);
-        TooltipContent::new().show(ui, |ui| {
+        TooltipContent::new().with_kbd(true).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Save changes");
                 Kbd::new("⌘S").show(ui);
             });
         });
     });
+
+    ui.add_space(16.0);
+    ui.heading("Immediate (delayDuration = 0)");
+    ui.add_space(4.0);
+    Tooltip::new()
+        .delay_ms(0)
+        .id_salt("demo_immediate")
+        .show(ui, |ui| {
+            TooltipTrigger::widget(|ui| Button::new("Opens right away").show(ui)).show(ui);
+            TooltipContent::new().show(ui, |ui| {
+                ui.label("No hover delay, like the source's provider default.");
+            });
+        });
 
     ui.add_space(16.0);
     ui.heading("Slow delay (800ms)");
