@@ -45,6 +45,8 @@ pub enum Icon {
     CircleAlert,
     CircleCheck,
     CircleX,
+    TriangleAlert,
+    OctagonX,
     Info,
     LoaderCircle,
     Calendar,
@@ -113,6 +115,46 @@ impl Icon {
             ],
             Icon::CircleX => vec![
                 El::Circle([12.0, 12.0], 10.0),
+                El::Line([15.0, 9.0], [9.0, 15.0]),
+                El::Line([9.0, 9.0], [15.0, 15.0]),
+            ],
+            // lucide triangle-alert: rounded triangle + exclamation.
+            // The corner arcs of `m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3`
+            // are sampled into the outline polyline below.
+            Icon::TriangleAlert => vec![
+                El::PolyClosed(&[
+                    [21.73, 18.0],
+                    [13.73, 4.0],
+                    [12.99, 3.26],
+                    [11.99, 2.99],
+                    [10.99, 3.26],
+                    [10.25, 4.0],
+                    [2.25, 18.0],
+                    [1.98, 19.0],
+                    [2.25, 20.0],
+                    [2.98, 20.73],
+                    [4.0, 21.0],
+                    [20.0, 21.0],
+                    [21.01, 20.73],
+                    [21.74, 20.0],
+                    [22.01, 19.0],
+                    [21.73, 18.0],
+                ]),
+                El::Line([12.0, 9.0], [12.0, 13.0]),
+                El::Dot([12.0, 17.0], 1.0),
+            ],
+            // lucide octagon-x: `M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z` + x.
+            Icon::OctagonX => vec![
+                El::PolyClosed(&[
+                    [7.86, 2.0],
+                    [16.14, 2.0],
+                    [22.0, 7.86],
+                    [22.0, 16.14],
+                    [16.14, 22.0],
+                    [7.86, 22.0],
+                    [2.0, 16.14],
+                    [2.0, 7.86],
+                ]),
                 El::Line([15.0, 9.0], [9.0, 15.0]),
                 El::Line([9.0, 9.0], [15.0, 15.0]),
             ],
@@ -413,7 +455,7 @@ fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 42] = [
+    const ALL: [Icon; 44] = [
         Icon::Check,
         Icon::ChevronDown,
         Icon::ChevronUp,
@@ -427,6 +469,8 @@ mod tests {
         Icon::CircleAlert,
         Icon::CircleCheck,
         Icon::CircleX,
+        Icon::TriangleAlert,
+        Icon::OctagonX,
         Icon::Info,
         Icon::LoaderCircle,
         Icon::Calendar,
