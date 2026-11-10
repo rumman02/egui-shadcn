@@ -29,7 +29,7 @@
 //! });
 //! ```
 
-use egui::{Align, Id, Layout, Ui, Vec2};
+use egui::{Align, Id, Layout, Pos2, Ui, Vec2};
 
 /// Horizontal alignment of the message row, mirroring the source `align`
 /// prop (`start` = avatar first on the left; `end` = reversed row, avatar on
@@ -169,9 +169,15 @@ impl Message {
 
 /// `MessageAvatar` — the bottom-aligned `min-w-8` avatar slot. Hosts an
 /// [`Avatar`](crate::components::avatar::Avatar) (or any 32px-ish widget).
+///
+/// The source raises the avatar 32px above the row bottom when the message
+/// contains a footer (`group-has-data-[slot=message-footer]/message:
+/// -translate-y-8`). Immediate-mode layout can't retroactively detect the
+/// sibling, so callers opt in with [`MessageAvatar::raised`].
 #[derive(Clone, Debug, Default)]
 pub struct MessageAvatar {
     size: f32,
+    raised: bool,
     id_salt: Option<String>,
 }
 
@@ -180,6 +186,7 @@ impl MessageAvatar {
     pub fn new() -> Self {
         Self {
             size: crate::theme::tokens::spacing::CONTROL_SM,
+            raised: false,
             id_salt: None,
         }
     }
@@ -187,6 +194,13 @@ impl MessageAvatar {
     /// Overrides the slot side length.
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Raises the avatar 32px above the row bottom (`-translate-y-8`).
+    /// Pass `raised(true)` when a [`MessageFooter`] follows the bubbles.
+    pub fn raised(mut self, raised: bool) -> Self {
+        self.raised = raised;
         self
     }
 
@@ -204,15 +218,27 @@ impl MessageAvatar {
     ) -> egui::InnerResponse<R> {
         // `shrink-0 self-end justify-center overflow-hidden rounded-full
         // bg-muted` — the child (usually an Avatar) fills the square slot.
-        ui.allocate_ui_with_layout(
-            Vec2::splat(self.size),
-            Layout::left_to_right(Align::Center),
-            |ui| {
-                ui.set_min_size(Vec2::splat(self.size));
-                ui.set_max_size(Vec2::splat(self.size));
-                content(ui)
-            },
-        )
+        // Raised slots grow 32px taller with the avatar at the top, so a
+        // bottom-aligned row parks the avatar 32px above the row bottom.
+        let slot = if self.raised {
+            Vec2::new(self.size, self.size + 32.0)
+        } else {
+            Vec2::splat(self.size)
+        };
+        let theme = crate::theme::ShadcnTheme::of_ui(ui);
+        ui.allocate_ui_with_layout(slot, Layout::left_to_right(Align::Min), |ui| {
+            ui.set_min_size(Vec2::new(self.size, slot.y));
+            ui.set_max_size(Vec2::new(self.size, slot.y));
+            // `bg-muted rounded-full` backdrop — shows whenever the child is
+            // smaller than the 32px slot (the Avatar paints over it).
+            let center = Pos2::new(
+                ui.cursor().min.x + self.size * 0.5,
+                ui.cursor().min.y + self.size * 0.5,
+            );
+            ui.painter()
+                .circle_filled(center, self.size * 0.5, theme.palette.muted);
+            content(ui)
+        })
     }
 }
 
@@ -295,7 +321,9 @@ impl MessageHeader {
 
     /// Renders the header row.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
-        show_message_row_text(ui, &self.text, self.flush)
+        // The source header has no `justify-end` — it stays left-aligned even
+        // in end-aligned messages (only the footer flips).
+        show_message_row_text(ui, &self.text, self.flush, false)
     }
 }
 
@@ -332,25 +360,33 @@ impl MessageFooter {
 
     /// Renders the footer row.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
-        show_message_row_text(ui, &self.text, self.flush)
+        show_message_row_text(ui, &self.text, self.flush, true)
     }
 }
 
-/// Shared painter for [`MessageHeader`] / [`MessageFooter`].
-fn show_message_row_text(ui: &mut Ui, text: &str, flush: bool) -> egui::Response {
+/// Shared painter for [`MessageHeader`] / [`MessageFooter`]. `justify_on_end`
+/// mirrors the footer's `group-data-[align=end]/message:justify-end` (the
+/// header never right-aligns).
+fn show_message_row_text(
+    ui: &mut Ui,
+    text: &str,
+    flush: bool,
+    justify_on_end: bool,
+) -> egui::Response {
     let theme = crate::theme::ShadcnTheme::of_ui(ui);
     let p = theme.palette;
     let align = scope::current(ui).map(|s| s.align).unwrap_or_default();
-    // `justify-end` for end-aligned messages (footer), left otherwise.
-    let layout = match align {
-        MessageAlign::Start => Layout::left_to_right(Align::Min),
-        MessageAlign::End => Layout::right_to_left(Align::Min),
+    // `justify-end` for end-aligned messages (footer only), left otherwise.
+    let layout = match (align, justify_on_end) {
+        (MessageAlign::End, true) => Layout::right_to_left(Align::Min),
+        _ => Layout::left_to_right(Align::Min),
     };
     ui.with_layout(layout, |ui| {
         ui.add_space(if flush { 0.0 } else { 12.0 }); // px-3
         ui.label(
             egui::RichText::new(text)
                 .size(crate::theme::tokens::type_scale::XS)
+                .strong() // `font-medium` (no medium font is configured)
                 .color(p.muted_foreground),
         );
     })
@@ -378,6 +414,35 @@ mod tests {
     fn avatar_slot_is_32px() {
         assert_eq!(MessageAvatar::new().size, 32.0);
         assert_eq!(MessageAvatar::new().size(40.0).size, 40.0);
+        assert!(!MessageAvatar::new().raised);
+        assert!(MessageAvatar::new().raised(true).raised);
+    }
+
+    #[test]
+    fn raised_avatar_parks_32px_above_the_row_bottom() {
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("message_raised_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 700.0))),
+            );
+            let avatar_rect = Message::new()
+                .align(MessageAlign::End)
+                .show(ui, |ui| {
+                    let avatar = MessageAvatar::new().raised(true).show(ui, |ui| {
+                        Avatar::new().fallback("ME").show(ui);
+                    });
+                    avatar.response.rect
+                })
+                .inner;
+            // The slot is 64px tall (32px avatar + the 32px raise) with the
+            // avatar square at its top.
+            assert!((avatar_rect.height() - 64.0).abs() < 1.0, "{avatar_rect:?}");
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
@@ -406,10 +471,13 @@ mod tests {
                         });
                     });
                     Message::new().align(MessageAlign::End).show(ui, |ui| {
-                        MessageAvatar::new().show(ui, |ui| {
+                        MessageAvatar::new().raised(true).show(ui, |ui| {
                             Avatar::new().fallback("ME").show(ui);
                         });
                         MessageContent::new().show(ui, |ui| {
+                            // Header stays left-aligned in end-aligned
+                            // messages; only the footer right-aligns.
+                            MessageHeader::new("Me").show(ui);
                             Bubble::new().show(ui, |ui| {
                                 BubbleContent::new("Deploying to prod real quick.").show(ui);
                             });

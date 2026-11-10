@@ -4191,10 +4191,14 @@ pub fn message_demo(ui: &mut egui::Ui) {
             });
         });
         Message::new().align(MessageAlign::End).show(ui, |ui| {
-            MessageAvatar::new().show(ui, |ui| {
-                Avatar::new().fallback("ME").show(ui);
-            });
+            MessageAvatar::new()
+                .raised(true) // footer below → -translate-y-8
+                .show(ui, |ui| {
+                    Avatar::new().fallback("ME").show(ui);
+                });
             MessageContent::new().show(ui, |ui| {
+                // Header stays left-aligned in end-aligned messages.
+                MessageHeader::new("Me").show(ui);
                 Bubble::new().show(ui, |ui| {
                     BubbleContent::new("Deploying to prod real quick.").show(ui);
                 });
@@ -4231,6 +4235,10 @@ pub fn message_demo(ui: &mut egui::Ui) {
             });
         });
     });
+    ui.add_space(8.0);
+    MessageHeader::new("flush header (group-has-ghost:px-0)")
+        .flush(true)
+        .show(ui);
 }
 pub fn message_scroller_demo(ui: &mut egui::Ui) {
     ui.label("Auto-follow chat viewport (scroll up to see the jump button)");
