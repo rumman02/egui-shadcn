@@ -1,15 +1,17 @@
 //! shadcn `select.tsx` — a fully keyboard-navigable single-value select.
 //!
-//! Ported from `apps/v4/registry/new-york-v4/ui/select.tsx` (Radix Select):
-//! an `h-9 rounded-md border border-input bg-transparent px-3 text-sm
-//! shadow-xs` trigger (`data-[size=sm]:h-8`) with a `size-4 opacity-50`
-//! chevron-down, `data-[placeholder]:text-muted-foreground`,
-//! `dark:bg-input/30 dark:hover:bg-input/50`, the shared focus/invalid and
-//! `disabled:opacity-50` styles, and a `min-w-[8rem] rounded-md border
-//! bg-popover p-1 shadow-md` content popup whose items follow
-//! `rounded-sm py-1.5 pr-8 pl-2 text-sm focus:bg-accent
-//! focus:text-accent-foreground data-[disabled]:opacity-50` with the check
-//! indicator at `right-2`. Labels are `px-2 py-1.5 text-xs
+//! Ported from `apps/v4/registry/new-york-v4/ui/select.tsx` (Radix Select)
+//! with the nova recipe (`style-nova.css .cn-select-*`): an `h-8 rounded-lg
+//! border border-input bg-transparent pl-2.5 pr-2 text-sm shadow-xs`
+//! trigger (`data-[size=sm]:h-7` with `rounded-[min(var(--radius-md),10px)]`)
+//! with a full-opacity `size-4 text-muted-foreground` chevron-down,
+//! `data-[placeholder]:text-muted-foreground`,
+//! `dark:bg-input/30 dark:hover:bg-input/50` and
+//! `dark:aria-invalid:border-destructive/50`, and a `min-w-36 rounded-lg
+//! ring-1 ring-foreground/10 shadow-md bg-popover p-1` content popup whose
+//! items follow `rounded-md py-1 pr-8 pl-1.5 text-sm focus:bg-accent
+//! focus:text-accent-foreground data-[disabled]:opacity-50` (28 px rows)
+//! with the check indicator at `right-2`. Labels are `px-1.5 py-1 text-xs
 //! text-muted-foreground`, separators are `-mx-1 my-1 h-px bg-border`.
 //!
 //! The value is controlled through `&mut Option<String>` or `&mut String`;
@@ -19,7 +21,14 @@
 //! Radix-style keyboard behavior: the trigger opens on click, Enter, Space
 //! or ArrowUp/Down while focused; ArrowUp/Down move the highlight (skipping
 //! disabled options, wrapping), Home/End jump, Enter/Space select and close,
-//! Escape dismisses. Opening highlights the current selection.
+//! Tab and Escape dismiss, and typing performs the Radix typeahead —
+//! jumping the highlight to matching options while open and selecting them
+//! directly on the focused trigger while closed. Opening highlights the
+//! current selection.
+//!
+//! Known gaps vs the source (no egui equivalent yet): the
+//! `SelectScrollUp/DownButton` hover auto-repeat rows (the list relies on
+//! the scroll area) and Radix's `position="item-aligned"` popup alignment.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -46,9 +55,10 @@
 //! Select::uncontrolled().id_salt("solo").option("A").show_seeded(ui);
 //! ```
 
+use crate::components::dropdown_menu::{TypeaheadState, MENU_TYPEAHEAD_TIMEOUT_SECS};
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
+use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
 use egui::emath::RectAlign;
 use egui::{
@@ -60,22 +70,37 @@ use egui::{
 // Geometry constants
 // ---------------------------------------------------------------------------
 
-/// Content min width: `min-w-[8rem]` (128 px).
-pub const SELECT_MIN_WIDTH: f32 = 128.0;
+/// Content min width: nova `min-w-36` (144 px).
+pub const SELECT_MIN_WIDTH: f32 = 144.0;
+/// Trigger height: nova `data-[size=default]:h-8` (32 px).
+pub const SELECT_TRIGGER_HEIGHT_DEFAULT: f32 = 32.0;
+/// Small trigger height: nova `data-[size=sm]:h-7` (28 px).
+pub const SELECT_TRIGGER_HEIGHT_SM: f32 = 28.0;
+/// Trigger text padding: nova `pl-2.5` (10 px).
+const TRIGGER_PAD_X: f32 = 10.0;
+/// Trigger right padding: nova `pr-2` (8 px).
+const TRIGGER_PAD_RIGHT: f32 = 8.0;
+/// Gap between the value and the chevron: nova `gap-1.5` (6 px).
+const TRIGGER_ICON_GAP: f32 = 6.0;
 /// Content padding: `p-1` (4 px).
 const CONTENT_PADDING: f32 = 4.0;
-/// Item row height: `py-1.5` + one `text-sm` line.
-const ITEM_HEIGHT: f32 = 32.0;
-/// Item horizontal padding: `pl-2` (8 px).
-const ITEM_PAD_X: f32 = 8.0;
+/// Item row height: nova `py-1` + one `text-sm` line (28 px).
+const ITEM_HEIGHT: f32 = 28.0;
+/// Item horizontal padding: nova `pl-1.5` (6 px).
+const ITEM_PAD_X: f32 = 6.0;
 /// Check/chevron icon size: `size-4` (16 px).
 const ICON_SIZE: f32 = 16.0;
-/// Label row height: `py-1.5` + one `text-xs` line.
-const LABEL_HEIGHT: f32 = 24.0;
+/// Label row height: nova `py-1` + one `text-xs` line (20 px).
+const LABEL_HEIGHT: f32 = 20.0;
 /// Separator total height: `my-1` top and bottom + 1 px line.
 const SEPARATOR_HEIGHT: f32 = 9.0;
-/// Popup max viewport height (scrolls beyond this).
+/// Popup max viewport height (clamped further to the screen space around
+/// the trigger; the source clamps to
+/// `--radix-select-content-available-height`).
 const MAX_CONTENT_HEIGHT: f32 = 300.0;
+/// Margin kept between the popup and the window edge when deriving the
+/// available height.
+const AVAILABLE_SLACK: f32 = 16.0;
 
 // ---------------------------------------------------------------------------
 // Items and entries
@@ -273,6 +298,51 @@ pub(crate) fn action_index_of_value(entries: &[SelectEntry], value: &str) -> Opt
     None
 }
 
+/// First actionable item whose label starts with `query` (case-insensitive),
+/// searching from action index `start` (exclusive) and wrapping once — the
+/// Radix select typeahead match. Disabled items are skipped.
+pub(crate) fn typeahead_action_index(
+    entries: &[SelectEntry],
+    start: usize,
+    query: &str,
+) -> Option<usize> {
+    let count = count_actionable(entries);
+    if count == 0 || query.is_empty() {
+        return None;
+    }
+    let q = query.to_lowercase();
+    for offset in 0..count {
+        let idx = (start + offset) % count;
+        if let Some(entry_i) = item_index_at(entries, idx) {
+            if let Some(SelectEntry::Item(item)) = entries.get(entry_i) {
+                if !item.disabled && item.label.to_lowercase().starts_with(&q) {
+                    return Some(idx);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Collects the printable characters typed this frame (Radix `useTypeahead`
+/// feeds from raw text events; a focused text edit elsewhere suppresses it —
+/// unlike the menus, the select itself holds egui focus while closed, so a
+/// plain `egui_wants_keyboard_input` check would swallow every keystroke).
+pub(crate) fn typeahead_chars(ctx: &Context) -> Vec<char> {
+    if ctx.text_edit_focused() {
+        return Vec::new();
+    }
+    let mut chars = Vec::new();
+    ctx.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Text(text) = event {
+                chars.extend(text.chars().filter(|c| !c.is_control()));
+            }
+        }
+    });
+    chars
+}
+
 // ---------------------------------------------------------------------------
 // Trigger colors (pure, unit-tested)
 // ---------------------------------------------------------------------------
@@ -288,10 +358,11 @@ pub(crate) struct TriggerColors {
     pub chevron: Color32,
 }
 
-/// Mirrors the trigger recipe: `border-input bg-transparent px-3 text-sm`,
-/// `dark:bg-input/30 dark:hover:bg-input/50`, the focus/invalid ring styles,
-/// `data-[placeholder]:text-muted-foreground` and the chevron
-/// `text-muted-foreground opacity-50` (via `color_alpha`).
+/// Mirrors the nova trigger recipe: `border-input bg-transparent pl-2.5
+/// pr-2 text-sm`, `dark:bg-input/30 dark:hover:bg-input/50`,
+/// `dark:aria-invalid:border-destructive/50`, the focus/invalid ring styles,
+/// `data-[placeholder]:text-muted-foreground` and the full-opacity
+/// `text-muted-foreground` chevron (`opacity-50` only when disabled).
 pub(crate) fn resolve_trigger_colors(
     p: &Palette,
     dark: bool,
@@ -311,7 +382,11 @@ pub(crate) fn resolve_trigger_colors(
         Color32::TRANSPARENT
     };
     let stroke_color = if invalid {
-        p.destructive
+        if dark {
+            color_alpha(p.destructive, 0.5)
+        } else {
+            p.destructive
+        }
     } else if focused {
         p.ring
     } else {
@@ -332,7 +407,11 @@ pub(crate) fn resolve_trigger_colors(
         stroke: Stroke::new(1.0, stroke_color),
         ring,
         text,
-        chevron: color_alpha(p.muted_foreground, 0.5),
+        chevron: if disabled {
+            color_alpha(p.muted_foreground, 0.5)
+        } else {
+            p.muted_foreground
+        },
     }
 }
 
@@ -343,10 +422,10 @@ pub(crate) fn resolve_trigger_colors(
 /// Trigger size (`data-size`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectSize {
-    /// `data-[size=default]:h-9` (36 px).
+    /// `data-[size=default]:h-8` (32 px).
     #[default]
     Default,
-    /// `data-[size=sm]:h-8` (32 px).
+    /// `data-[size=sm]:h-7` (28 px).
     Sm,
 }
 
@@ -354,8 +433,8 @@ impl SelectSize {
     /// Trigger height in points.
     pub fn height(self) -> f32 {
         match self {
-            SelectSize::Default => crate::theme::tokens::spacing::CONTROL,
-            SelectSize::Sm => crate::theme::tokens::spacing::CONTROL_SM,
+            SelectSize::Default => SELECT_TRIGGER_HEIGHT_DEFAULT,
+            SelectSize::Sm => SELECT_TRIGGER_HEIGHT_SM,
         }
     }
 }
@@ -364,11 +443,13 @@ impl SelectSize {
 // State
 // ---------------------------------------------------------------------------
 
-/// Per-instance popup state (open flag + trigger geometry).
+/// Per-instance popup state (open flag + trigger geometry + typeahead).
 #[derive(Clone, Debug, Default)]
 struct SelectState {
     open: bool,
     trigger: Option<TriggerInfo>,
+    /// Radix-style typeahead buffer (printable-char search).
+    typeahead: TypeaheadState,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -590,7 +671,7 @@ impl<'a> Select<'a> {
             None => stored.clone(),
         };
 
-        // Trigger geometry: `w-fit` fits the widest label, min 8rem.
+        // Trigger geometry: `w-fit` fits the widest label, min `min-w-36`.
         let height = self.size.height();
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let widest = entries
@@ -616,9 +697,10 @@ impl<'a> Select<'a> {
                     })
                     .unwrap_or(0.0),
             );
-        let width = self
-            .width
-            .unwrap_or_else(|| (widest + 12.0 + 16.0 + 8.0 + 12.0).max(SELECT_MIN_WIDTH));
+        let width = self.width.unwrap_or_else(|| {
+            (widest + TRIGGER_PAD_X + TRIGGER_ICON_GAP + ICON_SIZE + TRIGGER_PAD_RIGHT)
+                .max(SELECT_MIN_WIDTH)
+        });
 
         let sense = if self.disabled {
             Sense::hover()
@@ -639,7 +721,7 @@ impl<'a> Select<'a> {
                 self.disabled,
                 value_before.is_some(),
             );
-            let radius = theme.radius.md_u8();
+            let radius = theme.radius.lg_u8();
             let corner = CornerRadius::same(radius);
             let painter = ui.painter();
 
@@ -661,30 +743,22 @@ impl<'a> Select<'a> {
             }
             painter.rect_stroke(rect, corner, c.stroke, egui::epaint::StrokeKind::Inside);
 
-            // Label: `px-3 text-sm` (gap-2 to the chevron).
+            // Label: `pl-2.5 text-sm` (nova `gap-1.5` to the chevron).
             let label = value_before
                 .clone()
                 .unwrap_or_else(|| self.placeholder.clone().unwrap_or_default());
-            let text_pos = Pos2::new(
-                rect.min.x + crate::theme::tokens::spacing::MD,
-                rect.center().y,
-            );
+            let text_pos = Pos2::new(rect.min.x + TRIGGER_PAD_X, rect.center().y);
             painter.text(text_pos, Align2::LEFT_CENTER, label, font, c.text);
 
-            // Chevron: `size-4 opacity-50` at the right edge.
+            // Chevron: `size-4 text-muted-foreground` at `pr-2`.
             let chev_rect = Rect::from_center_size(
                 Pos2::new(
-                    rect.max.x - crate::theme::tokens::spacing::MD - ICON_SIZE * 0.5,
+                    rect.max.x - TRIGGER_PAD_RIGHT - ICON_SIZE * 0.5,
                     rect.center().y,
                 ),
                 Vec2::splat(ICON_SIZE),
             );
-            let chev_color = if self.disabled {
-                color_alpha(c.chevron, 0.5)
-            } else {
-                c.chevron
-            };
-            Icon::ChevronDown.paint(painter, chev_rect, chev_color, 2.0 * ICON_SIZE / 24.0);
+            Icon::ChevronDown.paint(painter, chev_rect, c.chevron, 2.0 * ICON_SIZE / 24.0);
 
             // `focus-visible:ring-[3px] focus-visible:ring-ring/50`
             if response.has_focus() && !self.disabled {
@@ -726,6 +800,52 @@ impl<'a> Select<'a> {
             });
         }
 
+        // Radix typeahead: printable characters jump to matching options
+        // while the popup is open, and select them directly on the focused
+        // trigger while it is closed (the trigger value updates live). If
+        // the buffered prefix matches nothing, the buffer restarts from the
+        // last typed character.
+        let mut typeahead_selected: Option<String> = None;
+        let chars = typeahead_chars(&ctx);
+        if !chars.is_empty() && !self.disabled {
+            let now = ctx.input(|i| i.time);
+            for ch in chars {
+                if state
+                    .typeahead
+                    .at
+                    .is_some_and(|t| now - t > MENU_TYPEAHEAD_TIMEOUT_SECS)
+                {
+                    state.typeahead.buffer.clear();
+                }
+                state.typeahead.buffer.push(ch);
+                state.typeahead.at = Some(now);
+                let mut query = state.typeahead.buffer.clone();
+                let start = if state.open && open_at_start {
+                    highlight.map_or(0, |i| i + 1)
+                } else {
+                    0
+                };
+                let mut found = typeahead_action_index(&entries, start, &query);
+                if found.is_none() && query.chars().count() > 1 {
+                    state.typeahead.buffer.clear();
+                    state.typeahead.buffer.push(ch);
+                    query = state.typeahead.buffer.clone();
+                    found = typeahead_action_index(&entries, 0, &query);
+                }
+                if let Some(action) = found {
+                    if state.open && open_at_start {
+                        highlight = Some(action);
+                    } else if !state.open && response.has_focus() {
+                        if let Some(item_i) = item_index_at(&entries, action) {
+                            if let Some(SelectEntry::Item(item)) = entries.get(item_i) {
+                                typeahead_selected = Some(item.value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Popup (kept up during the close fade like the source's
         // `data-[state=closed]:animate-out`).
         let mut activated: Option<String> = None;
@@ -734,7 +854,9 @@ impl<'a> Select<'a> {
         let was_open_last_frame = ctx.read_response(popup_id).is_some();
         if state.open || was_open_last_frame {
             if let Some(trigger) = state.trigger {
-                let progress = overlay_progress(&ctx, popup_id.with("anim"), state.open);
+                // Nova `.cn-select-content` runs its in/out animation at
+                // `duration-100`.
+                let progress = nova_overlay_progress(&ctx, popup_id.with("anim"), state.open);
                 if state.open || progress.alpha > 0.002 {
                     render_popup(
                         &ctx,
@@ -759,7 +881,7 @@ impl<'a> Select<'a> {
         // Keyboard behavior while the popup is already open (the frame it
         // opened, Radix only highlights).
         if state.open && open_at_start {
-            let (down, up, home, end, enter, space) = ctx.input(|i| {
+            let (down, up, home, end, enter, space, tab) = ctx.input(|i| {
                 (
                     i.key_pressed(Key::ArrowDown),
                     i.key_pressed(Key::ArrowUp),
@@ -767,6 +889,7 @@ impl<'a> Select<'a> {
                     i.key_pressed(Key::End),
                     i.key_pressed(Key::Enter),
                     i.key_pressed(Key::Space),
+                    i.key_pressed(Key::Tab),
                 )
             });
             if down {
@@ -782,10 +905,11 @@ impl<'a> Select<'a> {
             }
             let modal_open = ctx.memory(|m| m.top_modal_layer().is_some());
             let esc = !modal_open && ctx.input(|i| i.key_pressed(Key::Escape));
-            if esc {
+            // Radix closes the popup on Tab as well.
+            if esc || tab {
                 state.open = false;
             }
-            if (enter || space) && !esc {
+            if (enter || space) && !esc && !tab {
                 if let Some(action) = highlight {
                     if let Some(item_i) = item_index_at(&entries, action) {
                         if let Some(SelectEntry::Item(item)) = entries.get(item_i) {
@@ -821,6 +945,12 @@ impl<'a> Select<'a> {
             changed = true;
             state.open = false;
         }
+        // Closed-trigger typeahead selects directly (Radix updates the value
+        // live on the trigger).
+        if let Some(value) = typeahead_selected.take() {
+            value_after = Some(value);
+            changed = true;
+        }
         if changed {
             let mut binding = binding;
             if let Some(b) = binding.as_mut() {
@@ -844,8 +974,9 @@ impl<'a> Select<'a> {
     }
 }
 
-/// Renders the options popup (a `min-w-[8rem] rounded-md border bg-popover
-/// p-1 shadow-md` list inside an [`egui::Popup`]).
+/// Renders the options popup (a `min-w-36 rounded-lg ring-1
+/// ring-foreground/10 shadow-md bg-popover p-1` list inside an
+/// [`egui::Popup`]).
 #[allow(clippy::too_many_arguments)]
 fn render_popup(
     ctx: &Context,
@@ -867,9 +998,21 @@ fn render_popup(
     let frame = egui::Frame::new()
         .fill(p.popover)
         .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
-        .corner_radius(CornerRadius::same(theme.radius.md_u8()))
+        .corner_radius(CornerRadius::same(theme.radius.lg_u8()))
         .inner_margin(Margin::same(CONTENT_PADDING as i8))
         .shadow(shadow::shadow_md(dark));
+
+    // `translate-y-1` on the popper content: the effective gap is the
+    // default side offset plus 4 px.
+    let gap = 8.0 + (1.0 - alpha) * 8.0;
+
+    // Clamp the list to the screen space around the trigger (the source
+    // clamps to `--radix-select-content-available-height`).
+    let screen_h = ctx.content_rect().height();
+    let below = screen_h - anchor.max.y - gap - AVAILABLE_SLACK;
+    let above = anchor.min.y - gap - AVAILABLE_SLACK;
+    let available = below.max(above).max(160.0);
+    let max_height = MAX_CONTENT_HEIGHT.min(available);
 
     let popup = egui::Popup::new(
         popup_id,
@@ -880,7 +1023,7 @@ fn render_popup(
     .open(true)
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .align(RectAlign::BOTTOM_START)
-    .gap(crate::components::dropdown_menu::DROPDOWN_SIDE_OFFSET + (1.0 - alpha) * 8.0)
+    .gap(gap)
     .width(content_width)
     .frame(egui::Frame::new());
 
@@ -892,6 +1035,7 @@ fn render_popup(
                 ui,
                 entries,
                 popup_id,
+                max_height,
                 p,
                 theme,
                 selected_value,
@@ -912,6 +1056,7 @@ fn render_rows(
     ui: &mut Ui,
     entries: &[SelectEntry],
     popup_id: Id,
+    max_height: f32,
     p: &Palette,
     theme: &ShadcnTheme,
     selected_value: Option<&str>,
@@ -921,7 +1066,7 @@ fn render_rows(
 ) {
     let scroll_id = popup_id.with("scroll");
     crate::components::scroll_area::ScrollArea::new()
-        .height(MAX_CONTENT_HEIGHT)
+        .height(max_height)
         .id_salt(scroll_id.value().to_string())
         .show(ui, |ui| {
             let mut action_idx = 0usize;
@@ -986,10 +1131,10 @@ fn paint_item(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if fill != Color32::TRANSPARENT {
-            painter.rect_filled(rect, CornerRadius::same(theme.radius.sm_u8()), fill);
+            painter.rect_filled(rect, CornerRadius::same(theme.radius.md_u8()), fill);
         }
 
-        // Label: `pl-2 text-sm` (gap-2 before the indicator).
+        // Label: nova `pl-1.5 text-sm` (`pr-8` before the indicator).
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         painter.text(
             Pos2::new(rect.min.x + ITEM_PAD_X, rect.center().y),
@@ -1118,6 +1263,20 @@ mod tests {
     }
 
     #[test]
+    fn typeahead_finds_labels_from_a_start_index() {
+        let e = entries();
+        // "b" from the start finds Banana (action 1).
+        assert_eq!(typeahead_action_index(&e, 0, "b"), Some(1));
+        // From Banana onward it wraps back to Banana itself (no later "b").
+        assert_eq!(typeahead_action_index(&e, 2, "b"), Some(1));
+        // Disabled Kiwi is skipped: "k" wraps past it to nothing.
+        assert_eq!(typeahead_action_index(&e, 0, "k"), None);
+        // Prefixes are case-insensitive.
+        assert_eq!(typeahead_action_index(&e, 0, "CAR"), Some(3));
+        assert_eq!(typeahead_action_index(&e, 0, ""), None);
+    }
+
+    #[test]
     fn empty_entries_do_not_panic() {
         let e: Vec<SelectEntry> = Vec::new();
         let mut h = None;
@@ -1134,6 +1293,10 @@ mod tests {
         assert_eq!(c.fill, Color32::TRANSPARENT);
         assert_eq!(c.stroke.color, p.input);
         assert_eq!(c.text, p.muted_foreground, "placeholder look");
+        assert_eq!(
+            c.chevron, p.muted_foreground,
+            "nova chevron is full-opacity muted"
+        );
         let sel = resolve_trigger_colors(&p, false, false, false, false, false, true);
         assert_eq!(sel.text, p.foreground);
         let focused = resolve_trigger_colors(&p, false, true, false, false, false, true);
@@ -1144,6 +1307,11 @@ mod tests {
         assert_eq!(invalid.ring, color_alpha(p.destructive, 0.2));
         let disabled = resolve_trigger_colors(&p, false, false, false, false, true, true);
         assert_eq!(disabled.text, color_alpha(p.muted_foreground, 0.5));
+        assert_eq!(
+            disabled.chevron,
+            color_alpha(p.muted_foreground, 0.5),
+            "only the disabled chevron dims"
+        );
     }
 
     #[test]
@@ -1156,14 +1324,31 @@ mod tests {
     }
 
     #[test]
+    fn dark_mode_invalid_border_is_half_destructive() {
+        let p = palette(Mode::Dark);
+        let invalid = resolve_trigger_colors(&p, true, false, true, false, false, true);
+        assert_eq!(
+            invalid.stroke.color,
+            color_alpha(p.destructive, 0.5),
+            "nova dark:aria-invalid:border-destructive/50"
+        );
+        assert_eq!(invalid.ring, color_alpha(p.destructive, 0.4));
+    }
+
+    #[test]
     fn geometry_constants_match_source() {
         assert_eq!(
             SelectSize::Default.height(),
-            36.0,
-            "data-[size=default]:h-9"
+            32.0,
+            "nova data-[size=default]:h-8"
         );
-        assert_eq!(SelectSize::Sm.height(), 32.0, "data-[size=sm]:h-8");
-        assert_eq!(SELECT_MIN_WIDTH, 128.0, "min-w-[8rem]");
+        assert_eq!(SelectSize::Sm.height(), 28.0, "nova data-[size=sm]:h-7");
+        assert_eq!(SELECT_MIN_WIDTH, 144.0, "nova min-w-36");
+        assert_eq!(TRIGGER_PAD_X, 10.0, "pl-2.5");
+        assert_eq!(TRIGGER_PAD_RIGHT, 8.0, "pr-2");
+        assert_eq!(ITEM_HEIGHT, 28.0, "py-1 + text-sm");
+        assert_eq!(ITEM_PAD_X, 6.0, "pl-1.5");
+        assert_eq!(LABEL_HEIGHT, 20.0, "py-1 + text-xs");
         assert_eq!(MAX_CONTENT_HEIGHT, 300.0);
     }
 
@@ -1289,11 +1474,37 @@ mod tests {
             out.textures_delta.clear();
         }
 
+        fn text(&mut self, text: &str, mut f: impl FnMut(&mut Ui)) {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                events: vec![egui::Event::Text(text.to_owned())],
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("select_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 600.0))),
+                );
+                f(ui);
+            });
+            out.textures_delta.clear();
+        }
+
         fn state(&self, salt: &str) -> SelectState {
             let id = Id::unique("select_test_ui").with(salt);
             self.ctx
                 .data_mut(|d| d.get_temp::<SelectState>(id))
                 .unwrap_or_default()
+        }
+
+        fn highlight(&self, salt: &str) -> Option<usize> {
+            let id = Id::unique("select_test_ui").with(salt).with("highlight");
+            self.ctx
+                .data_mut(|d| d.get_temp::<Option<usize>>(id))
+                .flatten()
         }
 
         fn value(&self, salt: &str) -> Option<String> {
@@ -1544,5 +1755,80 @@ mod tests {
         });
         assert!(!h.state("str").open, "a disabled select cannot open");
         assert_eq!(fruit, "Apple", "value untouched");
+    }
+
+    #[test]
+    fn typeahead_moves_highlight_while_open() {
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let rect = layout(&mut h, "ta_open");
+        h.click(rect.center(), |ui| {
+            Select::new(&mut value)
+                .id_salt("ta_open")
+                .options(["Apple", "Banana", "Cherry"])
+                .show_seeded(ui);
+        });
+        assert!(h.state("ta_open").open);
+
+        h.text("b", |ui| {
+            Select::new(&mut value)
+                .id_salt("ta_open")
+                .options(["Apple", "Banana", "Cherry"])
+                .show_seeded(ui);
+        });
+        assert_eq!(
+            h.highlight("ta_open"),
+            Some(1),
+            "typing b highlights Banana"
+        );
+    }
+
+    #[test]
+    fn typeahead_selects_on_the_focused_closed_trigger() {
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        h.run(|ui| {
+            Select::new(&mut value)
+                .id_salt("ta_closed")
+                .options(["Apple", "Banana"])
+                .show_seeded(ui);
+        });
+        // Focus the trigger, then type.
+        let trigger_id = Id::unique("select_test_ui")
+            .with("ta_closed")
+            .with("trigger");
+        h.ctx.memory_mut(|m| m.request_focus(trigger_id));
+        h.text("b", |ui| {
+            Select::new(&mut value)
+                .id_salt("ta_closed")
+                .options(["Apple", "Banana"])
+                .show_seeded(ui);
+        });
+        assert!(!h.state("ta_closed").open, "stays closed");
+        assert_eq!(
+            value.as_deref(),
+            Some("Banana"),
+            "closed typeahead selects the match directly"
+        );
+    }
+
+    #[test]
+    fn tab_closes_the_open_select() {
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "tab");
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("tab")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(h.state("tab").open);
+        h.key(Key::Tab, |ui| {
+            Select::uncontrolled()
+                .id_salt("tab")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(!h.state("tab").open, "Tab dismisses the popup");
     }
 }

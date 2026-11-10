@@ -3356,14 +3356,14 @@ pub fn select_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         Select::bind(&mut small)
-            .placeholder("Small (h-8)")
+            .placeholder("Small (h-7)")
             .size(SelectSize::Sm)
             .width(140.0)
             .id_salt("select_demo_sm")
             .options(["One", "Two", "Three"])
             .show_seeded(ui);
         Select::bind(&mut default)
-            .placeholder("Default (h-9)")
+            .placeholder("Default (h-8)")
             .width(140.0)
             .id_salt("select_demo_default")
             .options(["One", "Two", "Three"])
