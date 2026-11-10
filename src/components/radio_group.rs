@@ -6,8 +6,13 @@
 //! indicator is a `size-2 fill-primary` dot (`dark:bg-input/30`), with the
 //! shared focus/invalid/disabled styles.
 //!
+//! Nova recipe deltas: the group gaps at `gap-2`, and the checked item is a
+//! solid primary disc (`data-checked:bg-primary data-checked:border-primary`)
+//! whose indicator dot is `bg-primary-foreground`.
+//!
 //! Radix behavior is preserved: clicking an item selects it, Arrow keys move
-//! the selection (wrapping) and focus, and Space selects the focused item.
+//! the selection and focus (no wrap-around; egui spatial navigation), and
+//! Space selects the focused item.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -22,15 +27,21 @@
 //! ```
 
 use crate::components::button::GroupOrientation;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, Rect, Response, Sense, Stroke, Ui, Vec2, Widget};
 
 /// `size-4` — the radio item side length.
 pub const RADIO_SIZE: f32 = 16.0;
 /// `size-2` — the selected indicator dot diameter.
 pub const RADIO_DOT_SIZE: f32 = 8.0;
-/// `gap-3` — the gap between items in the group.
-const GAP: f32 = crate::theme::tokens::spacing::MD;
+
+/// The gap between items in the group: base `gap-3` (12), nova `gap-2` (8).
+fn gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => 8.0,
+        _ => crate::theme::tokens::spacing::MD,
+    }
+}
 
 /// One selectable option inside a [`RadioGroup`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,18 +84,44 @@ pub(crate) struct RadioColors {
 /// Mirrors the base recipe: `border-input dark:bg-input/30`, indicator
 /// `fill-primary`, `aria-invalid:border-destructive
 /// aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40`.
+///
+/// Style deltas (nova recipe): `data-checked:bg-primary
+/// data-checked:border-primary` with a `bg-primary-foreground` dot (solid
+/// disc), `dark:aria-invalid:border-destructive/50`, and
+/// `aria-invalid:aria-checked:border-primary` (a checked item keeps its
+/// primary border even when invalid), plus `focus-visible:border-ring`.
 pub(crate) fn resolve_radio_colors(
     p: &Palette,
     dark: bool,
+    style: Style,
     checked: bool,
     invalid: bool,
+    focused: bool,
 ) -> RadioColors {
-    let fill = if dark {
+    let nova = style == Style::Nova;
+    let fill = if nova && checked {
+        p.primary
+    } else if dark {
         color_alpha(p.input, 0.3)
     } else {
         Color32::TRANSPARENT
     };
-    let stroke_color = if invalid { p.destructive } else { p.input };
+    let stroke_color = if nova && checked {
+        // `data-checked:border-primary aria-invalid:aria-checked:border-primary`
+        p.primary
+    } else if invalid {
+        // `aria-invalid:border-destructive` (nova fades the dark border: /50)
+        if nova && dark {
+            color_alpha(p.destructive, 0.5)
+        } else {
+            p.destructive
+        }
+    } else if focused {
+        // `focus-visible:border-ring` (invalid wins: handled above)
+        p.ring
+    } else {
+        p.input
+    };
     let ring = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
     } else {
@@ -95,7 +132,11 @@ pub(crate) fn resolve_radio_colors(
         stroke: Stroke::new(1.0, stroke_color),
         ring,
         dot: if checked {
-            p.primary
+            if nova {
+                p.primary_foreground
+            } else {
+                p.primary
+            }
         } else {
             Color32::TRANSPARENT
         },
@@ -222,7 +263,14 @@ impl<'a> RadioGroupItem<'a> {
         }
 
         let checked = *self.checked;
-        let colors = resolve_radio_colors(&p, theme.mode.is_dark(), checked, self.invalid);
+        let colors = resolve_radio_colors(
+            &p,
+            theme.mode.is_dark(),
+            theme.style,
+            checked,
+            self.invalid,
+            response.has_focus(),
+        );
         paint_radio(
             ui,
             rect,
@@ -335,6 +383,7 @@ impl<'a> RadioGroup<'a> {
         let style = ItemStyle {
             p: &p,
             dark,
+            style: theme.style,
             radius,
             disabled,
             invalid,
@@ -344,11 +393,11 @@ impl<'a> RadioGroup<'a> {
         };
         match orientation {
             GroupOrientation::Vertical => ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = GAP;
+                ui.spacing_mut().item_spacing.y = gap(theme.style);
                 run_items(ui);
             }),
             GroupOrientation::Horizontal => ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = GAP;
+                ui.spacing_mut().item_spacing.x = gap(theme.style);
                 run_items(ui);
             }),
         }
@@ -359,6 +408,7 @@ impl<'a> RadioGroup<'a> {
 struct ItemStyle<'a> {
     p: &'a Palette,
     dark: bool,
+    style: Style,
     radius: u8,
     disabled: bool,
     invalid: bool,
@@ -374,6 +424,7 @@ fn render_items(
     let ItemStyle {
         p,
         dark,
+        style,
         radius,
         disabled,
         invalid,
@@ -390,7 +441,8 @@ fn render_items(
         let (_, rect) = ui.allocate_space(Vec2::splat(RADIO_SIZE));
         let response = ui.interact(rect, group_id.with(i), sense);
         let is_selected = *selected == Some(i);
-        let colors = resolve_radio_colors(p, dark, is_selected, invalid);
+        let colors =
+            resolve_radio_colors(p, dark, style, is_selected, invalid, response.has_focus());
         paint_radio(
             ui,
             rect,
@@ -452,25 +504,72 @@ mod tests {
     #[test]
     fn checked_item_shows_primary_dot() {
         let p = palette(Mode::Light);
-        let c = resolve_radio_colors(&p, false, true, false);
+        // Base: transparent fill, `fill-primary` dot, `border-input`.
+        let c = resolve_radio_colors(&p, false, Style::Vega, true, false, false);
         assert_eq!(c.dot, p.primary);
         assert_eq!(c.stroke.color, p.input);
         assert_eq!(c.fill, Color32::TRANSPARENT);
-        let u = resolve_radio_colors(&p, false, false, false);
+        let u = resolve_radio_colors(&p, false, Style::Vega, false, false, false);
         assert_eq!(u.dot, Color32::TRANSPARENT);
-        let d = resolve_radio_colors(&palette(Mode::Dark), true, false, false);
+        let d = resolve_radio_colors(&palette(Mode::Dark), true, Style::Vega, false, false, false);
         assert_eq!(d.fill, color_alpha(palette(Mode::Dark).input, 0.3));
+        // Nova: solid primary disc with a `primary-foreground` dot.
+        let n = resolve_radio_colors(&p, false, Style::Nova, true, false, false);
+        assert_eq!(n.fill, p.primary);
+        assert_eq!(n.stroke.color, p.primary);
+        assert_eq!(n.dot, p.primary_foreground);
+        let dp = palette(Mode::Dark);
+        let nd = resolve_radio_colors(&dp, true, Style::Nova, true, false, false);
+        assert_eq!(nd.fill, dp.primary);
+        assert_eq!(nd.dot, dp.primary_foreground);
+    }
+
+    #[test]
+    fn focused_border_uses_ring() {
+        let p = palette(Mode::Light);
+        let f = resolve_radio_colors(&p, false, Style::Vega, false, false, true);
+        assert_eq!(f.stroke.color, p.ring);
+        let nf = resolve_radio_colors(&p, false, Style::Nova, false, false, true);
+        assert_eq!(nf.stroke.color, p.ring);
+        // Invalid wins over focus: `aria-invalid:border-destructive`.
+        let fi = resolve_radio_colors(&p, false, Style::Nova, false, true, true);
+        assert_eq!(fi.stroke.color, p.destructive);
+    }
+
+    #[test]
+    fn nova_invalid_checked_keeps_primary() {
+        let p = palette(Mode::Light);
+        // Nova `aria-invalid:aria-checked:border-primary`.
+        let ic = resolve_radio_colors(&p, false, Style::Nova, true, true, false);
+        assert_eq!(ic.stroke.color, p.primary);
+        assert_eq!(ic.fill, p.primary);
+        assert_eq!(ic.dot, p.primary_foreground);
+        // Base fades nothing: a checked invalid item still gets the
+        // destructive border (`aria-invalid:border-destructive`).
+        let bc = resolve_radio_colors(&p, false, Style::Vega, true, true, false);
+        assert_eq!(bc.stroke.color, p.destructive);
+        let dark = palette(Mode::Dark);
+        let dn = resolve_radio_colors(&dark, true, Style::Nova, false, true, false);
+        // `dark:aria-invalid:border-destructive/50`
+        assert_eq!(dn.stroke.color, color_alpha(dark.destructive, 0.5));
     }
 
     #[test]
     fn invalid_item_uses_destructive() {
         let p = palette(Mode::Light);
-        let c = resolve_radio_colors(&p, false, false, true);
+        let c = resolve_radio_colors(&p, false, Style::Vega, false, true, false);
         assert_eq!(c.stroke.color, p.destructive);
         assert_eq!(c.ring, color_alpha(p.destructive, 0.2));
         let dark = palette(Mode::Dark);
-        let c = resolve_radio_colors(&dark, true, false, true);
+        let c = resolve_radio_colors(&dark, true, Style::Vega, false, true, false);
         assert_eq!(c.ring, color_alpha(dark.destructive, 0.4));
+    }
+
+    #[test]
+    fn gap_matches_style() {
+        // Base `gap-3` (12), nova `gap-2` (8).
+        assert_eq!(gap(Style::Vega), 12.0);
+        assert_eq!(gap(Style::Nova), 8.0);
     }
 
     #[test]
