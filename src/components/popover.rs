@@ -33,6 +33,7 @@
 //! ```
 
 use crate::components::button::{Button, ButtonVariant};
+use crate::components::direction;
 use crate::theme::{color_alpha, ShadcnTheme};
 use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
@@ -98,15 +99,27 @@ pub enum PopoverAlign {
 
 impl PopoverAlign {
     /// The full [`RectAlign`]: the side picks the edge, the align picks the
-    /// position along it (Radix `side` + `align`).
-    fn rect_align_for(self, side: PopoverSide) -> RectAlign {
+    /// position along it (Radix `side` + `align`). Inside an RTL
+    /// [`DirectionProvider`](crate::components::direction::DirectionProvider)
+    /// scope the inline Start/End alignment of the horizontal sides
+    /// mirrors (`start` hugs the trigger's right edge); the Left/Right
+    /// sides position along the vertical axis and are not mirrored.
+    fn rect_align_for(self, ui: &Ui, side: PopoverSide) -> RectAlign {
         match (side, self) {
-            (PopoverSide::Bottom, PopoverAlign::Start) => RectAlign::BOTTOM_START,
+            (PopoverSide::Bottom, PopoverAlign::Start) => {
+                direction::popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END)
+            }
             (PopoverSide::Bottom, PopoverAlign::Center) => RectAlign::BOTTOM,
-            (PopoverSide::Bottom, PopoverAlign::End) => RectAlign::BOTTOM_END,
-            (PopoverSide::Top, PopoverAlign::Start) => RectAlign::TOP_START,
+            (PopoverSide::Bottom, PopoverAlign::End) => {
+                direction::popup_align(ui, RectAlign::BOTTOM_END, RectAlign::BOTTOM_START)
+            }
+            (PopoverSide::Top, PopoverAlign::Start) => {
+                direction::popup_align(ui, RectAlign::TOP_START, RectAlign::TOP_END)
+            }
             (PopoverSide::Top, PopoverAlign::Center) => RectAlign::TOP,
-            (PopoverSide::Top, PopoverAlign::End) => RectAlign::TOP_END,
+            (PopoverSide::Top, PopoverAlign::End) => {
+                direction::popup_align(ui, RectAlign::TOP_END, RectAlign::TOP_START)
+            }
             (PopoverSide::Left, PopoverAlign::Start) => RectAlign::LEFT_START,
             (PopoverSide::Left, PopoverAlign::Center) => RectAlign::LEFT,
             (PopoverSide::Left, PopoverAlign::End) => RectAlign::LEFT_END,
@@ -450,7 +463,7 @@ impl PopoverContent {
             trigger.layer_id,
         )
         .open(true)
-        .align(self.align.rect_align_for(self.side))
+        .align(self.align.rect_align_for(ui, self.side))
         .gap(gap)
         .width(width)
         .frame(Frame::new())
@@ -866,47 +879,104 @@ mod tests {
 
     #[test]
     fn align_maps_to_rect_aligns() {
-        // Bottom is the source default side.
-        assert_eq!(
-            PopoverAlign::Start.rect_align_for(PopoverSide::Bottom),
-            RectAlign::BOTTOM_START
-        );
-        assert_eq!(
-            PopoverAlign::Center.rect_align_for(PopoverSide::Bottom),
-            RectAlign::BOTTOM
-        );
-        assert_eq!(
-            PopoverAlign::End.rect_align_for(PopoverSide::Bottom),
-            RectAlign::BOTTOM_END
-        );
+        let mut h = Harness::new();
+        h.run(|ui| {
+            // Bottom is the source default side.
+            assert_eq!(
+                PopoverAlign::Start.rect_align_for(ui, PopoverSide::Bottom),
+                RectAlign::BOTTOM_START
+            );
+            assert_eq!(
+                PopoverAlign::Center.rect_align_for(ui, PopoverSide::Bottom),
+                RectAlign::BOTTOM
+            );
+            assert_eq!(
+                PopoverAlign::End.rect_align_for(ui, PopoverSide::Bottom),
+                RectAlign::BOTTOM_END
+            );
+        });
     }
 
     #[test]
     fn side_and_align_map_to_rect_aligns() {
-        for side in [
-            PopoverSide::Top,
-            PopoverSide::Bottom,
-            PopoverSide::Left,
-            PopoverSide::Right,
-        ] {
+        let mut h = Harness::new();
+        h.run(|ui| {
+            for side in [
+                PopoverSide::Top,
+                PopoverSide::Bottom,
+                PopoverSide::Left,
+                PopoverSide::Right,
+            ] {
+                assert_eq!(
+                    PopoverAlign::Center.rect_align_for(ui, side),
+                    match side {
+                        PopoverSide::Top => RectAlign::TOP,
+                        PopoverSide::Bottom => RectAlign::BOTTOM,
+                        PopoverSide::Left => RectAlign::LEFT,
+                        PopoverSide::Right => RectAlign::RIGHT,
+                    }
+                );
+            }
             assert_eq!(
-                PopoverAlign::Center.rect_align_for(side),
-                match side {
-                    PopoverSide::Top => RectAlign::TOP,
-                    PopoverSide::Bottom => RectAlign::BOTTOM,
-                    PopoverSide::Left => RectAlign::LEFT,
-                    PopoverSide::Right => RectAlign::RIGHT,
-                }
+                PopoverAlign::Start.rect_align_for(ui, PopoverSide::Left),
+                RectAlign::LEFT_START
             );
-        }
-        assert_eq!(
-            PopoverAlign::Start.rect_align_for(PopoverSide::Left),
-            RectAlign::LEFT_START
-        );
-        assert_eq!(
-            PopoverAlign::End.rect_align_for(PopoverSide::Top),
-            RectAlign::TOP_END
-        );
+            assert_eq!(
+                PopoverAlign::End.rect_align_for(ui, PopoverSide::Top),
+                RectAlign::TOP_END
+            );
+        });
+    }
+
+    #[test]
+    fn rtl_mirrors_inline_alignment() {
+        use crate::components::direction::DirectionProvider;
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("popover_rtl_test"),
+                egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(400.0, 400.0),
+                )),
+            );
+            DirectionProvider::rtl().show(ui, |ui| {
+                // Horizontal sides flip the inline Start/End alignment.
+                assert_eq!(
+                    PopoverAlign::Start.rect_align_for(ui, PopoverSide::Bottom),
+                    RectAlign::BOTTOM_END
+                );
+                assert_eq!(
+                    PopoverAlign::End.rect_align_for(ui, PopoverSide::Bottom),
+                    RectAlign::BOTTOM_START
+                );
+                assert_eq!(
+                    PopoverAlign::Start.rect_align_for(ui, PopoverSide::Top),
+                    RectAlign::TOP_END
+                );
+                assert_eq!(
+                    PopoverAlign::End.rect_align_for(ui, PopoverSide::Top),
+                    RectAlign::TOP_START
+                );
+                // Left/Right sides position along the vertical axis and
+                // Center is direction-neutral: all unchanged.
+                assert_eq!(
+                    PopoverAlign::Start.rect_align_for(ui, PopoverSide::Left),
+                    RectAlign::LEFT_START
+                );
+                assert_eq!(
+                    PopoverAlign::End.rect_align_for(ui, PopoverSide::Right),
+                    RectAlign::RIGHT_END
+                );
+                assert_eq!(
+                    PopoverAlign::Center.rect_align_for(ui, PopoverSide::Bottom),
+                    RectAlign::BOTTOM
+                );
+            });
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
