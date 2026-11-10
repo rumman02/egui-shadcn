@@ -62,6 +62,7 @@
 //! ```
 
 use crate::components::command::{Command, CommandInput, CommandItem};
+use crate::components::direction;
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
 use crate::utils::shadow;
@@ -886,7 +887,13 @@ impl<'a> Combobox<'a> {
                     )
                     .open(true)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .align(RectAlign::BOTTOM_START)
+                    // RTL mirrors the popup to hug the trigger's right
+                    // edge (Radix flips inline alignment).
+                    .align(direction::popup_align(
+                        ui,
+                        RectAlign::BOTTOM_START,
+                        RectAlign::BOTTOM_END,
+                    ))
                     .gap(COMBOBOX_SIDE_OFFSET + (1.0 - progress.alpha) * 8.0)
                     .width(popup_width)
                     .frame(egui::Frame::new());
@@ -1318,6 +1325,70 @@ mod tests {
                 .show_seeded(ui);
         });
         assert!(!h.state("t1").open, "clicking again closes it");
+    }
+
+    #[test]
+    fn rtl_scope_mirrors_popup_alignment() {
+        use crate::components::direction::DirectionProvider;
+        let mut h = Harness::new();
+        let mut scope = Id::NULL;
+        let mut rect = Rect::ZERO;
+        // Capture the trigger rect and the RTL scope id: the provider's
+        // `with_layout` pushes a child scope, so the combobox state (and
+        // the popup id) live one scope below the harness ui.
+        h.run(|ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                scope = ui.scope_id();
+                rect = Combobox::uncontrolled()
+                    .id_salt("rtl")
+                    .options(OPTS)
+                    .show_seeded(ui)
+                    .trigger
+                    .rect;
+            });
+        });
+        h.click(rect.center(), |ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                Combobox::uncontrolled()
+                    .id_salt("rtl")
+                    .options(OPTS)
+                    .show_seeded(ui);
+            });
+        });
+        let state = h
+            .ctx
+            .data_mut(|d| d.get_temp::<ComboState>(scope.with("rtl")))
+            .unwrap_or_default();
+        assert!(state.open, "clicking the trigger opens the combobox");
+        // Let the popup settle one frame (a popup's first pass is
+        // sizing-only).
+        h.run(|ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                Combobox::uncontrolled()
+                    .id_salt("rtl")
+                    .options(OPTS)
+                    .show_seeded(ui);
+            });
+        });
+        let popup_id = scope.with("rtl").with("popup");
+        let popup_rect = h
+            .ctx
+            .read_response(popup_id)
+            .map(|r| r.rect)
+            .unwrap_or(Rect::NOTHING);
+        assert!(popup_rect != Rect::NOTHING, "popup must be on screen");
+        assert!(
+            (popup_rect.max.x - rect.max.x).abs() < 3.0,
+            "RTL combobox hugs the trigger's right edge (popup.max.x={},              trigger.max.x={})",
+            popup_rect.max.x,
+            rect.max.x
+        );
+        assert!(
+            popup_rect.min.x < rect.min.x,
+            "the popup extends leftward from the trigger (popup.min.x={},              trigger.min.x={})",
+            popup_rect.min.x,
+            rect.min.x
+        );
     }
 
     #[test]
