@@ -4,12 +4,17 @@
 //! rounded-full bg-muted` track with a `bg-primary` range fill and `size-4
 //! rounded-full border border-primary bg-white shadow-sm` thumbs
 //! (`hover:ring-4 focus-visible:ring-4 ring-ring/50`,
-//! `data-[disabled]:opacity-50`).
+//! `data-[disabled]:opacity-50`). The nova style renders a smaller `size-3`
+//! thumb with a `border-ring` border, a thinner `h-1` track and a `ring-3`
+//! halo; the base keeps the source geometry.
 //!
 //! Both a single value and a two-value range are supported (the source
-//! renders one thumb per value). Thumbs are individually focusable; Arrow
-//! keys move the focused thumb, Home/End jump to the extremes, dragging and
-//! track clicks jump the nearest thumb.
+//! renders one thumb per value), in a horizontal or vertical orientation
+//! (`data-[orientation=vertical]`: base reserves `min-h-44` (176pt), nova
+//! `min-h-40` (160pt); the minimum value sits at the bottom). Thumbs are
+//! individually focusable; Arrow keys move the focused thumb (Up/Down on
+//! vertical sliders), Home/End jump to the extremes, dragging and track
+//! clicks jump the nearest thumb.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -19,17 +24,53 @@
 //!
 //! let mut bounds = (20.0, 80.0);
 //! Slider::range(&mut bounds).min(0.0).max(100.0).show(ui);
+//!
+//! Slider::new(&mut volume).orientation(GroupOrientation::Vertical).show(ui);
 //! ```
 
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::components::button::GroupOrientation;
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, Key, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 
-/// `size-4` — the thumb diameter.
+/// `size-4` — the (base) thumb diameter; nova renders `size-3` (12pt).
 pub const SLIDER_THUMB_SIZE: f32 = 16.0;
-/// `h-1.5` — the track thickness.
+/// `h-1.5` — the (base) track thickness; nova renders `h-1` (4pt).
 pub const SLIDER_TRACK_HEIGHT: f32 = 6.0;
-/// Extra vertical room so the `hover:ring-4` focus ring is not clipped.
-const WIDGET_HEIGHT: f32 = 24.0;
+/// Extra room so the focus/hover ring is not clipped.
+const WIDGET_WIDTH: f32 = 24.0;
+
+/// Thumb diameter per style (`size-4` base, nova `size-3`).
+pub(crate) fn thumb_size(style: Style) -> f32 {
+    match style {
+        Style::Nova => 12.0,
+        _ => SLIDER_THUMB_SIZE,
+    }
+}
+
+/// Track thickness per style (`h-1.5` base, nova `h-1`).
+pub(crate) fn track_height(style: Style) -> f32 {
+    match style {
+        Style::Nova => 4.0,
+        _ => SLIDER_TRACK_HEIGHT,
+    }
+}
+
+/// Thumb halo width per style (`ring-4` base, nova `ring-3`).
+pub(crate) fn ring_width(style: Style) -> f32 {
+    match style {
+        Style::Nova => 3.0,
+        _ => 4.0,
+    }
+}
+
+/// Reserved column height for `data-[orientation=vertical]`
+/// (base `min-h-44` = 176, nova `min-h-40` = 160).
+pub(crate) fn vertical_min_height(style: Style) -> f32 {
+    match style {
+        Style::Nova => 160.0,
+        _ => 176.0,
+    }
+}
 
 /// What values the slider controls.
 #[derive(Debug)]
@@ -61,13 +102,18 @@ pub(crate) struct SliderColors {
 }
 
 /// Mirrors the base recipe: track `bg-muted`, range `bg-primary`, thumb
-/// `border border-primary bg-white`.
-pub(crate) fn resolve_slider_colors(p: &Palette, dark: bool) -> SliderColors {
+/// `border border-primary bg-white`; nova replaces the thumb border with
+/// `border-ring`.
+pub(crate) fn resolve_slider_colors(p: &Palette, dark: bool, style: Style) -> SliderColors {
+    let thumb_stroke_color = match style {
+        Style::Nova => p.ring,
+        _ => p.primary,
+    };
     SliderColors {
         track: p.muted,
         range: p.primary,
         thumb_fill: if dark { p.background } else { Color32::WHITE },
-        thumb_stroke: Stroke::new(1.0, p.primary),
+        thumb_stroke: Stroke::new(1.0, thumb_stroke_color),
         ring: color_alpha(p.ring, 0.5),
     }
 }
@@ -79,6 +125,7 @@ pub struct Slider<'a> {
     min: f32,
     max: f32,
     step: Option<f32>,
+    orientation: GroupOrientation,
     disabled: bool,
     id_salt: Option<String>,
 }
@@ -91,6 +138,7 @@ impl<'a> Slider<'a> {
             min: 0.0,
             max: 100.0,
             step: None,
+            orientation: GroupOrientation::Horizontal,
             disabled: false,
             id_salt: None,
         }
@@ -104,6 +152,7 @@ impl<'a> Slider<'a> {
             min: 0.0,
             max: 100.0,
             step: None,
+            orientation: GroupOrientation::Horizontal,
             disabled: false,
             id_salt: None,
         }
@@ -124,6 +173,13 @@ impl<'a> Slider<'a> {
     /// Snaps values to this increment while dragging and on Arrow keys.
     pub fn step(mut self, step: f32) -> Self {
         self.step = Some(step.max(f32::EPSILON));
+        self
+    }
+
+    /// Sets the layout orientation (`data-[orientation=vertical]` renders a
+    /// tall column with the minimum at the bottom; default horizontal).
+    pub fn orientation(mut self, orientation: GroupOrientation) -> Self {
+        self.orientation = orientation;
         self
     }
 
@@ -157,18 +213,30 @@ impl<'a> Slider<'a> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let dark = theme.mode.is_dark();
-        let c = resolve_slider_colors(&p, dark);
+        let style = theme.style;
+        let c = resolve_slider_colors(&p, dark, style);
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => ui.auto_id_with("shadcn_slider"),
         };
 
-        let width = ui.available_width().max(SLIDER_THUMB_SIZE * 3.0);
-        let desired = Vec2::new(width, WIDGET_HEIGHT);
-        let (_, rect) = ui.allocate_space(desired);
-        let track_rect =
-            Rect::from_center_size(rect.center(), Vec2::new(width, SLIDER_TRACK_HEIGHT));
+        let vertical = self.orientation == GroupOrientation::Vertical;
+        let thumb = thumb_size(style);
+        let track = track_height(style);
+        let (_, rect) = if vertical {
+            // `data-[orientation=vertical]:min-h-44` (nova `min-h-40`).
+            let height = vertical_min_height(style).max(thumb * 3.0);
+            ui.allocate_space(Vec2::new(WIDGET_WIDTH, height))
+        } else {
+            let width = ui.available_width().max(thumb * 3.0);
+            ui.allocate_space(Vec2::new(width, WIDGET_WIDTH))
+        };
+        let track_rect = if vertical {
+            Rect::from_center_size(rect.center(), Vec2::new(track, rect.height()))
+        } else {
+            Rect::from_center_size(rect.center(), Vec2::new(rect.width(), track))
+        };
 
         if !ui.is_rect_visible(rect) {
             return ui.interact(rect, id, Sense::hover());
@@ -182,12 +250,31 @@ impl<'a> Slider<'a> {
         let track_fill = color_alpha(c.track, alpha);
         let range_fill = color_alpha(c.range, alpha);
 
+        // Axis helpers: `frac` maps a value onto 0..1; `pos_at` places that
+        // fraction along the axis (vertical sliders grow bottom-up, like the
+        // Radix `data-[orientation=vertical]` layout).
+        let axis_len = if vertical {
+            track_rect.height()
+        } else {
+            track_rect.width()
+        };
+        let pos_at = |frac: f32| -> f32 {
+            if vertical {
+                track_rect.max.y - frac * axis_len
+            } else {
+                track_rect.min.x + frac * axis_len
+            }
+        };
+        let thumb_center = |frac: f32| -> Pos2 {
+            if vertical {
+                Pos2::new(track_rect.center().x, pos_at(frac))
+            } else {
+                Pos2::new(pos_at(frac), rect.center().y)
+            }
+        };
+
         // Track (`h-1.5 rounded-full bg-muted`) and range (`bg-primary`).
-        painter.rect_filled(
-            track_rect,
-            CornerRadius::same(SLIDER_TRACK_HEIGHT as u8 / 2),
-            track_fill,
-        );
+        painter.rect_filled(track_rect, CornerRadius::same(track as u8 / 2), track_fill);
         let n = self.value.count();
         let (min, max) = (self.min, self.max);
         let frac = |v: f32| ((v - min) / (max - min).max(f32::EPSILON)).clamp(0.0, 1.0);
@@ -201,15 +288,18 @@ impl<'a> Slider<'a> {
             .map(|v| frac(*v))
             .fold(f32::NEG_INFINITY, f32::max);
         if max_frac > min_frac {
-            let range_rect = Rect::from_min_max(
-                Pos2::new(track_rect.min.x + min_frac * width, track_rect.min.y),
-                Pos2::new(track_rect.min.x + max_frac * width, track_rect.max.y),
-            );
-            painter.rect_filled(
-                range_rect,
-                CornerRadius::same(SLIDER_TRACK_HEIGHT as u8 / 2),
-                range_fill,
-            );
+            let range_rect = if vertical {
+                Rect::from_min_max(
+                    Pos2::new(track_rect.min.x, pos_at(max_frac)),
+                    Pos2::new(track_rect.max.x, pos_at(min_frac)),
+                )
+            } else {
+                Rect::from_min_max(
+                    Pos2::new(pos_at(min_frac), track_rect.min.y),
+                    Pos2::new(pos_at(max_frac), track_rect.max.y),
+                )
+            };
+            painter.rect_filled(range_rect, CornerRadius::same(track as u8 / 2), range_fill);
         }
 
         // Track interaction: click/drag jumps the nearest thumb. The thumbs
@@ -221,11 +311,18 @@ impl<'a> Slider<'a> {
             .data_mut(|d| d.get_temp::<usize>(id.with("active_thumb")));
 
         let mut changed = false;
-        let pointer_x = |ui: &Ui, rect: Rect| -> f32 {
+        let pointer_frac = |ui: &Ui| -> f32 {
             ui.input(|i| {
                 i.pointer
                     .latest_pos()
-                    .map(|pos| (pos.x - rect.min.x) / width.max(f32::EPSILON))
+                    .map(|pos| {
+                        let along = if vertical {
+                            track_rect.max.y - pos.y
+                        } else {
+                            pos.x - track_rect.min.x
+                        };
+                        along / axis_len.max(f32::EPSILON)
+                    })
                     .unwrap_or(0.0)
             })
         };
@@ -233,11 +330,7 @@ impl<'a> Slider<'a> {
         let mut thumb_responses: Vec<Response> = Vec::with_capacity(n);
         for i in 0..n {
             let v = self.read_value(i);
-            let thumb_center_x = track_rect.min.x + frac(v) * width;
-            let thumb_rect = Rect::from_center_size(
-                Pos2::new(thumb_center_x, rect.center().y),
-                Vec2::splat(SLIDER_THUMB_SIZE),
-            );
+            let thumb_rect = Rect::from_center_size(thumb_center(frac(v)), Vec2::splat(thumb));
             let sense = if self.disabled {
                 Sense::hover()
             } else {
@@ -245,21 +338,21 @@ impl<'a> Slider<'a> {
             };
             let response = ui.interact(thumb_rect, id.with("thumb").with(i), sense);
             if response.dragged() {
-                self.set_value(i, pointer_x(ui, track_rect), &mut changed);
+                self.set_value(i, pointer_frac(ui), &mut changed);
                 active = Some(i);
             }
             thumb_responses.push(response);
         }
 
         if !self.disabled && track_response.dragged() {
-            let x = pointer_x(ui, track_rect);
+            let f = pointer_frac(ui);
             let nearest = match (active, values.as_slice()) {
                 (Some(i), _) if i < n => i,
                 _ => {
                     let mut best = 0;
                     let mut best_dist = f32::INFINITY;
                     for (i, v) in values.iter().enumerate() {
-                        let d = (frac(*v) - x).abs();
+                        let d = (frac(*v) - f).abs();
                         if d < best_dist {
                             best_dist = d;
                             best = i;
@@ -268,7 +361,7 @@ impl<'a> Slider<'a> {
                     best
                 }
             };
-            self.set_value(nearest, x, &mut changed);
+            self.set_value(nearest, f, &mut changed);
             active = Some(nearest);
         }
 
@@ -277,17 +370,14 @@ impl<'a> Slider<'a> {
             .data_mut(|d| d.insert_temp(id.with("active_thumb"), active.unwrap_or(0)));
 
         // Thumbs: `size-4 rounded-full border border-primary bg-white
-        // shadow-sm`, `hover:ring-4 focus-visible:ring-4 ring-ring/50`.
+        // shadow-sm`, `hover:ring-4 focus-visible:ring-4 ring-ring/50`
+        // (nova: `size-3 border-ring`, `ring-3`).
         for (i, response) in thumb_responses.iter().enumerate() {
             if !ui.is_rect_visible(response.rect) {
                 continue;
             }
             let v = self.read_value(i);
-            let thumb_center_x = track_rect.min.x + frac(v) * width;
-            let thumb_rect = Rect::from_center_size(
-                Pos2::new(thumb_center_x, rect.center().y),
-                Vec2::splat(SLIDER_THUMB_SIZE),
-            );
+            let thumb_rect = Rect::from_center_size(thumb_center(frac(v)), Vec2::splat(thumb));
             let mut fill = color_alpha(c.thumb_fill, alpha);
             let mut stroke = Stroke::new(
                 c.thumb_stroke.width,
@@ -301,13 +391,12 @@ impl<'a> Slider<'a> {
             }
 
             if ring {
-                // `hover:ring-4 focus-visible:ring-4 ring-ring/50`
                 crate::utils::focus::paint_ring(
                     painter,
                     thumb_rect.expand2(egui::vec2(2.0, 2.0)),
                     c.ring,
-                    4.0,
-                    SLIDER_THUMB_SIZE / 2.0,
+                    ring_width(style),
+                    thumb / 2.0,
                 );
             }
             // `shadow-sm`
@@ -316,17 +405,18 @@ impl<'a> Slider<'a> {
                 painter.add(
                     egui::epaint::RectShape::filled(
                         thumb_rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                        CornerRadius::same(SLIDER_THUMB_SIZE as u8 / 2),
+                        CornerRadius::same(thumb as u8 / 2),
                         sh.color,
                     )
                     .with_blur_width(2.5),
                 );
             }
-            painter.circle_filled(thumb_rect.center(), SLIDER_THUMB_SIZE / 2.0, fill);
-            painter.circle_stroke(thumb_rect.center(), SLIDER_THUMB_SIZE / 2.0, stroke);
+            painter.circle_filled(thumb_rect.center(), thumb / 2.0, fill);
+            painter.circle_stroke(thumb_rect.center(), thumb / 2.0, stroke);
         }
 
-        // Keyboard on the focused thumb: arrows step, Home/End jump.
+        // Keyboard on the focused thumb: arrows step, Home/End jump. On
+        // vertical sliders Up/Down are the primary axes (Radix vertical).
         if !self.disabled {
             for (i, response) in thumb_responses.iter().enumerate() {
                 if !response.has_focus() {
@@ -400,6 +490,7 @@ impl<'a> Slider<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Style;
 
     fn palette(mode: crate::theme::Mode) -> Palette {
         crate::theme::Preset::default().build(mode).palette
@@ -408,21 +499,37 @@ mod tests {
     #[test]
     fn track_and_thumb_use_source_tokens() {
         let p = palette(crate::theme::Mode::Light);
-        let c = resolve_slider_colors(&p, false);
+        let c = resolve_slider_colors(&p, false, Style::Vega);
         assert_eq!(c.track, p.muted);
         assert_eq!(c.range, p.primary);
         assert_eq!(c.thumb_fill, Color32::WHITE);
         assert_eq!(c.thumb_stroke.color, p.primary);
         assert_eq!(c.ring, color_alpha(p.ring, 0.5));
         let dark = palette(crate::theme::Mode::Dark);
-        let c = resolve_slider_colors(&dark, true);
+        let c = resolve_slider_colors(&dark, true, Style::Vega);
         assert_eq!(c.thumb_fill, dark.background);
     }
 
     #[test]
-    fn thumb_and_track_geometry() {
-        assert_eq!(SLIDER_THUMB_SIZE, 16.0); // size-4
-        assert_eq!(SLIDER_TRACK_HEIGHT, 6.0); // h-1.5
+    fn nova_uses_smaller_thumb_ring_border_and_thinner_track() {
+        let p = palette(crate::theme::Mode::Light);
+        // nova thumb `size-3 border border-ring bg-white`
+        let c = resolve_slider_colors(&p, false, Style::Nova);
+        assert_eq!(c.thumb_stroke.color, p.ring);
+        // base keeps `border-primary`
+        let base = resolve_slider_colors(&p, false, Style::Vega);
+        assert_eq!(base.thumb_stroke.color, p.primary);
+        // geometry: base size-4/h-1.5, nova size-3/h-1
+        assert_eq!(thumb_size(Style::Vega), 16.0);
+        assert_eq!(thumb_size(Style::Nova), 12.0);
+        assert_eq!(track_height(Style::Vega), 6.0);
+        assert_eq!(track_height(Style::Nova), 4.0);
+        // halo: ring-4 base, ring-3 nova
+        assert_eq!(ring_width(Style::Vega), 4.0);
+        assert_eq!(ring_width(Style::Nova), 3.0);
+        // vertical column: min-h-44 (176) base, min-h-40 (160) nova
+        assert_eq!(vertical_min_height(Style::Vega), 176.0);
+        assert_eq!(vertical_min_height(Style::Nova), 160.0);
     }
 
     #[test]
@@ -461,12 +568,42 @@ mod tests {
             .min(5.0)
             .max(15.0)
             .step(1.0)
+            .orientation(GroupOrientation::Vertical)
             .disabled(true)
             .id_salt("s");
         assert_eq!(s.min, 5.0);
         assert_eq!(s.max, 15.0);
         assert_eq!(s.step, Some(1.0));
+        assert_eq!(s.orientation, GroupOrientation::Vertical);
         assert!(s.disabled);
         assert_eq!(s.id_salt.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn vertical_slider_renders_a_tall_column() {
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut v = 40.0;
+        let mut rect = Rect::NOTHING;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("slider_vertical_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 400.0))),
+            );
+            rect = Slider::new(&mut v)
+                .min(0.0)
+                .max(100.0)
+                .orientation(GroupOrientation::Vertical)
+                .id_salt("vertical")
+                .show(ui)
+                .rect;
+        });
+        out.textures_delta.clear();
+        // The default preset is nova: `min-h-40` column (160 tall), 24pt wide.
+        assert!((rect.height() - vertical_min_height(Style::Nova)).abs() < 0.5);
+        assert!((rect.width() - 24.0).abs() < 0.5);
+        assert_eq!(v, 40.0);
     }
 }
