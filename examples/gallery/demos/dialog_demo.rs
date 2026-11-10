@@ -1,4 +1,5 @@
-//! Dialog demo: basic form dialog, controlled, no-close-button.
+//! Dialog demo: basic form dialog, controlled, no-close-button, footer
+//! close button, custom width.
 
 use egui_shadcn_ui::prelude::*;
 
@@ -16,7 +17,6 @@ pub fn dialog_demo(ui: &mut egui::Ui) {
                 )
                 .show(ui);
             });
-            ui.add_space(4.0);
             ui.label("Name");
             ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY));
             ui.label("Email");
@@ -105,6 +105,26 @@ pub fn dialog_demo(ui: &mut egui::Ui) {
                      is clamped to the window minus 2rem.",
                 )
                 .show(ui);
+            });
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.heading("Footer close button");
+    ui.add_space(4.0);
+    Dialog::new().id_salt("demo_footer_close").show(ui, |ui| {
+        DialogTrigger::widget(|ui| Button::new("Footer showCloseButton").show(ui)).show(ui);
+        DialogContent::new().show(ui, |ui| {
+            DialogHeader::new().show(ui, |ui| {
+                DialogTitle::new("Confirm action").show(ui);
+                DialogDescription::new(
+                    "The footer appends an outline Close button \
+                     (showCloseButton = true).",
+                )
+                .show(ui);
+            });
+            DialogFooter::new().show_close_button(true).show(ui, |ui| {
+                DialogClose::widget(|ui| Button::new("Continue").show(ui)).show(ui);
             });
         });
     });

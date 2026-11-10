@@ -35,8 +35,7 @@
 use crate::components::button::{Button, ButtonVariant};
 use crate::icons::Icon;
 use crate::theme::{color_alpha, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
-use crate::utils::shadow;
+use crate::utils::animation::nova_overlay_progress;
 use egui::{
     Color32, Context, CornerRadius, Frame, Id, Margin, Modal, Pos2, Rect, Response, Sense, Stroke,
     Ui, UiBuilder, Vec2, WidgetInfo,
@@ -335,8 +334,8 @@ fn outline_button(label: &Option<String>, disabled: bool, id_salt: Option<String
 // DialogContent
 // ---------------------------------------------------------------------------
 
-/// The modal panel: centered, `bg-popover ring-foreground/10 rounded-xl p-4
-/// shadow-lg` (nova) with a close X at `top-2 right-2`, over a dimmed
+/// The modal panel: centered, `bg-popover ring-foreground/10 rounded-xl p-4`
+/// (nova, ring-only) with a close X at `top-2 right-2`, over a dimmed
 /// backdrop. Closes on Escape and backdrop click.
 #[derive(Clone, Debug)]
 pub struct DialogContent {
@@ -395,14 +394,13 @@ impl DialogContent {
         let open = state.open;
 
         let theme = ShadcnTheme::of_ui(ui);
-        let dark = theme.mode.is_dark();
         let p = theme.palette;
 
         let modal_id = state_id.with("modal");
         let anim_id = state_id.with("anim");
 
-        // `data-[state=open]:fade-in-0 zoom-in-95 duration-200`.
-        let progress = overlay_progress(&ctx, anim_id, open);
+        // nova `duration-100`: fade in/out at 100ms in both directions.
+        let progress = nova_overlay_progress(&ctx, anim_id, open);
         if !(open || progress.alpha > 0.002) {
             return None;
         }
@@ -422,12 +420,12 @@ impl DialogContent {
         );
 
         // The panel frame, painted inside the opacity scope so it fades too.
+        // nova `.cn-dialog-content` is ring-only: no shadow.
         let frame = Frame::new()
             .fill(p.popover)
             .stroke(Stroke::new(1.0, color_alpha(p.foreground, RING_ALPHA)))
             .corner_radius(CornerRadius::same(theme.radius.xl_u8()))
-            .inner_margin(Margin::same(INNER_PADDING))
-            .shadow(shadow::shadow_lg(dark));
+            .inner_margin(Margin::same(INNER_PADDING));
 
         let modal = Modal::new(modal_id)
             .backdrop_color(backdrop)
@@ -443,15 +441,19 @@ impl DialogContent {
                 ui.set_min_width(inner_w);
                 ui.set_max_width(inner_w);
                 ui.style_mut().visuals.override_text_color = Some(p.popover_foreground);
+                // nova `.cn-dialog-content`: `grid gap-4` column flow.
+                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::LG;
                 content(ui);
                 if self.show_close_button && progress.alpha > 0.75 {
-                    // `absolute top-2 right-2` relative to the panel.
+                    // `absolute top-2 right-2` relative to the panel: a nova
+                    // ghost `size-7` (28px) icon button.
+                    const X_BOX: f32 = 28.0;
                     let x_rect = Rect::from_min_size(
                         Pos2::new(
-                            ui.max_rect().right() + pad - 8.0 - 24.0,
+                            ui.max_rect().right() + pad - 8.0 - X_BOX,
                             ui.max_rect().top() - pad + 8.0,
                         ),
-                        Vec2::splat(24.0),
+                        Vec2::splat(X_BOX),
                     );
                     let x_id = state_id.with("dialog_close_x");
                     let x_resp = ui.interact(x_rect, x_id, Sense::click());
@@ -459,14 +461,17 @@ impl DialogContent {
                         WidgetInfo::labeled(egui::Role::Button, true, "Close".to_owned())
                     });
                     if ui.is_rect_visible(x_rect) {
-                        let corner = CornerRadius::same(theme.radius.sm_u8());
+                        // nova ghost icon-sm: `rounded-[min(var(--radius-md),12px)]`.
+                        let corner = CornerRadius::same(theme.radius.md_u8());
                         let fill = if x_resp.hovered() {
-                            p.accent
+                            // `hover:bg-muted`
+                            p.muted
                         } else {
                             Color32::TRANSPARENT
                         };
                         let fg = if x_resp.hovered() {
-                            p.muted_foreground
+                            // `hover:text-foreground`
+                            p.foreground
                         } else {
                             color_alpha(p.foreground, 0.7)
                         };
@@ -583,20 +588,40 @@ impl DialogDescription {
 ///
 /// The strip is full-bleed: it stretches to the panel's left/right edges and
 /// hangs into the bottom padding.
+///
+/// Like the source, [`DialogFooter::show_close_button`] appends an outline
+/// "Close" button (a [`DialogClose`], so clicking it closes the dialog).
 #[derive(Clone, Debug, Default)]
 pub struct DialogFooter {
-    _private: (),
+    show_close_button: bool,
 }
 
 impl DialogFooter {
     /// Creates a dialog footer.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            show_close_button: false,
+        }
     }
 
-    /// Renders the footer strip. The content is right-aligned.
-    pub fn show<R>(self, ui: &mut Ui, content: impl FnMut(&mut Ui) -> R) -> R {
-        footer_strip(ui, content)
+    /// Appends an outline "Close" button that closes the dialog (the source's
+    /// `showCloseButton` prop, default `false`).
+    pub fn show_close_button(mut self, show: bool) -> Self {
+        self.show_close_button = show;
+        self
+    }
+
+    /// Renders the footer strip. The content is right-aligned; the optional
+    /// close button sits after it in the row.
+    pub fn show<R>(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
+        let show_close = self.show_close_button;
+        footer_strip(ui, |ui| {
+            let r = content(ui);
+            if show_close {
+                DialogClose::new("Close").show(ui);
+            }
+            r
+        })
     }
 }
 
@@ -992,7 +1017,8 @@ mod tests {
         assert!(t.disabled);
         let _ = DialogClose::new("bye").id_salt("bye");
         let _ = DialogHeader::new();
-        let _ = DialogFooter::new();
+        let f = DialogFooter::new().show_close_button(true);
+        assert!(f.show_close_button);
         let _ = DialogTitle::new("T");
         let _ = DialogDescription::new("D");
     }
