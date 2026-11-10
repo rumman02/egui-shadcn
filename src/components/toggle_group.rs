@@ -12,7 +12,10 @@
 //! With the default `spacing 0` items fuse like the source
 //! (`data-[spacing=0]:rounded-none ... first:rounded-l-md last:rounded-r-md`
 //! and `border-l-0` for outline) via the shared group protocol; a positive
-//! spacing lays them out as individually rounded toggles with a gap.
+//! spacing lays them out as individually rounded toggles with a gap. Fused
+//! items add `px-3` (base) / `px-2` (nova
+//! `.cn-toggle-group-item`) and drop the outline `shadow-xs`
+//! (`data-[spacing=0]:shadow-none`, and nova outline has none to begin with).
 //!
 //! Arrow keys move focus between items (egui's spatial navigation); focus
 //! does not change the pressed state, like Radix.
@@ -43,7 +46,17 @@
 use crate::components::button::{group, GroupOrientation};
 use crate::components::toggle::{Toggle, ToggleSize, ToggleVariant};
 use crate::icons::Icon;
+use crate::theme::{ShadcnTheme, Style};
 use egui::{InnerResponse, Ui};
+
+/// Horizontal padding of items fused into a `spacing 0` group: `px-3` in the
+/// base recipe, `px-2` under nova (`.cn-toggle-group-item`).
+pub(crate) fn fused_item_padding_x(style: Style) -> f32 {
+    match style {
+        Style::Nova => 8.0,
+        _ => crate::theme::tokens::spacing::MD,
+    }
+}
 
 /// One group entry (`ToggleGroupItem`).
 #[derive(Clone, Debug)]
@@ -211,7 +224,9 @@ impl<'a> ToggleGroup<'a> {
         }
 
         let fused = spacing <= 0.0;
-        let px3 = crate::theme::tokens::spacing::MD; // `px-3` in fused groups
+        // `data-[spacing=0]:px-3` (base) / `group-data-[spacing=0]:px-2`
+        // (nova `.cn-toggle-group-item`).
+        let fused_px = fused_item_padding_x(ShadcnTheme::of_ui(ui).style);
         for (i, item) in items.iter().enumerate() {
             let mut pressed = match &mode {
                 GroupMode::Single(selected) => **selected == Some(i),
@@ -226,9 +241,9 @@ impl<'a> ToggleGroup<'a> {
                 toggle = toggle.icon(icon);
             }
             if fused {
-                // `data-[spacing=0]:px-3` (and no per-item rounding — the
-                // group protocol handles first/last corners).
-                toggle = toggle.padding_x(px3);
+                // Fused `px-3` (base) / `px-2` (nova), and no per-item
+                // rounding — the group protocol handles first/last corners.
+                toggle = toggle.padding_x(fused_px);
             }
             let response = toggle.show(ui);
             if response.clicked() {
@@ -388,5 +403,13 @@ mod tests {
         assert_eq!(g.size, ToggleSize::Default);
         assert_eq!(g.orientation, GroupOrientation::Horizontal);
         assert!(!g.disabled);
+    }
+
+    #[test]
+    fn fused_item_padding_is_px3_base_px2_nova() {
+        // base `data-[spacing=0]` item adds `px-3`; nova
+        // `.cn-toggle-group-item` overrides to `px-2`.
+        assert_eq!(fused_item_padding_x(Style::Vega), 12.0);
+        assert_eq!(fused_item_padding_x(Style::Nova), 8.0);
     }
 }
