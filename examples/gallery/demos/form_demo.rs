@@ -40,7 +40,7 @@ pub fn run(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp::<DemoState>(store).unwrap_or_default());
 
-    ui.label("Bug report (validate-on-submit; submit to see the errors)");
+    ui.label("Bug report (validate-on-submit; Enter in the title submits, Enter in the description inserts a newline)");
     ui.add_space(4.0);
 
     Card::new().show(ui, |ui| {
@@ -75,26 +75,31 @@ pub fn run(ui: &mut egui::Ui) {
                                 }
                             });
                         });
-                        form.field(ui, "description", validate_description, |ui, v, ctx| {
-                            Field::new().invalid(ctx.invalid).show(ui, |ui| {
-                                FieldLabel::new("Description").for_id(ctx.id).show(ui);
-                                Textarea::new(&mut v.description)
-                                    .placeholder(
-                                        "I'm having an issue with the login button on mobile.",
-                                    )
-                                    .invalid(ctx.invalid)
-                                    .disabled(ctx.disabled)
+                        form.field_multiline(
+                            ui,
+                            "description",
+                            validate_description,
+                            |ui, v, ctx| {
+                                Field::new().invalid(ctx.invalid).show(ui, |ui| {
+                                    FieldLabel::new("Description").for_id(ctx.id).show(ui);
+                                    Textarea::new(&mut v.description)
+                                        .placeholder(
+                                            "I'm having an issue with the login button on mobile.",
+                                        )
+                                        .invalid(ctx.invalid)
+                                        .disabled(ctx.disabled)
+                                        .show(ui);
+                                    FieldDescription::new(format!(
+                                        "{} / 100 characters",
+                                        v.description.chars().count()
+                                    ))
                                     .show(ui);
-                                FieldDescription::new(format!(
-                                    "{} / 100 characters",
-                                    v.description.chars().count()
-                                ))
-                                .show(ui);
-                                if let Some(err) = &ctx.error {
-                                    FieldError::new(err.clone()).show(ui);
-                                }
-                            });
-                        });
+                                    if let Some(err) = &ctx.error {
+                                        FieldError::new(err.clone()).show(ui);
+                                    }
+                                });
+                            },
+                        );
                     });
                 });
                 CardFooter::new().show(ui, |ui| {

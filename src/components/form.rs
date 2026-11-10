@@ -10,6 +10,9 @@
 //! - Errors are only *displayed* once the form has been submitted once
 //!   (validate-on-submit, like `isTouched && !isValid`), or from the first
 //!   frame with `.validate_on_change(true)`.
+//! - Enter in a single-line input inside a field submits the form (native
+//!   `<form>` behavior; `.submit_on_enter(false)` opts out and
+//!   [`FormUi::field_multiline`] excludes textarea fields).
 //! - [`FormUi::field`] renders a field through a closure receiving the form
 //!   value and a [`FormFieldCtx`] (`invalid`, `error`, `id`, `disabled`) so
 //!   the content can wire `aria-invalid` styling and the `FieldError` slot.
@@ -43,7 +46,7 @@
 //! // res.valid / res.errors / res.submitted
 //! ```
 
-use egui::{Id, Response, Ui};
+use egui::{Id, Pos2, Response, Ui};
 
 /// Context handed to each field's render closure, mirroring
 /// `useFormField()` in the source (`error`, `invalid`, ids, disabled).
@@ -112,6 +115,7 @@ pub struct Form<'a, T> {
     validate_on_change: bool,
     disabled: bool,
     submitting: bool,
+    submit_on_enter: bool,
     on_submit: Option<OnSubmit<'a, T>>,
 }
 
@@ -124,6 +128,7 @@ impl<'a, T> Form<'a, T> {
             validate_on_change: false,
             disabled: false,
             submitting: false,
+            submit_on_enter: true,
             on_submit: None,
         }
     }
@@ -154,6 +159,15 @@ impl<'a, T> Form<'a, T> {
         self
     }
 
+    /// Whether pressing Enter while a single-line input inside a field has
+    /// focus submits the form (default `true`, like a native `<form>`).
+    /// Fields rendered with [`FormUi::field_multiline`] (textareas) never
+    /// submit on Enter.
+    pub fn submit_on_enter(mut self, on: bool) -> Self {
+        self.submit_on_enter = on;
+        self
+    }
+
     /// The callback run when a submit passes validation.
     pub fn on_submit(mut self, f: impl FnOnce(&mut Ui, &mut T) + 'a) -> Self {
         self.on_submit = Some(Box::new(f));
@@ -172,6 +186,7 @@ impl<'a, T> Form<'a, T> {
             validate_on_change,
             disabled,
             submitting,
+            submit_on_enter,
             on_submit,
         } = self;
 
@@ -195,9 +210,39 @@ impl<'a, T> Form<'a, T> {
             disabled,
             submitting,
             field_seq: 0,
+            enter_fields: Vec::new(),
         };
 
+        // Capture who holds focus at frame start: a singleline TextEdit
+        // surrenders focus mid-frame when Enter is pressed, so the focus
+        // state after the content has run is unreliable.
+        let focused_before = ui.memory(|m| m.focused());
+
         content(ui, &mut form);
+
+        // Native `<form>` behavior: Enter in a single-line input submits.
+        // The focused widget must sit inside a field registered for
+        // Enter-submit (multiline fields are excluded — Enter inserts the
+        // newline there instead).
+        if submit_on_enter && !disabled && !submitting {
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter_pressed {
+                let focused_in_field = [focused_before, ui.memory(|m| m.focused())]
+                    .into_iter()
+                    .flatten()
+                    .any(|id| {
+                        ui.ctx()
+                            .read_response(id)
+                            .map(|r| r.rect.center())
+                            .is_some_and(|center| {
+                                form.enter_fields.iter().any(|band| band.contains(center))
+                            })
+                    });
+                if focused_in_field {
+                    form.submit_requested = true;
+                }
+            }
+        }
 
         // Submit pass: re-validate everything against the post-edit value.
         let mut response = FormResponse::default();
@@ -240,6 +285,10 @@ pub struct FormUi<'a, T> {
     disabled: bool,
     submitting: bool,
     field_seq: usize,
+    /// Horizontal bands of the fields that participate in Enter-to-submit
+    /// (the focused widget's rect decides, since egui widget ids are
+    /// opaque and can't be tracked from the handle).
+    enter_fields: Vec<egui::Rect>,
 }
 
 impl<'a, T> FormUi<'a, T> {
@@ -250,6 +299,10 @@ impl<'a, T> FormUi<'a, T> {
     /// [`FormFieldCtx`]. Errors show once the form has been submitted (or
     /// immediately with validate-on-change), matching the source's
     /// `isTouched && !isValid` gating.
+    ///
+    /// Single-line inputs inside the field submit the form on Enter
+    /// ([`Form::submit_on_enter`]); use [`Self::field_multiline`] for
+    /// textarea fields.
     pub fn field<R>(
         &mut self,
         ui: &mut Ui,
@@ -279,8 +332,31 @@ impl<'a, T> FormUi<'a, T> {
             error,
             disabled: self.disabled,
         };
+        // Remember the drawn band for the Enter-to-submit focus check.
+        let band_top = ui.min_rect().bottom();
         let value = &mut *self.value;
-        render(ui, value, &ctx)
+        let out = render(ui, value, &ctx);
+        self.enter_fields.push(egui::Rect::from_min_max(
+            Pos2::new(ui.min_rect().left(), band_top),
+            Pos2::new(ui.min_rect().right(), ui.min_rect().bottom()),
+        ));
+        out
+    }
+
+    /// Like [`Self::field`], but excluded from Enter-to-submit: use it for
+    /// multiline `Textarea` content, where Enter inserts the newline (the
+    /// native `<form>` doesn't submit from a textarea either).
+    pub fn field_multiline<R>(
+        &mut self,
+        ui: &mut Ui,
+        name: impl Into<String>,
+        validate: impl Fn(&T) -> Option<String> + 'a,
+        render: impl FnOnce(&mut Ui, &mut T, &FormFieldCtx) -> R,
+    ) -> R {
+        let before = self.enter_fields.len();
+        let out = self.field(ui, name, validate, render);
+        self.enter_fields.truncate(before);
+        out
     }
 
     /// Renders the submit button (primary; spinner + disabled while
@@ -777,5 +853,182 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// Runs one form frame that renders a real single-line input under the
+    /// fixed ui id `form_enter_ui`, and returns the input's response id (for
+    /// focus control in later frames).
+    fn input_frame(
+        h: &Harness,
+        value: &mut Signup,
+        on_submit: Option<Rc<Cell<bool>>>,
+        press_enter: bool,
+    ) -> Option<Id> {
+        let mut input_id = None;
+        let mut input = egui::RawInput::default();
+        input.time = Some(h.time + 0.1);
+        if press_enter {
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        let mut out = h.ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("form_enter_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(420.0, 420.0),
+                )),
+            );
+            let mut form = Form::new(value).id_salt("enter");
+            if let Some(flag) = on_submit.clone() {
+                form = form.on_submit(move |_ui, _v| flag.set(true));
+            }
+            let _ = form.show(ui, |ui, form| {
+                form.field(ui, "email", email_validator, |ui, v, _ctx| {
+                    use crate::prelude::*;
+                    let r = Input::new(&mut v.email).show(ui);
+                    input_id = Some(r.id);
+                });
+                form.submit_button(ui, "Submit");
+            });
+        });
+        out.textures_delta.clear();
+        input_id
+    }
+
+    #[test]
+    fn enter_in_focused_input_submits() {
+        let mut h = Harness::new();
+        let mut value = Signup::default();
+        let called = Rc::new(Cell::new(false));
+
+        // Frame 1: lay out + capture the input id.
+        let input_id = input_frame(&h, &mut value, None, false).expect("input response id");
+
+        // Frame 2: focus the input, invalid submit attempt (empty email).
+        h.ctx.memory_mut(|m| m.request_focus(input_id));
+        let _ = input_frame(&h, &mut value, Some(called.clone()), true);
+        assert!(!called.get(), "invalid submit must not run on_submit");
+
+        // Frame 3: valid value, Enter again triggers the real submit.
+        value.email = "a@b.c".into();
+        h.ctx.memory_mut(|m| m.request_focus(input_id));
+        let _ = input_frame(&h, &mut value, Some(called.clone()), true);
+        assert!(called.get(), "Enter in a focused input must submit");
+    }
+
+    #[test]
+    fn enter_is_ignored_without_focus_or_with_opt_out() {
+        // Without any focused widget, Enter alone never submits.
+        let mut h = Harness::new();
+        let mut value = Signup::default();
+        let called = Rc::new(Cell::new(false));
+        let mut input = egui::RawInput::default();
+        input.time = Some(h.time + 0.1);
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out = h.ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("form_enter_nofocus_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(420.0, 420.0),
+                )),
+            );
+            let called2 = called.clone();
+            let _ = Form::new(&mut value)
+                .id_salt("nofocus")
+                .on_submit(move |_ui, _v| called2.set(true))
+                .show(ui, |ui, form| {
+                    form.field(ui, "email", email_validator, |_ui, _v, _ctx| {});
+                    form.submit_button(ui, "Submit");
+                });
+        });
+        out.textures_delta.clear();
+        assert!(!called.get(), "Enter without focus must not submit");
+
+        // Multiline fields (field_multiline) never submit on Enter, even
+        // when the textarea holds focus.
+        let h2 = Harness::new();
+        let mut value = Signup {
+            email: "a@b.c".into(),
+        };
+        let called2 = Rc::new(Cell::new(false));
+        let mut input = egui::RawInput::default();
+        input.time = Some(h2.time + 0.1);
+        let mut out = h2.ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("form_enter_multi_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(420.0, 420.0),
+                )),
+            );
+            let flag = called2.clone();
+            let _ = Form::new(&mut value)
+                .id_salt("multi")
+                .on_submit(move |_ui, _v| flag.set(true))
+                .show(ui, |ui, form| {
+                    form.field_multiline(ui, "email", email_validator, |ui, v, _ctx| {
+                        use crate::prelude::*;
+                        let r = Textarea::new(&mut v.email).show(ui);
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(Id::unique("multi_textarea_id"), r.id);
+                        });
+                    });
+                    form.submit_button(ui, "Submit");
+                });
+        });
+        out.textures_delta.clear();
+        let textarea_id = h2
+            .ctx
+            .data_mut(|d| d.get_temp::<Id>(Id::unique("multi_textarea_id")))
+            .expect("textarea id");
+        h2.ctx.memory_mut(|m| m.request_focus(textarea_id));
+        let mut input = egui::RawInput::default();
+        input.time = Some(h2.time + 0.2);
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut out = h2.ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("form_enter_multi_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(420.0, 420.0),
+                )),
+            );
+            let flag = called2.clone();
+            let _ = Form::new(&mut value)
+                .id_salt("multi")
+                .on_submit(move |_ui, _v| flag.set(true))
+                .show(ui, |ui, form| {
+                    form.field_multiline(ui, "email", email_validator, |ui, v, _ctx| {
+                        use crate::prelude::*;
+                        Textarea::new(&mut v.email).show(ui);
+                    });
+                    form.submit_button(ui, "Submit");
+                });
+        });
+        out.textures_delta.clear();
+        assert!(!called2.get(), "Enter in a multiline field must not submit");
     }
 }
