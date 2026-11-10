@@ -12,9 +12,11 @@
 //! Items, sub-menus, checkbox/radio items, shortcuts and keyboard navigation
 //! are shared with [`DropdownMenu`](crate::components::DropdownMenu).
 //! Behavior mirrors Radix: click a trigger to open, hover another trigger
-//! while one is open to switch, ArrowLeft/Right switch menus (or close/enter
-//! sub-menus when one is open), Escape closes (deepest sub-menu first),
-//! clicks outside close.
+//! while one is open to switch, Tab reaches the triggers when nothing is
+//! open (Enter/Space or ArrowDown opens the focused one, ArrowLeft/Right
+//! rove trigger focus), ArrowLeft/Right switch open menus (or close/enter
+//! sub-menus when one is open), typing jumps to matching items, Escape
+//! closes (deepest sub-menu first), clicks outside close.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -44,7 +46,7 @@
 use crate::components::dropdown_menu::{
     apply_activation, handle_menu_escape, handle_menu_keys, handle_outside_click, render_level,
     IndicatorSide, LevelShared, MenuActivated, MenuBuilder, MenuEntry, MenuSpec, MenuState,
-    TypeaheadState, MENU_LABEL_HEIGHT, SUB_MENU_MIN_WIDTH,
+    TypeaheadState,
 };
 use crate::theme::ShadcnTheme;
 use crate::utils::shadow;
@@ -72,6 +74,12 @@ pub const MENUBAR_SIDE_OFFSET: f32 = 8.0;
 pub const MENUBAR_ALIGN_OFFSET: f32 = -4.0;
 /// Content min width: nova `min-w-36` (144 px).
 pub const MENUBAR_MIN_WIDTH: f32 = 144.0;
+/// Section label row height: `py-1` + one `text-sm` line (28 px,
+/// `.cn-menubar-label`).
+pub const MENUBAR_LABEL_HEIGHT: f32 = 28.0;
+/// Sub-menu content min width: base `min-w-[8rem]` (128 px) — nova adds no
+/// `.cn-menubar-sub-content` override.
+pub const MENUBAR_SUB_MIN_WIDTH: f32 = 128.0;
 
 /// The height of a trigger inside the bar (bar height minus padding).
 pub const MENUBAR_TRIGGER_HEIGHT: f32 = MENUBAR_HEIGHT - 2.0 * MENUBAR_PADDING;
@@ -251,6 +259,7 @@ impl<'a> Menubar<'a> {
         let mut activation: Option<Vec<usize>> = None;
         let mut popup_rects: Vec<Rect> = Vec::new();
         let mut trigger_rects: Vec<Rect> = Vec::new();
+        let mut trigger_responses: Vec<Response> = Vec::new();
 
         // Keyboard handling for the open menu — once per frame (moving it
         // into the loop would run it once per open-menu transition).
@@ -326,6 +335,7 @@ impl<'a> Menubar<'a> {
                             paint_trigger(ui, state_id.with(("trigger", i)), label, is_open);
 
                         trigger_rects.push(trigger.rect);
+                        trigger_responses.push(trigger.clone());
 
                         // Capture the open state at press time, so a release
                         // after a hover-switch keeps the menu open.
@@ -394,6 +404,34 @@ impl<'a> Menubar<'a> {
                     }
                 });
             });
+
+        // Keyboard entry when nothing is open (Radix roving focus): Tab
+        // reaches the triggers through egui's focus navigation, ArrowLeft/
+        // Right rove focus across them, ArrowDown opens the focused
+        // trigger's menu, and Enter/Space activate it through egui's
+        // keyboard activation of focused click widgets.
+        if state.open_index.is_none() && count > 0 {
+            let (down, left, right) = ctx.input(|i| {
+                (
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::ArrowLeft),
+                    i.key_pressed(Key::ArrowRight),
+                )
+            });
+            if let Some(i) = trigger_responses.iter().position(|r| r.has_focus()) {
+                if right && count > 1 {
+                    trigger_responses[next_open(i, 1, count)].request_focus();
+                }
+                if left && count > 1 {
+                    trigger_responses[next_open(i, -1, count)].request_focus();
+                }
+                if down {
+                    state.open_index = Some(i);
+                    state.highlight.clear();
+                    state.fade_index = None;
+                }
+            }
+        }
 
         // Record hover state for next frame's enter detection.
         state.hovered = trigger_rects
@@ -479,9 +517,12 @@ fn render_menubar_level(
         min_width: MENUBAR_MIN_WIDTH,
         indicator: IndicatorSide::Left,
         label_muted: false,
-        label_height: MENU_LABEL_HEIGHT,
-        sub_min_width: SUB_MENU_MIN_WIDTH,
-        sub_border_is_ring: true,
+        label_height: MENUBAR_LABEL_HEIGHT,
+        sub_min_width: MENUBAR_SUB_MIN_WIDTH,
+        // The menubar sub-content has no nova override; the base recipe
+        // strokes with the `border` token (`menubar.tsx`: `border …
+        // shadow-lg`) while the root content stays `ring-foreground/10`.
+        sub_border_is_ring: false,
     };
     let mut shared = LevelShared {
         p: theme.palette,
@@ -512,16 +553,17 @@ fn render_menubar_level(
         &mut shared,
     );
 
-    // Done fading when the close animation finished.
+    // Done fading when the close animation finished (nova `duration-100`).
     if !open {
-        let progress = crate::utils::animation::overlay_progress(ctx, popup_id.with("anim"), false);
+        let progress =
+            crate::utils::animation::nova_overlay_progress(ctx, popup_id.with("anim"), false);
         return progress.alpha <= 0.002;
     }
     response.is_some()
 }
 
 /// One menubar trigger button: `rounded-sm px-1.5 py-[2px] text-sm
-/// font-medium` with `hover:bg-muted`, `aria-expanded:bg-muted` and
+/// font-medium` with `hover:bg-muted`, `aria-expanded:bg-muted` and the base
 /// `focus:bg-accent focus:text-accent-foreground`.
 fn paint_trigger(ui: &mut Ui, id: Id, label: &str, open: bool) -> Response {
     let theme = ShadcnTheme::of_ui(ui);
@@ -541,6 +583,8 @@ fn paint_trigger(ui: &mut Ui, id: Id, label: &str, open: bool) -> Response {
         let painter = ui.painter();
         let fill = if open || response.hovered() {
             p.muted
+        } else if response.has_focus() {
+            p.accent
         } else {
             Color32::TRANSPARENT
         };
@@ -596,6 +640,8 @@ mod tests {
         assert_eq!(MENUBAR_ALIGN_OFFSET, -4.0, "alignOffset=-4");
         assert_eq!(MENUBAR_MIN_WIDTH, 144.0, "min-w-36");
         assert_eq!(MENUBAR_TRIGGER_HEIGHT, 26.0);
+        assert_eq!(MENUBAR_LABEL_HEIGHT, 28.0, "label py-1 text-sm");
+        assert_eq!(MENUBAR_SUB_MIN_WIDTH, 128.0, "base min-w-[8rem]");
     }
 
     #[test]
@@ -816,6 +862,53 @@ mod tests {
             h.state("mb5").open_index,
             Some(1),
             "ArrowRight switches to Edit"
+        );
+    }
+
+    #[test]
+    fn keyboard_opens_and_roves_triggers_when_closed() {
+        let mut h = Harness::new();
+        draw(&mut h, "mb9");
+        let state_id = Id::unique("menubar_test_ui").with("mb9");
+
+        // Tab reaches the first trigger through egui focus navigation.
+        draw_key(&mut h, "mb9", Key::Tab);
+        assert!(
+            h.ctx.memory(|m| m.has_focus(state_id.with(("trigger", 0)))),
+            "Tab focuses the first trigger"
+        );
+
+        // ArrowLeft/Right rove trigger focus while nothing is open.
+        draw_key(&mut h, "mb9", Key::ArrowRight);
+        assert!(
+            h.ctx.memory(|m| m.has_focus(state_id.with(("trigger", 1)))),
+            "ArrowRight roves focus to the second trigger"
+        );
+        draw_key(&mut h, "mb9", Key::ArrowLeft);
+        assert!(
+            h.ctx.memory(|m| m.has_focus(state_id.with(("trigger", 0)))),
+            "ArrowLeft roves focus back"
+        );
+
+        // ArrowDown opens the focused trigger's menu.
+        draw_key(&mut h, "mb9", Key::ArrowDown);
+        assert_eq!(
+            h.state("mb9").open_index,
+            Some(0),
+            "ArrowDown opens the focused trigger's menu"
+        );
+
+        // Escape closes the menu and unfocuses the trigger (egui clears
+        // keyboard focus on Escape); Tab re-focuses a trigger and Enter
+        // opens it through egui's keyboard activation.
+        draw_key(&mut h, "mb9", Key::Escape);
+        assert_eq!(h.state("mb9").open_index, None);
+        draw_key(&mut h, "mb9", Key::Tab);
+        draw_key(&mut h, "mb9", Key::Enter);
+        assert_eq!(
+            h.state("mb9").open_index,
+            Some(0),
+            "Enter activates the focused trigger"
         );
     }
 

@@ -3210,7 +3210,7 @@ pub fn menubar_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
 
-    ui.label("Click a menu to open it. Hovering another menu switches while one is open. ArrowLeft/Right switch menus, ArrowUp/Down navigate items, Enter activates, Escape closes.");
+    ui.label("Click a menu to open it. Hovering another menu switches while one is open. Tab reaches the triggers when nothing is open (ArrowDown or Enter opens the focused one), ArrowLeft/Right switch menus, ArrowUp/Down navigate items, typing jumps to matching items, Enter activates, Escape closes.");
     ui.add_space(8.0);
 
     let res = Menubar::new().id_salt("menubar_demo").show(ui, |bar| {
