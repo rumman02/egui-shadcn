@@ -865,8 +865,10 @@ mod tests {
         press_enter: bool,
     ) -> Option<Id> {
         let mut input_id = None;
-        let mut input = egui::RawInput::default();
-        input.time = Some(h.time + 0.1);
+        let mut input = egui::RawInput {
+            time: Some(h.time + 0.1),
+            ..Default::default()
+        };
         if press_enter {
             input.events.push(egui::Event::Key {
                 key: egui::Key::Enter,
@@ -904,7 +906,7 @@ mod tests {
 
     #[test]
     fn enter_in_focused_input_submits() {
-        let mut h = Harness::new();
+        let h = Harness::new();
         let mut value = Signup::default();
         let called = Rc::new(Cell::new(false));
 
@@ -926,11 +928,13 @@ mod tests {
     #[test]
     fn enter_is_ignored_without_focus_or_with_opt_out() {
         // Without any focused widget, Enter alone never submits.
-        let mut h = Harness::new();
+        let h = Harness::new();
         let mut value = Signup::default();
         let called = Rc::new(Cell::new(false));
-        let mut input = egui::RawInput::default();
-        input.time = Some(h.time + 0.1);
+        let mut input = egui::RawInput {
+            time: Some(h.time + 0.1),
+            ..Default::default()
+        };
         input.events.push(egui::Event::Key {
             key: egui::Key::Enter,
             physical_key: None,
@@ -966,8 +970,10 @@ mod tests {
             email: "a@b.c".into(),
         };
         let called2 = Rc::new(Cell::new(false));
-        let mut input = egui::RawInput::default();
-        input.time = Some(h2.time + 0.1);
+        let input = egui::RawInput {
+            time: Some(h2.time + 0.1),
+            ..Default::default()
+        };
         let mut out = h2.ctx.run_ui(input, |ctx| {
             let ui = &mut egui::Ui::new(
                 ctx.clone(),
@@ -998,8 +1004,10 @@ mod tests {
             .data_mut(|d| d.get_temp::<Id>(Id::unique("multi_textarea_id")))
             .expect("textarea id");
         h2.ctx.memory_mut(|m| m.request_focus(textarea_id));
-        let mut input = egui::RawInput::default();
-        input.time = Some(h2.time + 0.2);
+        let mut input = egui::RawInput {
+            time: Some(h2.time + 0.2),
+            ..Default::default()
+        };
         input.events.push(egui::Event::Key {
             key: egui::Key::Enter,
             physical_key: None,
