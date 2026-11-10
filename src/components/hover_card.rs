@@ -20,8 +20,9 @@
 //! });
 //! ```
 
+use crate::components::popover::PopoverAlign;
 use crate::theme::ShadcnTheme;
-use crate::utils::animation::overlay_progress;
+use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
 use egui::emath::RectAlign;
 use egui::{
@@ -273,8 +274,9 @@ impl<'a> HoverCardTrigger<'a> {
     }
 }
 
-/// Renders `@handle`-style inline link text (`text-primary`, underline on
-/// hover) as used by the shadcn hover-card demo.
+/// Renders `@handle`-style inline link text like the demo's
+/// `<Button variant="link">`: `text-primary`, fading to 80% and underlining
+/// only while hovered (`hover:underline`).
 fn link_label(ui: &mut Ui, text: &str, id_salt: Option<String>) -> Response {
     let theme = ShadcnTheme::of_ui(ui);
     let p = theme.palette;
@@ -290,7 +292,8 @@ fn link_label(ui: &mut Ui, text: &str, id_salt: Option<String>) -> Response {
     let response = ui.interact(rect, id, Sense::click() | Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, text.to_owned()));
     if ui.is_rect_visible(rect) {
-        let color = if response.hovered() {
+        let hovered = response.hovered();
+        let color = if hovered {
             crate::theme::color_alpha(p.primary, 0.8)
         } else {
             p.primary
@@ -301,12 +304,14 @@ fn link_label(ui: &mut Ui, text: &str, id_salt: Option<String>) -> Response {
             color,
         );
         ui.painter().galley(rect.min, galley, color);
-        // Underline like the demo's `<a>`.
-        let y = rect.bottom() + 1.0;
-        ui.painter().line_segment(
-            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            egui::Stroke::new(1.0, color),
-        );
+        if hovered {
+            // `hover:underline`
+            let y = rect.bottom() + 1.0;
+            ui.painter().line_segment(
+                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                egui::Stroke::new(1.0, color),
+            );
+        }
     }
     response
 }
@@ -315,15 +320,27 @@ fn link_label(ui: &mut Ui, text: &str, id_salt: Option<String>) -> Response {
 // HoverCardContent
 // ---------------------------------------------------------------------------
 
+/// Maps the shared [`PopoverAlign`] onto the hover card's bottom-edge
+/// alignment (the source `align = "start" | "center" | "end"`).
+fn hover_card_rect_align(align: PopoverAlign) -> RectAlign {
+    match align {
+        PopoverAlign::Start => RectAlign::BOTTOM_START,
+        PopoverAlign::Center => RectAlign::BOTTOM,
+        PopoverAlign::End => RectAlign::BOTTOM_END,
+    }
+}
+
 /// The card body: `w-64 rounded-lg p-2.5 bg-popover ring-foreground/10
 /// shadow-md` (nova) with a fade + slide-in animation, `sideOffset = 4`.
 ///
 /// Stays open while the pointer is over the card, so content can contain
-/// interactive widgets.
+/// interactive widgets. The card opens below the trigger by default with the
+/// source's `align = "center"`; see [`HoverCardContent::align`].
 #[derive(Clone, Debug)]
 pub struct HoverCardContent {
     width: Option<f32>,
     side_offset: Option<f32>,
+    align: PopoverAlign,
     id_salt: Option<String>,
 }
 
@@ -335,11 +352,12 @@ impl Default for HoverCardContent {
 
 impl HoverCardContent {
     /// Creates hover-card content with the source defaults (`w-64`,
-    /// `sideOffset = 4`).
+    /// `align = "center"`, `sideOffset = 4`).
     pub fn new() -> Self {
         Self {
             width: None,
             side_offset: None,
+            align: PopoverAlign::default(),
             id_salt: None,
         }
     }
@@ -353,6 +371,13 @@ impl HoverCardContent {
     /// Overrides the trigger-to-content gap.
     pub fn side_offset(mut self, offset: f32) -> Self {
         self.side_offset = Some(offset);
+        self
+    }
+
+    /// Sets the horizontal alignment below the trigger (the source's
+    /// `align` prop, default `center`).
+    pub fn align(mut self, align: PopoverAlign) -> Self {
+        self.align = align;
         self
     }
 
@@ -383,7 +408,8 @@ impl HoverCardContent {
         let popup_id = state_id.with("popup");
         let anim_id = state_id.with("anim");
 
-        let progress = overlay_progress(&ctx, anim_id, open);
+        // nova `duration-100` fade (zoom-in-95 approximated by the fade).
+        let progress = nova_overlay_progress(&ctx, anim_id, open);
         if !(open || progress.alpha > 0.002) {
             return None;
         }
@@ -409,7 +435,7 @@ impl HoverCardContent {
             trigger.layer_id,
         )
         .open(true)
-        .align(RectAlign::BOTTOM)
+        .align(hover_card_rect_align(self.align))
         .gap(gap)
         .width(width)
         .frame(Frame::new());
@@ -616,11 +642,29 @@ mod tests {
         let c = HoverCardContent::new()
             .width(300.0)
             .side_offset(8.0)
+            .align(PopoverAlign::End)
             .id_salt("c");
         assert_eq!(c.width, Some(300.0));
         assert_eq!(c.side_offset, Some(8.0));
+        assert_eq!(c.align, PopoverAlign::End);
         let t = HoverCardTrigger::new("hi").id_salt("t");
         assert_eq!(t.id_salt.as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn align_maps_to_rect_aligns() {
+        assert_eq!(
+            hover_card_rect_align(PopoverAlign::Start),
+            RectAlign::BOTTOM_START
+        );
+        assert_eq!(
+            hover_card_rect_align(PopoverAlign::Center),
+            RectAlign::BOTTOM
+        );
+        assert_eq!(
+            hover_card_rect_align(PopoverAlign::End),
+            RectAlign::BOTTOM_END
+        );
     }
 
     #[test]

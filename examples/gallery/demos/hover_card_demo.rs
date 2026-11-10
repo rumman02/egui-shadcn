@@ -7,12 +7,21 @@ pub fn hover_card_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
     HoverCard::new().id_salt("demo_basic").show(ui, |ui| {
         HoverCardTrigger::new("@nextjs").show(ui);
-        HoverCardContent::new().show(ui, |ui| {
-            ui.set_min_width(220.0);
-            ui.strong("@nextjs");
-            ui.weak("The React Framework \u{2013} created and maintained by Vercel.");
-            ui.add_space(8.0);
-            ui.weak("Joined Dec 2020");
+        HoverCardContent::new().width(320.0).show(ui, |ui| {
+            // Official demo parity: `w-80`, title, description, muted date.
+            let p = ShadcnTheme::of_ui(ui).palette;
+            ui.label(egui::RichText::new("@nextjs").size(type_scale::SM).strong());
+            ui.label(
+                egui::RichText::new(
+                    "The React Framework \u{2013} created and maintained by @vercel.",
+                )
+                .size(type_scale::SM),
+            );
+            ui.label(
+                egui::RichText::new("Joined December 2021")
+                    .size(type_scale::XS)
+                    .color(p.muted_foreground),
+            );
         });
     });
 
