@@ -3713,12 +3713,15 @@ pub fn calendar_demo(ui: &mut egui::Ui) {
 
 pub fn date_picker_demo(ui: &mut egui::Ui) {
     use egui_shadcn_ui::components::calendar::CalendarDate;
+    use egui_shadcn_ui::components::date_picker::DatePickerPreset;
 
     let store = egui::Id::unique("date_picker_demo_values");
     #[derive(Clone, Default)]
     struct DemoState {
         empty: Option<CalendarDate>,
         preset: Option<CalendarDate>,
+        presets_picked: Option<CalendarDate>,
+        range: Option<(CalendarDate, CalendarDate)>,
     }
     let mut state: DemoState = ui
         .ctx()
@@ -3741,6 +3744,27 @@ pub fn date_picker_demo(ui: &mut egui::Ui) {
     }
     DatePicker::new(&mut state.preset)
         .id_salt("demo_preset")
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("With presets (Select above the calendar)");
+    ui.add_space(4.0);
+    DatePicker::new(&mut state.presets_picked)
+        .id_salt("demo_presets")
+        .with_presets([
+            DatePickerPreset::new("Today", 0),
+            DatePickerPreset::new("Tomorrow", 1),
+            DatePickerPreset::new("In 3 days", 3),
+            DatePickerPreset::new("In a week", 7),
+        ])
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Range mode (stays open until both ends are chosen)");
+    ui.add_space(4.0);
+    DatePicker::range(&mut state.range)
+        .id_salt("demo_range")
+        .width(300.0)
         .show(ui);
 
     ui.add_space(16.0);
