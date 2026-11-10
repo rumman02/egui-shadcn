@@ -21,7 +21,6 @@ pub fn popover_demo(ui: &mut egui::Ui) {
             ui.add(egui::TextEdit::singleline(&mut height).desired_width(120.0));
             set_scratch(ui, "w", width);
             set_scratch(ui, "h", height);
-            ui.add_space(6.0);
             Button::new("Save").show(ui);
         });
     });
@@ -81,6 +80,49 @@ pub fn popover_demo(ui: &mut egui::Ui) {
                 .align(PopoverAlign::End)
                 .show(ui, |ui| {
                     ui.label("Aligned to the trigger's right edge (align=\"end\").");
+                });
+        });
+    });
+
+    ui.add_space(16.0);
+    ui.heading("Sides");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Popover::new().id_salt("demo_side_top").show(ui, |ui| {
+            PopoverTrigger::widget(|ui| {
+                Button::new("Side top")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui)
+            })
+            .show(ui);
+            PopoverContent::new().side(PopoverSide::Top).show(ui, |ui| {
+                ui.label("Opens above the trigger (side=\"top\").");
+            });
+        });
+        Popover::new().id_salt("demo_side_right").show(ui, |ui| {
+            PopoverTrigger::widget(|ui| {
+                Button::new("Side right")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui)
+            })
+            .show(ui);
+            PopoverContent::new()
+                .side(PopoverSide::Right)
+                .show(ui, |ui| {
+                    ui.label("Opens to the right (side=\"right\").");
+                });
+        });
+        Popover::new().id_salt("demo_side_left").show(ui, |ui| {
+            PopoverTrigger::widget(|ui| {
+                Button::new("Side left")
+                    .variant(ButtonVariant::Outline)
+                    .show(ui)
+            })
+            .show(ui);
+            PopoverContent::new()
+                .side(PopoverSide::Left)
+                .show(ui, |ui| {
+                    ui.label("Opens to the left (side=\"left\").");
                 });
         });
     });

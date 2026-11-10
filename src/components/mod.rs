@@ -189,8 +189,8 @@ pub use pagination::{
     PaginationNext, PaginationPrevious, PAGINATION_ELLIPSIS_SIZE,
 };
 pub use popover::{
-    Popover, PopoverAlign, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle,
-    PopoverTrigger, POPOVER_DEFAULT_WIDTH, POPOVER_SIDE_OFFSET,
+    Popover, PopoverAlign, PopoverContent, PopoverDescription, PopoverHeader, PopoverSide,
+    PopoverTitle, PopoverTrigger, POPOVER_DEFAULT_WIDTH, POPOVER_SIDE_OFFSET,
 };
 pub use progress::Progress;
 pub use radio_group::{RadioGroup, RadioGroupItem, RadioOption, RADIO_DOT_SIZE, RADIO_SIZE};

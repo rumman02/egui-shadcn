@@ -2,8 +2,10 @@
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/popover.tsx` (Radix Popover)
 //! with the nova recipe: `bg-popover text-popover-foreground ring-foreground/10
-//! rounded-lg p-2.5 shadow-md`, default width `w-72` (288 px) and
-//! `sideOffset = 4`.
+//! rounded-lg p-2.5 shadow-md`, `flex flex-col gap-2.5`, default width `w-72`
+//! (288 px) and `sideOffset = 4`. The content opens on a configurable side
+//! ([`PopoverSide`]) with [`PopoverAlign`] along it, like Radix's `side` and
+//! `align` props.
 //!
 //! The root owns the open state — uncontrolled (persisted per `id_salt`) or
 //! controlled through a `&mut bool` with [`Popover::controlled`]. The trigger
@@ -32,7 +34,7 @@
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::theme::{color_alpha, ShadcnTheme};
-use crate::utils::animation::overlay_progress;
+use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
 use egui::emath::RectAlign;
 use egui::{
@@ -95,13 +97,38 @@ pub enum PopoverAlign {
 }
 
 impl PopoverAlign {
-    fn rect_align(self) -> RectAlign {
-        match self {
-            PopoverAlign::Start => RectAlign::BOTTOM_START,
-            PopoverAlign::Center => RectAlign::BOTTOM,
-            PopoverAlign::End => RectAlign::BOTTOM_END,
+    /// The full [`RectAlign`]: the side picks the edge, the align picks the
+    /// position along it (Radix `side` + `align`).
+    fn rect_align_for(self, side: PopoverSide) -> RectAlign {
+        match (side, self) {
+            (PopoverSide::Bottom, PopoverAlign::Start) => RectAlign::BOTTOM_START,
+            (PopoverSide::Bottom, PopoverAlign::Center) => RectAlign::BOTTOM,
+            (PopoverSide::Bottom, PopoverAlign::End) => RectAlign::BOTTOM_END,
+            (PopoverSide::Top, PopoverAlign::Start) => RectAlign::TOP_START,
+            (PopoverSide::Top, PopoverAlign::Center) => RectAlign::TOP,
+            (PopoverSide::Top, PopoverAlign::End) => RectAlign::TOP_END,
+            (PopoverSide::Left, PopoverAlign::Start) => RectAlign::LEFT_START,
+            (PopoverSide::Left, PopoverAlign::Center) => RectAlign::LEFT,
+            (PopoverSide::Left, PopoverAlign::End) => RectAlign::LEFT_END,
+            (PopoverSide::Right, PopoverAlign::Start) => RectAlign::RIGHT_START,
+            (PopoverSide::Right, PopoverAlign::Center) => RectAlign::RIGHT,
+            (PopoverSide::Right, PopoverAlign::End) => RectAlign::RIGHT_END,
         }
     }
+}
+
+/// Which side of the trigger the content opens on (Radix `side` prop).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PopoverSide {
+    /// Above the trigger.
+    Top,
+    /// Below the trigger (the source default).
+    #[default]
+    Bottom,
+    /// Left of the trigger.
+    Left,
+    /// Right of the trigger.
+    Right,
 }
 
 /// Per-instance state: open flag plus the last trigger geometry.
@@ -322,6 +349,7 @@ impl<'a> PopoverTrigger<'a> {
 pub struct PopoverContent {
     width: Option<f32>,
     side_offset: Option<f32>,
+    side: PopoverSide,
     align: PopoverAlign,
     id_salt: Option<String>,
 }
@@ -333,12 +361,13 @@ impl Default for PopoverContent {
 }
 
 impl PopoverContent {
-    /// Creates popover content with the source defaults (`w-72`, `align =
-    /// "center"`, `sideOffset = 4`).
+    /// Creates popover content with the source defaults (`w-72`, `side =
+    /// "bottom"`, `align = "center"`, `sideOffset = 4`).
     pub fn new() -> Self {
         Self {
             width: None,
             side_offset: None,
+            side: PopoverSide::default(),
             align: PopoverAlign::default(),
             id_salt: None,
         }
@@ -356,7 +385,13 @@ impl PopoverContent {
         self
     }
 
-    /// Sets the horizontal alignment against the trigger.
+    /// Sets the side of the trigger the content opens on.
+    pub fn side(mut self, side: PopoverSide) -> Self {
+        self.side = side;
+        self
+    }
+
+    /// Sets the alignment along the opening side.
     pub fn align(mut self, align: PopoverAlign) -> Self {
         self.align = align;
         self
@@ -389,9 +424,9 @@ impl PopoverContent {
         let popup_id = state_id.with("popup");
         let anim_id = state_id.with("anim");
 
-        // `data-[state=open]:fade-in-0 zoom-in-95` (zoom approximated by the
-        // fade) plus `slide-in-from-top-2` on the opening side.
-        let progress = overlay_progress(&ctx, anim_id, open);
+        // nova `duration-100` fade, `slide-in-from-*-2` on the opening side
+        // (zoom-in-95 approximated by the fade).
+        let progress = nova_overlay_progress(&ctx, anim_id, open);
         if !(open || progress.alpha > 0.002) {
             return None;
         }
@@ -415,7 +450,7 @@ impl PopoverContent {
             trigger.layer_id,
         )
         .open(true)
-        .align(self.align.rect_align())
+        .align(self.align.rect_align_for(self.side))
         .gap(gap)
         .width(width)
         .frame(Frame::new())
@@ -425,6 +460,8 @@ impl PopoverContent {
             ui.set_opacity(progress.alpha);
             frame.show(ui, |ui| {
                 ui.set_min_width(width - margin.left as f32 - margin.right as f32);
+                // nova `.cn-popover-content`: `flex flex-col gap-2.5`.
+                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::SM_HALF;
                 content(ui);
             });
         });
@@ -811,10 +848,12 @@ mod tests {
         let c = PopoverContent::new()
             .width(100.0)
             .side_offset(2.0)
+            .side(PopoverSide::Top)
             .align(PopoverAlign::End)
             .id_salt("c");
         assert_eq!(c.width, Some(100.0));
         assert_eq!(c.side_offset, Some(2.0));
+        assert_eq!(c.side, PopoverSide::Top);
         assert_eq!(c.align, PopoverAlign::End);
     }
 
@@ -827,9 +866,47 @@ mod tests {
 
     #[test]
     fn align_maps_to_rect_aligns() {
-        assert_eq!(PopoverAlign::Start.rect_align(), RectAlign::BOTTOM_START);
-        assert_eq!(PopoverAlign::Center.rect_align(), RectAlign::BOTTOM);
-        assert_eq!(PopoverAlign::End.rect_align(), RectAlign::BOTTOM_END);
+        // Bottom is the source default side.
+        assert_eq!(
+            PopoverAlign::Start.rect_align_for(PopoverSide::Bottom),
+            RectAlign::BOTTOM_START
+        );
+        assert_eq!(
+            PopoverAlign::Center.rect_align_for(PopoverSide::Bottom),
+            RectAlign::BOTTOM
+        );
+        assert_eq!(
+            PopoverAlign::End.rect_align_for(PopoverSide::Bottom),
+            RectAlign::BOTTOM_END
+        );
+    }
+
+    #[test]
+    fn side_and_align_map_to_rect_aligns() {
+        for side in [
+            PopoverSide::Top,
+            PopoverSide::Bottom,
+            PopoverSide::Left,
+            PopoverSide::Right,
+        ] {
+            assert_eq!(
+                PopoverAlign::Center.rect_align_for(side),
+                match side {
+                    PopoverSide::Top => RectAlign::TOP,
+                    PopoverSide::Bottom => RectAlign::BOTTOM,
+                    PopoverSide::Left => RectAlign::LEFT,
+                    PopoverSide::Right => RectAlign::RIGHT,
+                }
+            );
+        }
+        assert_eq!(
+            PopoverAlign::Start.rect_align_for(PopoverSide::Left),
+            RectAlign::LEFT_START
+        );
+        assert_eq!(
+            PopoverAlign::End.rect_align_for(PopoverSide::Top),
+            RectAlign::TOP_END
+        );
     }
 
     #[test]
