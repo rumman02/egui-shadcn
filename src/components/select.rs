@@ -55,6 +55,7 @@
 //! Select::uncontrolled().id_salt("solo").option("A").show_seeded(ui);
 //! ```
 
+use crate::components::direction;
 use crate::components::dropdown_menu::{TypeaheadState, MENU_TYPEAHEAD_TIMEOUT_SECS};
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme};
@@ -864,6 +865,9 @@ impl<'a> Select<'a> {
                         popup_id,
                         trigger.rect,
                         trigger.layer_id,
+                        // RTL mirrors the popup to hug the trigger's right
+                        // edge (Radix flips inline alignment).
+                        direction::popup_align(ui, RectAlign::BOTTOM_START, RectAlign::BOTTOM_END),
                         &p,
                         dark,
                         &theme,
@@ -984,6 +988,7 @@ fn render_popup(
     popup_id: Id,
     anchor: Rect,
     parent_layer: LayerId,
+    align: RectAlign,
     p: &Palette,
     dark: bool,
     theme: &ShadcnTheme,
@@ -1022,7 +1027,7 @@ fn render_popup(
     )
     .open(true)
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-    .align(RectAlign::BOTTOM_START)
+    .align(align)
     .gap(gap)
     .width(content_width)
     .frame(egui::Frame::new());
@@ -1613,6 +1618,77 @@ mod tests {
                 .show_seeded(ui);
         });
         assert!(!h.state("esc").open, "Escape must close the select");
+    }
+
+    #[test]
+    fn rtl_scope_mirrors_popup_alignment() {
+        use crate::components::direction::DirectionProvider;
+        let mut h = Harness::new();
+        let mut scope = Id::NULL;
+        let mut rect = Rect::ZERO;
+        // An 80px trigger keeps it narrower than the popup's 144px min
+        // width, so the two alignments land on different rects. Capture
+        // the trigger rect and the RTL scope id: the provider's
+        // `with_layout` pushes a child scope, so the select state (and the
+        // popup id) live one scope below the harness ui.
+        h.run(|ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                scope = ui.scope_id();
+                rect = Select::uncontrolled()
+                    .id_salt("rtl")
+                    .width(80.0)
+                    .options(OPTS)
+                    .show_seeded(ui)
+                    .trigger
+                    .rect;
+            });
+        });
+        h.click(rect.center(), |ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                Select::uncontrolled()
+                    .id_salt("rtl")
+                    .width(80.0)
+                    .options(OPTS)
+                    .show_seeded(ui);
+            });
+        });
+        let state = h
+            .ctx
+            .data_mut(|d| d.get_temp::<SelectState>(scope.with("rtl")))
+            .unwrap_or_default();
+        assert!(state.open, "clicking the trigger opens the select");
+        // Let the popup settle one frame (a popup's first pass is
+        // sizing-only).
+        h.run(|ui| {
+            DirectionProvider::rtl().show(ui, |ui| {
+                Select::uncontrolled()
+                    .id_salt("rtl")
+                    .width(80.0)
+                    .options(OPTS)
+                    .show_seeded(ui);
+            });
+        });
+        let popup_id = scope.with("rtl").with("popup");
+        let popup_rect = h
+            .ctx
+            .read_response(popup_id)
+            .map(|r| r.rect)
+            .unwrap_or(Rect::NOTHING);
+        assert!(popup_rect != Rect::NOTHING, "popup must be on screen");
+        assert!(
+            (popup_rect.max.x - rect.max.x).abs() < 3.0,
+            "RTL select hugs the trigger's right edge (popup.max.x={}, \
+             trigger.max.x={})",
+            popup_rect.max.x,
+            rect.max.x
+        );
+        assert!(
+            popup_rect.min.x < rect.min.x,
+            "the popup extends leftward from the trigger (popup.min.x={}, \
+             trigger.min.x={})",
+            popup_rect.min.x,
+            rect.min.x
+        );
     }
 
     #[test]
