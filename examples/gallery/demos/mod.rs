@@ -2590,6 +2590,21 @@ pub fn breadcrumb_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("Custom separator icon (the source accepts arbitrary children)");
+    ui.add_space(4.0);
+    Breadcrumb::new().show(ui, |ui| {
+        BreadcrumbList::new().show(ui, |ui| {
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Home").show(ui);
+            });
+            BreadcrumbSeparator::new().icon(Icon::Minus).show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbPage::new("Breadcrumb").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
     ui.label("Hover a link — it brightens (hover:text-foreground).");
 
     let clicked_store = egui::Id::unique("breadcrumb_demo_clicked");

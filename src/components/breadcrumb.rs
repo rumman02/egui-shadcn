@@ -4,6 +4,8 @@
 //! overrides: list `gap-1.5`, ellipsis `size-5`): a muted `text-sm` row of
 //! items separated by chevrons, links that brighten on hover, the current
 //! page in full-strength foreground, and a `MoreHorizontal` ellipsis slot.
+//! The list wraps onto multiple lines like the source's `flex-wrap`, and
+//! separators accept a custom icon.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -35,6 +37,8 @@ use egui::{Align2, Color32, FontId, Pos2, Response, Sense, Ui, Vec2};
 
 /// Text size for breadcrumb rows (`text-sm`).
 const TEXT_SIZE: f32 = crate::theme::tokens::type_scale::SM;
+/// Row height for links and the page (`text-sm` line-height = 20px).
+const LINE_HEIGHT: f32 = 20.0;
 /// Separator chevron size (`[&>svg]:size-3.5` = 14px).
 pub const BREADCRUMB_SEPARATOR_SIZE: f32 = 14.0;
 /// Ellipsis box size (nova `size-5` = 20px).
@@ -66,7 +70,8 @@ impl Breadcrumb {
 // BreadcrumbList
 // ---------------------------------------------------------------------------
 
-/// The `<ol>` row: `flex items-center gap-1.5 text-sm text-muted-foreground`.
+/// The `<ol>` row: `flex flex-wrap items-center gap-1.5 text-sm
+/// text-muted-foreground` — items wrap onto new lines in narrow layouts.
 #[derive(Clone, Debug, Default)]
 pub struct BreadcrumbList {
     gap: f32,
@@ -86,9 +91,9 @@ impl BreadcrumbList {
         self
     }
 
-    /// Lays out the breadcrumb items in a row.
+    /// Lays out the breadcrumb items in a wrapping row.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = self.gap;
             content(ui);
         });
@@ -158,8 +163,7 @@ impl BreadcrumbLink {
             .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
             .size()
             .x;
-        let line_h = TEXT_SIZE * 1.3;
-        let desired = Vec2::new(text_w, line_h);
+        let desired = Vec2::new(text_w, LINE_HEIGHT);
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -223,8 +227,8 @@ impl BreadcrumbPage {
             .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
             .size()
             .x;
-        let line_h = TEXT_SIZE * 1.3;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(text_w, line_h), Sense::hover());
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(text_w, LINE_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
             ui.painter().text(
                 Pos2::new(rect.min.x, rect.center().y),
@@ -401,6 +405,74 @@ mod tests {
             });
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn rows_use_the_20px_text_sm_line_height() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("breadcrumb_line_height_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(400.0, 200.0),
+                )),
+            );
+            let link = BreadcrumbLink::new("Home").show(ui).rect;
+            assert!(
+                (link.height() - 20.0).abs() < 0.5,
+                "link row height {} should be the 20px `text-sm` line box",
+                link.height()
+            );
+            let page = BreadcrumbPage::new("Breadcrumb").show(ui).rect;
+            assert!(
+                (page.height() - 20.0).abs() < 0.5,
+                "page row height {} should be the 20px `text-sm` line box",
+                page.height()
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn list_wraps_onto_new_lines() {
+        // `flex-wrap break-words`: in a narrow container the items move to
+        // following lines instead of overflowing.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut link_rects = [egui::Rect::ZERO; 3];
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("breadcrumb_wrap_ui"),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(140.0, 200.0),
+                )),
+            );
+            Breadcrumb::new().show(ui, |ui| {
+                BreadcrumbList::new().show(ui, |ui| {
+                    for (i, label) in ["Components", "Documentation", "Breadcrumb"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        link_rects[i] = BreadcrumbLink::new(label).show(ui).rect;
+                    }
+                });
+            });
+        });
+        out.textures_delta.clear();
+        assert!(
+            link_rects[1].top() > link_rects[0].bottom()
+                || link_rects[1].left() > link_rects[0].right(),
+            "items flow with the list gap"
+        );
+        assert!(
+            link_rects[2].top() > link_rects[0].bottom(),
+            "the third item wrapped onto a later line"
+        );
     }
 
     #[test]
