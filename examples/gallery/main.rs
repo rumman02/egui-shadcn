@@ -272,7 +272,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "accordion",
-            show: Some(demos::accordion_demo),
+            show: Some(demos::accordion_demo::accordion_demo),
         },
         DemoPage {
             name: "collapsible",

@@ -359,7 +359,14 @@ impl CollapsibleContent {
         };
         let open = read_open(ui, state_id);
         let anim_id = state_id.with("content_anim");
-        animated_disclosure(ui, anim_id, open, content);
+        animated_disclosure(
+            ui,
+            anim_id,
+            open,
+            animation::Duration::Default,
+            animation::Duration::Fast,
+            content,
+        );
     }
 }
 
@@ -371,15 +378,26 @@ impl CollapsibleContent {
 ///
 /// The full content height is measured from the laid-out child (clipping does
 /// not affect layout) and cached per `anim_id`, so the animation converges
-/// after content changes.
+/// after content changes. `open_dur` / `close_dur` set the reveal and collapse
+/// timing — the accordion passes 200ms in both directions
+/// (`animate-accordion-down/up`), while the collapsible keeps the generic
+/// open/close timing.
 pub(crate) fn animated_disclosure(
     ui: &mut Ui,
     anim_id: Id,
     open: bool,
+    open_dur: animation::Duration,
+    close_dur: animation::Duration,
     content: impl FnOnce(&mut Ui),
 ) {
     let ctx = ui.ctx().clone();
-    let progress = animation::open_progress(&ctx, anim_id, open);
+    let target = if open { 1.0 } else { 0.0 };
+    let progress = animation::animate_value(
+        &ctx,
+        anim_id,
+        target,
+        if open { open_dur } else { close_dur },
+    );
     if !open && progress <= 0.0 {
         return; // fully closed: paint and lay out nothing
     }

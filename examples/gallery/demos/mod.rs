@@ -1,5 +1,6 @@
 //! One demo module per ported component.
 
+pub mod accordion_demo;
 pub mod alert_dialog_demo;
 pub mod chart_demo;
 pub mod data_table_demo;
@@ -816,11 +817,12 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
 
 pub fn radio_group_demo(ui: &mut egui::Ui) {
     let store = egui::Id::unique("radio_demo_values");
-    let mut values: [Option<usize>; 3] = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(store).unwrap_or([Some(0), None, Some(1)]));
+    let mut values: [Option<usize>; 5] = ui.ctx().data_mut(|d| {
+        d.get_temp(store)
+            .unwrap_or([Some(0), None, Some(1), Some(0), Some(0)])
+    });
 
-    ui.label("Vertical (default, gap-3)");
+    ui.label("Vertical (default)");
     ui.add_space(4.0);
     RadioGroup::new(&mut values[0])
         .id_salt("radio_demo_default")
@@ -854,13 +856,13 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
     ui.label("Disabled group and invalid items");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        RadioGroup::new(&mut values[0])
+        RadioGroup::new(&mut values[3])
             .id_salt("radio_demo_disabled_group")
             .disabled(true)
             .option("A")
             .option("B")
             .show(ui);
-        RadioGroup::new(&mut values[0])
+        RadioGroup::new(&mut values[4])
             .id_salt("radio_demo_invalid")
             .invalid(true)
             .option("A")
@@ -885,7 +887,7 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Keyboard: arrows move the selection and focus (wrapping).");
+    ui.label("Keyboard: arrows move the selection and focus (no wrap-around).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
@@ -2319,105 +2321,6 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
             ui.label("Just a couple of lines — the scrollbar only appears when needed.");
             ui.label("Second line.");
         });
-}
-
-pub fn accordion_demo(ui: &mut egui::Ui) {
-    let multi_store = egui::Id::unique("accordion_demo_multi");
-    let mut multi: Vec<bool> = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(multi_store).unwrap_or(vec![true, false, false]));
-
-    ui.label("Single, collapsible (first item open by default)");
-    ui.add_space(4.0);
-    Accordion::new()
-        .id_salt("accordion_demo_single")
-        .default_open(0)
-        .show(ui, |ui| {
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Product Information").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label(
-                        "Our flagship product combines cutting-edge technology with sleek design. \
-                     Built with premium materials, it offers unparalleled performance.",
-                    );
-                    ui.label(
-                        "Key features include advanced processing capabilities and an intuitive \
-                     user interface designed for both beginners and experts.",
-                    );
-                });
-            });
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Shipping Details").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label(
-                        "We offer worldwide shipping through trusted courier partners. Standard \
-                     delivery takes 3-5 business days, express shipping 1-2 business days.",
-                    );
-                });
-            });
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Return Policy").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label(
-                        "We stand behind our products with a comprehensive 30-day return policy. \
-                     Free return shipping and full refunds processed within 48 hours.",
-                    );
-                });
-            });
-        });
-
-    ui.add_space(12.0);
-    ui.label(format!("Multiple (open flags: {multi:?})"));
-    ui.add_space(4.0);
-    Accordion::multiple(&mut multi)
-        .id_salt("accordion_demo_multi")
-        .show(ui, |ui| {
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Billing").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label("Invoices are issued monthly and can be downloaded as PDFs.");
-                });
-            });
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Team members").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label("Invite unlimited teammates on the Pro plan.");
-                });
-            });
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("API access").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label("Generate personal access tokens from the dashboard.");
-                });
-            });
-        });
-
-    ui.add_space(12.0);
-    ui.label("Disabled trigger and non-collapsible single");
-    ui.add_space(4.0);
-    Accordion::new()
-        .id_salt("accordion_demo_locked")
-        .default_open(0)
-        .collapsible(false)
-        .show(ui, |ui| {
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Always open (collapsible = false)").show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label("Clicking this trigger keeps the section open.");
-                });
-            });
-            AccordionItem::new().show(ui, |ui| {
-                AccordionTrigger::new("Unavailable").disabled(true).show(ui);
-                AccordionContent::new().show(ui, |ui| {
-                    ui.label("You cannot open this section.");
-                });
-            });
-        });
-
-    ui.add_space(12.0);
-    ui.label("Keyboard: Tab and Arrow keys move focus; Enter or Space toggles.");
-
-    ui.ctx().data_mut(|d| d.insert_temp(multi_store, multi));
 }
 
 pub fn tabs_demo(ui: &mut egui::Ui) {

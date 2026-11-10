@@ -11,12 +11,11 @@
 //! [`Accordion::new`] for an uncontrolled single accordion,
 //! [`Accordion::single`] / [`Accordion::multiple`] for controlled state.
 //!
-//! Keyboard: triggers are focusable and egui moves focus between them with
-//! Tab and Arrow keys (its built-in spatial navigation); Enter/Space toggle
-//! the focused trigger (egui's keyboard activation for click widgets).
-//! Unlike Radix, moving focus with the arrow keys does not itself activate
-//! the item — egui owns focus movement, so the user presses Enter/Space to
-//! expand.
+//! Keyboard (Radix roving focus): ArrowDown/ArrowRight move focus to the
+//! next trigger, ArrowUp/ArrowLeft to the previous one, and Home/End jump to
+//! the first/last trigger; Enter/Space toggle the focused trigger (egui's
+//! keyboard activation for click widgets). Like Radix, moving focus does not
+//! itself expand the item — the user presses Enter/Space to toggle.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -41,8 +40,8 @@
 //! ```
 
 use crate::theme::{color_alpha, ShadcnTheme};
-use crate::utils::animation;
-use egui::{Align2, Color32, FontId, Id, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
+use crate::utils::animation::{self, Duration};
+use egui::{Align2, Color32, FontId, Id, Key, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 
 /// Radix `type="single" | "multiple"`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,8 +53,8 @@ pub enum AccordionType {
     Multiple,
 }
 
-/// Height of one trigger row (nova `py-2.5` + a 14px text line).
-pub const ACCORDION_TRIGGER_HEIGHT: f32 = 38.0;
+/// Height of one trigger row (nova `py-2.5` + the 20px `text-sm` line box).
+pub const ACCORDION_TRIGGER_HEIGHT: f32 = 40.0;
 /// Bottom padding of the content (nova `pb-2.5`).
 const CONTENT_PAD_BOTTOM: f32 = 10.0;
 
@@ -202,7 +201,7 @@ impl<'a> Accordion<'a> {
             controlled_single: None,
             controlled_multiple: None,
             kind: AccordionType::Single,
-            collapsible: true,
+            collapsible: false,
             default_open: None,
             id_salt: None,
         }
@@ -227,7 +226,8 @@ impl<'a> Accordion<'a> {
     }
 
     /// Radix `collapsible` (single mode): whether the open item can be
-    /// closed by clicking its trigger. Defaults to `true`.
+    /// closed by clicking its trigger. Defaults to `false`, like Radix; pass
+    /// `.collapsible(true)` for the docs-demo behavior.
     pub fn collapsible(mut self, collapsible: bool) -> Self {
         self.collapsible = collapsible;
         self
@@ -439,7 +439,13 @@ impl AccordionTrigger {
 
         let open = is_open(ui, &scope);
         let anim_id = scope.state_id.with("chevron").with(scope.index);
-        let progress = animation::open_progress(ui.ctx(), anim_id, open);
+        // `transition-transform duration-200` — 200ms ease-out both ways.
+        let progress = animation::animate_value(
+            ui.ctx(),
+            anim_id,
+            if open { 1.0 } else { 0.0 },
+            Duration::Md,
+        );
 
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let desired = Vec2::new(ui.available_width(), ACCORDION_TRIGGER_HEIGHT);
@@ -463,6 +469,62 @@ impl AccordionTrigger {
         if clicked {
             toggle(ui, &scope);
             response.mark_changed();
+        }
+
+        // Radix roving focus: ArrowDown/ArrowRight move to the next trigger,
+        // ArrowUp/ArrowLeft to the previous one, Home/End jump to the
+        // first/last. Disabled triggers stay in the traversal like Radix.
+        // While focused, the trigger claims the arrow keys via the focus lock
+        // filter so egui's own spatial navigation does not also move focus
+        // (Tab keeps the built-in traversal). `gained_focus()` is excluded so
+        // a trigger focused earlier in the same frame does not consume the
+        // same key press again.
+        if response.has_focus() && !self.disabled {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: false,
+                    },
+                );
+            });
+        }
+        if response.has_focus() && !response.gained_focus() && !self.disabled {
+            let total = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<usize>(scope.state_id.with("item_total")))
+                .unwrap_or(scope.index + 1)
+                .max(1);
+            let last = total - 1;
+            let (next, prev, home, end) = ui.input(|i| {
+                (
+                    i.key_pressed(Key::ArrowDown) || i.key_pressed(Key::ArrowRight),
+                    i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowLeft),
+                    i.key_pressed(Key::Home),
+                    i.key_pressed(Key::End),
+                )
+            });
+            let target = if home {
+                Some(0)
+            } else if end {
+                Some(last)
+            } else if next {
+                Some((scope.index + 1).min(last))
+            } else if prev {
+                Some(scope.index.saturating_sub(1))
+            } else {
+                None
+            };
+            if let Some(index) = target {
+                if index != scope.index {
+                    // Sibling ids follow the default trigger pattern; a
+                    // custom `id_salt` trigger opts out of traversal.
+                    ui.memory_mut(|m| m.request_focus(scope.state_id.with("trigger").with(index)));
+                }
+            }
         }
 
         if ui.is_rect_visible(rect) {
@@ -512,7 +574,7 @@ impl AccordionTrigger {
                 fg,
             );
             if underline {
-                let y = center_y + crate::theme::tokens::type_scale::SM * 0.62 + 2.0;
+                let y = center_y + crate::theme::tokens::type_scale::SM * 0.5 + 1.5;
                 painter.line_segment(
                     [Pos2::new(rect.min.x, y), Pos2::new(rect.min.x + text_w, y)],
                     Stroke::new(1.0, fg),
@@ -520,7 +582,7 @@ impl AccordionTrigger {
             }
 
             let icon_rect = Rect::from_center_size(
-                Pos2::new(rect.max.x - icon_size * 0.5, center_y + 2.0),
+                Pos2::new(rect.max.x - icon_size * 0.5, center_y),
                 Vec2::splat(icon_size),
             );
             paint_chevron(painter, icon_rect, icon, progress);
@@ -575,10 +637,18 @@ impl AccordionContent {
         };
         let open = is_open(ui, &scope);
         let anim_id = scope.state_id.with("content").with(scope.index);
-        crate::components::collapsible::animated_disclosure(ui, anim_id, open, |ui| {
-            content(ui);
-            ui.add_space(CONTENT_PAD_BOTTOM); // `pb-2.5`
-        });
+        // `animate-accordion-down/up`: 0.2s ease-out in both directions.
+        crate::components::collapsible::animated_disclosure(
+            ui,
+            anim_id,
+            open,
+            Duration::Md,
+            Duration::Md,
+            |ui| {
+                content(ui);
+                ui.add_space(CONTENT_PAD_BOTTOM); // `pb-2.5`
+            },
+        );
     }
 }
 
@@ -662,15 +732,19 @@ mod tests {
     }
 
     /// A trigger-only 3-item single accordion (layout never changes, so
-    /// captured rects stay valid across clicks).
+    /// captured rects stay valid across clicks). Collapsible, so toggle tests
+    /// can close items again.
     fn triggers_ui(ui: &mut Ui, salt: &str, rects: &mut [Rect; 3]) {
-        Accordion::new().id_salt(salt).show(ui, |ui| {
-            for i in 0..3 {
-                AccordionItem::new().show(ui, |ui| {
-                    rects[i] = AccordionTrigger::new(format!("Item {i}")).show(ui).rect;
-                });
-            }
-        });
+        Accordion::new()
+            .id_salt(salt)
+            .collapsible(true)
+            .show(ui, |ui| {
+                for i in 0..3 {
+                    AccordionItem::new().show(ui, |ui| {
+                        rects[i] = AccordionTrigger::new(format!("Item {i}")).show(ui).rect;
+                    });
+                }
+            });
     }
 
     fn single_state(h: &Harness, salt: &str) -> Option<usize> {
@@ -837,6 +911,72 @@ mod tests {
             triggers_ui(ui, "kbd", &mut [Rect::ZERO; 3])
         });
         assert_eq!(single_state(&h, "kbd"), None, "Space closes the item");
+    }
+
+    #[test]
+    fn arrow_keys_rove_trigger_focus() {
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 3];
+        h.run(|ui| triggers_ui(ui, "rove", &mut rects));
+        let state_id = Id::unique("accordion_test_ui").with("rove");
+        let trigger = |i: usize| state_id.with("trigger").with(i);
+        h.focus(trigger(0));
+        // Render two plain frames so the focused trigger has installed its
+        // focus lock filter (it can only be set from the frame after focus).
+        h.run(|ui| triggers_ui(ui, "rove", &mut [Rect::ZERO; 3]));
+        h.run(|ui| triggers_ui(ui, "rove", &mut [Rect::ZERO; 3]));
+
+        h.key(Key::ArrowDown, |ui| {
+            triggers_ui(ui, "rove", &mut [Rect::ZERO; 3])
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(1)),
+            "ArrowDown moves focus to the next trigger"
+        );
+
+        h.key(Key::ArrowRight, |ui| {
+            triggers_ui(ui, "rove", &mut [Rect::ZERO; 3])
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(2)),
+            "ArrowRight moves to the last trigger"
+        );
+
+        h.key(Key::ArrowDown, |ui| {
+            triggers_ui(ui, "rove", &mut [Rect::ZERO; 3])
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(2)),
+            "ArrowDown on the last trigger keeps focus there"
+        );
+
+        h.key(Key::ArrowUp, |ui| {
+            triggers_ui(ui, "rove", &mut [Rect::ZERO; 3])
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(1)),
+            "ArrowUp moves focus to the previous trigger"
+        );
+
+        h.key(Key::Home, |ui| {
+            triggers_ui(ui, "rove", &mut [Rect::ZERO; 3])
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(0)),
+            "Home jumps to the first trigger"
+        );
+
+        h.key(Key::End, |ui| triggers_ui(ui, "rove", &mut [Rect::ZERO; 3]));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger(2)),
+            "End jumps to the last trigger"
+        );
     }
 
     #[test]
