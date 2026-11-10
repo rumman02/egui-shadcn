@@ -96,8 +96,9 @@ pub use bubble::{
 pub use button::{Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition};
 pub use button_group::{ButtonGroup, ButtonGroupSeparator, ButtonGroupText};
 pub use calendar::{
-    apply_multiple, apply_range, apply_single, Calendar, CalendarDate, CalendarResponse, WeekStart,
-    CALENDAR_CELL_SIZE, CALENDAR_GRID_WIDTH, CALENDAR_PADDING, MONTH_NAMES, WEEKDAY_SHORT,
+    apply_multiple, apply_range, apply_single, iso_week_number, Calendar, CalendarDate,
+    CalendarResponse, CaptionLayout, WeekStart, CALENDAR_CELL_SIZE, CALENDAR_GRID_WIDTH,
+    CALENDAR_PADDING, MONTH_NAMES, MONTH_SHORT, WEEKDAY_SHORT,
 };
 pub use card::{
     Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardSize, CardTitle,
@@ -123,7 +124,8 @@ pub use data_table::{
     DataTable, DataTableCellAlign, DataTableColumn, DataTableResponse, SortDirection, SortValue,
 };
 pub use date_picker::{
-    DatePicker, DATE_PICKER_PLACEHOLDER, DATE_PICKER_SIDE_OFFSET, DATE_PICKER_WIDTH,
+    DatePicker, DatePickerPreset, DATE_PICKER_PLACEHOLDER, DATE_PICKER_SIDE_OFFSET,
+    DATE_PICKER_WIDTH,
 };
 pub use dialog::{
     Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
