@@ -76,7 +76,11 @@ pub(crate) fn resolve_checkbox_colors(
     } else {
         color_alpha(p.ring, 0.5)
     };
-    let stroke_color = if invalid && !checked {
+    let stroke_color = if checked {
+        // `data-[state=checked]:border-primary` — the checked border wins over
+        // the focus ring border (Tailwind sorts data variants last).
+        p.primary
+    } else if invalid {
         if style == Style::Nova && dark {
             // `dark:aria-invalid:border-destructive/50`
             color_alpha(p.destructive, 0.5)
@@ -305,6 +309,10 @@ mod tests {
         assert_eq!(f.stroke.color, p.ring);
         let fb = resolve_checkbox_colors(&p, false, Style::Vega, false, false, true);
         assert_eq!(fb.stroke.color, p.ring);
+        // A checked box keeps its primary border while focused
+        // (`data-[state=checked]:border-primary` sorts after focus-visible).
+        let fc = resolve_checkbox_colors(&p, false, Style::Nova, true, false, true);
+        assert_eq!(fc.stroke.color, p.primary);
         // Invalid wins over focus: `aria-invalid:border-destructive`.
         let fi = resolve_checkbox_colors(&p, false, Style::Nova, false, true, true);
         assert_eq!(fi.stroke.color, p.destructive);
