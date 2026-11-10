@@ -44,6 +44,16 @@ pub fn shadow_lg(dark: bool) -> Shadow {
     }
 }
 
+/// `shadow-xl` — the chart tooltip and other large floating panels (Tailwind
+/// xl = y-offset 20, blur 25): a deeper `shadow-lg`.
+pub fn shadow_xl(dark: bool) -> Shadow {
+    let mut s = shadow_lg(dark);
+    s.offset[1] += 4;
+    s.blur += 8;
+    s.color = Color32::from_black_alpha((s.color.a() as f32 * 1.15) as u8);
+    s
+}
+
 fn color(dark: bool, alpha: u8) -> Color32 {
     if dark {
         Color32::from_black_alpha((alpha as f32 * 1.6) as u8)

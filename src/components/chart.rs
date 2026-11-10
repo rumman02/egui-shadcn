@@ -280,16 +280,7 @@ pub(crate) fn series_color(p: &Palette, color_index: usize) -> Color32 {
     }
 }
 
-/// `shadow-xl` (the chart tooltip, chart.tsx `shadow-xl`). Mirrors
-/// `utils::shadow` presets: a deeper `shadow-lg` (Tailwind xl = y-offset 20,
-/// blur 25).
-fn shadow_xl(dark: bool) -> egui::epaint::Shadow {
-    let mut s = crate::utils::shadow::shadow_lg(dark);
-    s.offset[1] += 4;
-    s.blur += 8;
-    s.color = Color32::from_black_alpha((s.color.a() as f32 * 1.15) as u8);
-    s
-}
+use crate::utils::shadow::shadow_xl;
 
 /// Fritsch–Carlson monotone tangents, one slope per point (y units per
 /// x-unit, x spacing `dx`). Reproduces recharts' `type="monotone"` curves:
