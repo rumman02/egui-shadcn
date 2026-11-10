@@ -2,17 +2,21 @@
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/calendar.tsx` with the nova
 //! recipe: `p-2 [--cell-size:--spacing(7)] [--cell-radius:var(--radius-md)]`
-//! — an 8 px padded, 196 px wide month grid of contiguous 28 px day cells.
+//! — an 8 px padded, 196 px wide month grid of 28 px day cells separated by
+//! the `week: mt-2` 8 px row gap (also between the weekday header and the
+//! first week).
 //!
 //! Visual mapping (nova): ghost nav chevrons flanking a centered
-//! "November 2026" caption; muted weekday header; day cells with
+//! "November 2026" caption (or two bordered month/year dropdown buttons with
+//! [`CaptionLayout::Dropdown`]); muted weekday header; day cells with
 //! `hover:bg-accent`, today = `bg-accent`, selected single = `bg-primary`,
 //! ranges = primary start/end squares with a continuous `bg-accent` middle
 //! bar (`rounded-none`) that runs behind the rounded end squares; outside
-//! days render in `text-muted-foreground`.
+//! days render in `text-muted-foreground`. Optional ISO week-number column
+//! (`showWeekNumber`).
 //!
-//! The date math (leap years, month rollovers, weekdays) is implemented in
-//! pure Rust inside this module — no new dependencies.
+//! The date math (leap years, month rollovers, weekdays, ISO week numbers)
+//! is implemented in pure Rust inside this module — no new dependencies.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -25,13 +29,20 @@
 //!
 //! let mut range = None;
 //! Calendar::range(&mut range).show(ui);
+//!
+//! Calendar::single(&mut date)
+//!     .caption_layout(CaptionLayout::Dropdown)
+//!     .show_week_numbers(true)
+//!     .show(ui);
 //! ```
 
+use crate::components::dropdown_menu::{DropdownMenu, MenuAlign, MenuItem};
 use crate::icons::Icon;
-use crate::theme::{color_alpha, ShadcnTheme};
+use crate::theme::{color_alpha, ShadcnTheme, Style};
 use crate::utils::focus;
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Id, Key, Painter, Pos2, Rect, Response, Sense, Ui, Vec2,
+    Align2, Color32, CornerRadius, FontId, Id, Key, Painter, Pos2, Rect, Response, Sense, Stroke,
+    Ui, Vec2,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,6 +59,9 @@ pub const CALENDAR_GRID_WIDTH: f32 = 7.0 * CALENDAR_CELL_SIZE;
 const CAPTION_GAP: f32 = 16.0;
 /// Caption row height (`h-(--cell-size)`).
 const CAPTION_HEIGHT: f32 = CALENDAR_CELL_SIZE;
+/// Gap above every week row (`week: mt-2` = 8 px; also between the weekday
+/// header and the first week).
+const WEEK_GAP: f32 = 8.0;
 /// Weekday header row height (a table row of `text-[0.8rem]` labels).
 const WEEKDAY_ROW_HEIGHT: f32 = 20.0;
 /// Nav chevron icon size (`size-4`).
@@ -56,6 +70,18 @@ const NAV_ICON_SIZE: f32 = 16.0;
 const WEEKDAY_TEXT_SIZE: f32 = 12.8;
 /// Day number size (`text-sm` via the ghost DayButton).
 const DAY_TEXT_SIZE: f32 = crate::theme::tokens::type_scale::SM;
+/// Caption dropdown paddings (nova `caption_label`: `pl-1.5 pr-1`).
+const CAPTION_DROPDOWN_PADDING_LEFT: f32 = 6.0;
+const CAPTION_DROPDOWN_PADDING_RIGHT: f32 = 4.0;
+/// Gap between the caption dropdown label and its chevron (`gap-1`).
+const CAPTION_DROPDOWN_GAP: f32 = 4.0;
+/// Gap between the two caption dropdown buttons (`dropdowns: gap-1.5`).
+const CAPTION_DROPDOWNS_GAP: f32 = 6.0;
+/// Years offered by the year dropdown (`view year ± 12`).
+const YEAR_DROPDOWN_RANGE: i32 = 12;
+/// Dropdown menu widths for the caption month / year pickers.
+const MONTH_MENU_WIDTH: f32 = 104.0;
+const YEAR_MENU_WIDTH: f32 = 88.0;
 
 const DAY_ID_KEY: &str = "shadcn_calendar_day";
 
@@ -77,6 +103,12 @@ pub const MONTH_NAMES: [&str; 12] = [
     "October",
     "November",
     "December",
+];
+
+/// Short month names ("Jan"), the source's `formatMonthDropdown`
+/// (`toLocaleString(…, { month: "short" })`), used by the dropdown caption.
+pub const MONTH_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
 // ---------------------------------------------------------------------------
@@ -248,6 +280,27 @@ fn ordinal(day: u32) -> String {
     format!("{day}{suffix}")
 }
 
+/// ISO 8601 week number (1–53) of the given day, as react-day-picker's
+/// `weekNumber` computes it: the week number of the week's Thursday, which
+/// always falls in the ISO year that owns the week. ISO week 1 is the week
+/// containing January 4.
+pub fn iso_week_number(day: CalendarDate) -> u32 {
+    // Monday-based weekday: 0 = Monday … 6 = Sunday.
+    let iso_weekday = i64::from((day.weekday() + 6) % 7);
+    let thursday = day.epoch_days() + 3 - iso_weekday;
+    let thursday_date = CalendarDate::from_epoch_days(thursday);
+    let jan4 = days_from_civil(thursday_date.year, 1, 4);
+    let jan4_iso_weekday = i64::from((CalendarDate::from_epoch_days(jan4).weekday() + 6) % 7);
+    let week1_monday = jan4 - jan4_iso_weekday;
+    ((thursday - week1_monday) / 7 + 1) as u32
+}
+
+/// Days from `day` back to the first day of its week (the react-day-picker
+/// `Home` key target; `End` = first day + 6).
+fn days_since_week_start(day: CalendarDate, week_start: WeekStart) -> i64 {
+    i64::from((day.weekday() + 7 - week_start.index()) % 7)
+}
+
 // ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
@@ -269,6 +322,17 @@ impl WeekStart {
             WeekStart::Monday => 1,
         }
     }
+}
+
+/// Caption style (the source's `captionLayout` prop).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptionLayout {
+    /// Centered "November 2026" label (the source default).
+    #[default]
+    Label,
+    /// Two bordered dropdown buttons (month, year) opening [`DropdownMenu`]s,
+    /// styled per the source's `dropdowns` / `dropdown_root` classes.
+    Dropdown,
 }
 
 /// Pure single-mode selection: clicking the selected day deselects it
@@ -392,6 +456,10 @@ struct CalendarState {
     range_pending: bool,
     /// `initial_focus` was already applied once.
     initial_focus_done: bool,
+    /// Caption dropdown layout: the month menu is open.
+    month_menu_open: bool,
+    /// Caption dropdown layout: the year menu is open.
+    year_menu_open: bool,
 }
 
 /// What happened to a [`Calendar`] this frame.
@@ -401,6 +469,10 @@ pub struct CalendarResponse {
     pub changed: bool,
     /// The day that was clicked (or keyboard-selected) this frame.
     pub clicked_day: Option<CalendarDate>,
+    /// Range mode: the pending start got its end this frame, so the
+    /// selection is a complete range. Used by the date-picker, whose range
+    /// popover stays open until both ends are chosen.
+    pub completed: bool,
 }
 
 /// The shadcn calendar. See the [module docs](self) for an example.
@@ -414,6 +486,10 @@ pub struct Calendar<'a> {
     default_month: Option<CalendarDate>,
     show_outside_days: bool,
     week_start: WeekStart,
+    caption_layout: CaptionLayout,
+    show_week_numbers: bool,
+    min_month: Option<CalendarDate>,
+    max_month: Option<CalendarDate>,
     disabled: Option<DisabledFn<'a>>,
     initial_focus: bool,
 }
@@ -427,6 +503,10 @@ impl<'a> Calendar<'a> {
             default_month: None,
             show_outside_days: true,
             week_start: WeekStart::default(),
+            caption_layout: CaptionLayout::default(),
+            show_week_numbers: false,
+            min_month: None,
+            max_month: None,
             disabled: None,
             initial_focus: false,
         }
@@ -440,6 +520,10 @@ impl<'a> Calendar<'a> {
             default_month: None,
             show_outside_days: true,
             week_start: WeekStart::default(),
+            caption_layout: CaptionLayout::default(),
+            show_week_numbers: false,
+            min_month: None,
+            max_month: None,
             disabled: None,
             initial_focus: false,
         }
@@ -453,6 +537,10 @@ impl<'a> Calendar<'a> {
             default_month: None,
             show_outside_days: true,
             week_start: WeekStart::default(),
+            caption_layout: CaptionLayout::default(),
+            show_week_numbers: false,
+            min_month: None,
+            max_month: None,
             disabled: None,
             initial_focus: false,
         }
@@ -483,6 +571,36 @@ impl<'a> Calendar<'a> {
         self
     }
 
+    /// Sets the caption style (`captionLayout`, default
+    /// [`CaptionLayout::Label`]). [`CaptionLayout::Dropdown`] renders two
+    /// bordered month/year buttons that open menus.
+    pub fn caption_layout(mut self, layout: CaptionLayout) -> Self {
+        self.caption_layout = layout;
+        self
+    }
+
+    /// Shows a leading column of ISO week numbers (`showWeekNumber`): a
+    /// `w-(--cell-size)` column of `text-[0.8rem] text-muted-foreground`
+    /// numbers, with the grid one cell wider.
+    pub fn show_week_numbers(mut self, show: bool) -> Self {
+        self.show_week_numbers = show;
+        self
+    }
+
+    /// Earliest month the user can navigate to (`fromDate`): the previous
+    /// button renders `aria-disabled:opacity-50` and does nothing beyond it.
+    pub fn min_month(mut self, month: CalendarDate) -> Self {
+        self.min_month = Some(month.first_of_month());
+        self
+    }
+
+    /// Latest month the user can navigate to (`toDate`): the next button
+    /// renders `aria-disabled:opacity-50` and does nothing beyond it.
+    pub fn max_month(mut self, month: CalendarDate) -> Self {
+        self.max_month = Some(month.first_of_month());
+        self
+    }
+
     /// Disables the days for which the predicate returns `true`
     /// (`disabled` matcher): rendered `text-muted-foreground opacity-50`
     /// and not selectable.
@@ -503,11 +621,12 @@ impl<'a> Calendar<'a> {
     }
 
     /// Lays out and paints the calendar, handling clicks and keyboard
-    /// navigation (arrows move the focused day, Enter/Space select,
-    /// PageUp/PageDown step months — Shift steps years).
+    /// navigation (arrows and Home/End move the focused day, Enter/Space
+    /// select, PageUp/PageDown step months — Shift steps years).
     pub fn show(mut self, ui: &mut Ui) -> CalendarResponse {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
+        let style = theme.style;
         let p = theme.palette;
         let radius_md = theme.radius.md_u8();
         let today = CalendarDate::today(ui);
@@ -535,7 +654,7 @@ impl<'a> Calendar<'a> {
             ui.memory_mut(|m| m.request_focus(state_id.with((DAY_ID_KEY, target.epoch_days()))));
         }
 
-        // Grid geometry: leading outside days + weeks of 7.
+        // Grid geometry: leading outside days + weeks of 7 (+ week numbers).
         let week_start = self.week_start.index();
         let leading = (view_first.weekday() + 7 - week_start) % 7;
         let dim = CalendarDate::days_in_month(view_first.year, view_first.month);
@@ -543,8 +662,12 @@ impl<'a> Calendar<'a> {
         let grid_start = view_first.epoch_days() - i64::from(leading);
 
         let cell = CALENDAR_CELL_SIZE;
-        let grid_w = CALENDAR_GRID_WIDTH;
-        let content_h = CAPTION_HEIGHT + CAPTION_GAP + WEEKDAY_ROW_HEIGHT + rows as f32 * cell;
+        let week_num_w = if self.show_week_numbers { cell } else { 0.0 };
+        let grid_w = CALENDAR_GRID_WIDTH + week_num_w;
+        // `week: mt-2` — an 8 px gap above every week row (including the
+        // first, below the weekday header).
+        let content_h =
+            CAPTION_HEIGHT + CAPTION_GAP + WEEKDAY_ROW_HEIGHT + rows as f32 * (cell + WEEK_GAP);
         let total = Vec2::new(
             grid_w + 2.0 * CALENDAR_PADDING,
             content_h + 2.0 * CALENDAR_PADDING,
@@ -556,18 +679,27 @@ impl<'a> Calendar<'a> {
             Vec2::new(grid_w, CAPTION_HEIGHT),
         );
 
-        // --- Nav buttons (ghost, size = cell) + centered caption ------------
+        // --- Nav buttons (ghost, size = cell) + caption ----------------------
         let prev_rect = Rect::from_min_size(caption_rect.min, Vec2::splat(cell));
         let next_rect = Rect::from_min_size(
             Pos2::new(caption_rect.max.x - cell, caption_rect.min.y),
             Vec2::splat(cell),
         );
+        let prev_enabled = self
+            .min_month
+            .is_none_or(|min| view_first.prev_month() >= min);
+        let next_enabled = self
+            .max_month
+            .is_none_or(|max| view_first.next_month() <= max);
         let prev = ghost_icon_button(
             ui,
             prev_rect,
             state_id.with("nav_prev"),
             Icon::ChevronLeft,
+            prev_enabled,
             &p,
+            dark,
+            style,
             radius_md,
         );
         let next = ghost_icon_button(
@@ -575,32 +707,52 @@ impl<'a> Calendar<'a> {
             next_rect,
             state_id.with("nav_next"),
             Icon::ChevronRight,
+            next_enabled,
             &p,
+            dark,
+            style,
             radius_md,
         );
-        if prev.clicked() {
+        if prev.clicked() && prev_enabled {
             let pm = view_first.prev_month();
             st.view_month = Some((pm.year, pm.month));
         }
-        if next.clicked() {
+        if next.clicked() && next_enabled {
             let nm = view_first.next_month();
             st.view_month = Some((nm.year, nm.month));
         }
-        let caption = format!("{} {}", view_first.month_name(), view_first.year);
-        ui.painter().text(
-            caption_rect.center(),
-            Align2::CENTER_CENTER,
-            caption,
-            FontId::proportional(crate::theme::tokens::type_scale::SM),
-            p.foreground,
-        );
+
+        match self.caption_layout {
+            CaptionLayout::Label => {
+                let caption = format!("{} {}", view_first.month_name(), view_first.year);
+                ui.painter().text(
+                    caption_rect.center(),
+                    Align2::CENTER_CENTER,
+                    caption,
+                    FontId::proportional(crate::theme::tokens::type_scale::SM),
+                    p.foreground,
+                );
+            }
+            CaptionLayout::Dropdown => {
+                Self::show_caption_dropdowns(
+                    ui,
+                    &mut st,
+                    state_id,
+                    caption_rect,
+                    view_first,
+                    &p,
+                    dark,
+                    radius_md,
+                );
+            }
+        }
 
         // --- Weekday header -------------------------------------------------
         let weekday_y = caption_rect.bottom() + CAPTION_GAP;
         for col in 0..7i32 {
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    container.min.x + CALENDAR_PADDING + col as f32 * cell,
+                    container.min.x + CALENDAR_PADDING + week_num_w + col as f32 * cell,
                     weekday_y,
                 ),
                 Vec2::new(cell, WEEKDAY_ROW_HEIGHT),
@@ -618,16 +770,35 @@ impl<'a> Calendar<'a> {
         // --- Day cells ------------------------------------------------------
         let grid_origin = Pos2::new(
             container.min.x + CALENDAR_PADDING,
-            weekday_y + WEEKDAY_ROW_HEIGHT,
+            weekday_y + WEEKDAY_ROW_HEIGHT + WEEK_GAP,
         );
         let mut response = CalendarResponse::default();
         let mut any_day_focused = false;
+        let is_range = matches!(self.selection, SelectionRef::Range(_));
 
         for row in 0..rows {
+            let row_y = grid_origin.y + row as f32 * (cell + WEEK_GAP);
+            if self.show_week_numbers {
+                // `week_number_header` (`w-(--cell-size)`) + `week_number`
+                // (`text-[0.8rem] text-muted-foreground`), numbered from the
+                // row's first displayed day.
+                let day = CalendarDate::from_epoch_days(grid_start + i64::from(row * 7));
+                let week_rect = Rect::from_min_size(
+                    Pos2::new(grid_origin.x, row_y),
+                    Vec2::new(week_num_w, cell),
+                );
+                ui.painter().text(
+                    week_rect.center(),
+                    Align2::CENTER_CENTER,
+                    iso_week_number(day).to_string(),
+                    FontId::proportional(WEEKDAY_TEXT_SIZE),
+                    p.muted_foreground,
+                );
+            }
             for col in 0..7i32 {
                 let day = CalendarDate::from_epoch_days(grid_start + i64::from(row * 7 + col));
                 let rect = Rect::from_min_size(
-                    grid_origin + Vec2::new(col as f32 * cell, row as f32 * cell),
+                    Pos2::new(grid_origin.x + week_num_w + col as f32 * cell, row_y),
                     Vec2::splat(cell),
                 );
                 if !ui.is_rect_visible(rect) {
@@ -638,9 +809,11 @@ impl<'a> Calendar<'a> {
 
                 let disabled = self.is_disabled(&day);
                 if cell_response.clicked() && !disabled {
+                    let was_pending = st.range_pending;
                     let mutated = apply_selection(&mut self.selection, day, &mut st.range_pending);
                     response.changed |= mutated;
                     response.clicked_day = Some(day);
+                    response.completed |= is_range && was_pending && !st.range_pending;
                 }
 
                 let selected_role = selection_role(&self.selection, day);
@@ -664,7 +837,6 @@ impl<'a> Calendar<'a> {
                     role,
                     outside,
                     disabled,
-                    dark,
                     &p,
                     radius_md,
                 );
@@ -688,6 +860,7 @@ impl<'a> Calendar<'a> {
         if any_day_focused {
             if let Some(focused_day) = st.focused_day {
                 let (day_step, month_step, select) = ui.input(|i| {
+                    let back = days_since_week_start(focused_day, self.week_start);
                     let day_step = if i.key_pressed(Key::ArrowLeft) {
                         Some(-1i64)
                     } else if i.key_pressed(Key::ArrowRight) {
@@ -696,6 +869,12 @@ impl<'a> Calendar<'a> {
                         Some(-7)
                     } else if i.key_pressed(Key::ArrowDown) {
                         Some(7)
+                    } else if i.key_pressed(Key::Home) {
+                        // Home = first day of the focused week.
+                        Some(-back)
+                    } else if i.key_pressed(Key::End) {
+                        // End = last day of the focused week.
+                        Some(6 - back)
                     } else {
                         None
                     };
@@ -729,12 +908,13 @@ impl<'a> Calendar<'a> {
                         };
                         Some(month.with_day_clamped(focused_day.day))
                     };
-                } else if select
-                    && !self.is_disabled(&focused_day)
-                    && apply_selection(&mut self.selection, focused_day, &mut st.range_pending)
-                {
-                    response.changed = true;
-                    response.clicked_day = Some(focused_day);
+                } else if select && !self.is_disabled(&focused_day) {
+                    let was_pending = st.range_pending;
+                    if apply_selection(&mut self.selection, focused_day, &mut st.range_pending) {
+                        response.changed = true;
+                        response.clicked_day = Some(focused_day);
+                        response.completed |= is_range && was_pending && !st.range_pending;
+                    }
                 }
 
                 if let Some(nd) = new_day {
@@ -752,6 +932,110 @@ impl<'a> Calendar<'a> {
         ctx.data_mut(|d| d.insert_temp(state_id, st));
         response
     }
+
+    /// `captionLayout="dropdown"`: two `dropdown_root`-styled buttons (month,
+    /// year) that open [`DropdownMenu`]s of months / `year ± 12`.
+    #[allow(clippy::too_many_arguments)]
+    fn show_caption_dropdowns(
+        ui: &mut Ui,
+        st: &mut CalendarState,
+        state_id: Id,
+        caption_rect: Rect,
+        view_first: CalendarDate,
+        p: &crate::theme::Palette,
+        dark: bool,
+        radius_md: u8,
+    ) {
+        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        let month_label = MONTH_SHORT[(view_first.month.clamp(1, 12) - 1) as usize];
+        let year_label = view_first.year.to_string();
+        let text_w = |label: &str| {
+            ui.painter()
+                .layout_no_wrap(label.to_owned(), font.clone(), p.foreground)
+                .size()
+                .x
+        };
+        let button_w = |label: &str| {
+            CAPTION_DROPDOWN_PADDING_LEFT
+                + text_w(label)
+                + CAPTION_DROPDOWN_GAP
+                + NAV_ICON_SIZE
+                + CAPTION_DROPDOWN_PADDING_RIGHT
+        };
+        let month_w = button_w(month_label);
+        let year_w = button_w(&year_label);
+        let pair_w = month_w + CAPTION_DROPDOWNS_GAP + year_w;
+        let start_x = caption_rect.center().x - pair_w * 0.5;
+        let month_rect = Rect::from_min_size(
+            Pos2::new(start_x, caption_rect.min.y),
+            Vec2::new(month_w, caption_rect.height()),
+        );
+        let year_rect = Rect::from_min_size(
+            Pos2::new(
+                start_x + month_w + CAPTION_DROPDOWNS_GAP,
+                caption_rect.min.y,
+            ),
+            Vec2::new(year_w, caption_rect.height()),
+        );
+
+        let month_resp = dropdown_root_button(
+            ui,
+            month_rect,
+            state_id.with("caption_month"),
+            month_label,
+            st.month_menu_open,
+            p,
+            dark,
+            radius_md,
+        );
+        let year_resp = dropdown_root_button(
+            ui,
+            year_rect,
+            state_id.with("caption_year"),
+            &year_label,
+            st.year_menu_open,
+            p,
+            dark,
+            radius_md,
+        );
+
+        // Month menu (ids are the item order; the response's `path` carries it).
+        let menu_salt = format!("{}_caption_menus", state_id.value());
+        let month_menu = DropdownMenu::controlled("", &mut st.month_menu_open)
+            .trigger_widget(move |_| month_resp.clone())
+            .align(MenuAlign::Start)
+            .width(MONTH_MENU_WIDTH)
+            .id_salt(format!("{menu_salt}_month"));
+        let month_result = month_menu.show(ui, |menu| {
+            for name in MONTH_NAMES {
+                menu.item(MenuItem::new(name));
+            }
+        });
+        if let Some(&idx) = month_result.activated.as_ref().and_then(|a| a.path.first()) {
+            st.view_month = Some((view_first.year, idx as u32 + 1));
+        }
+
+        // Year menu: `view year ± 12`.
+        let years: Vec<String> = (view_first.year - YEAR_DROPDOWN_RANGE
+            ..=view_first.year + YEAR_DROPDOWN_RANGE)
+            .map(|y| y.to_string())
+            .collect();
+        let year_menu = DropdownMenu::controlled("", &mut st.year_menu_open)
+            .trigger_widget(move |_| year_resp.clone())
+            .align(MenuAlign::Start)
+            .width(YEAR_MENU_WIDTH)
+            .id_salt(format!("{menu_salt}_year"));
+        let year_result = year_menu.show(ui, |menu| {
+            for year in &years {
+                menu.item(MenuItem::new(year.clone()).id(year.clone()));
+            }
+        });
+        if let Some(a) = year_result.activated {
+            if let Ok(y) = a.id.parse::<i32>() {
+                st.view_month = Some((y, view_first.month));
+            }
+        }
+    }
 }
 
 fn apply_selection(sel: &mut SelectionRef<'_>, day: CalendarDate, pending: &mut bool) -> bool {
@@ -766,24 +1050,120 @@ fn apply_selection(sel: &mut SelectionRef<'_>, day: CalendarDate, pending: &mut 
 // Painting helpers
 // ---------------------------------------------------------------------------
 
+/// Ghost hover fill, mirroring the crate's ghost button recipe
+/// (`hover:bg-accent`, `dark:hover:bg-accent/50`; nova `hover:bg-muted
+/// dark:hover:bg-muted/50`).
+fn ghost_hover_fill(p: &crate::theme::Palette, dark: bool, style: Style) -> Color32 {
+    if style == Style::Nova {
+        if dark {
+            color_alpha(p.muted, 0.5)
+        } else {
+            p.muted
+        }
+    } else if dark {
+        color_alpha(p.accent, 0.5)
+    } else {
+        p.accent
+    }
+}
+
 /// A 28 px ghost icon button (the source nav buttons: `buttonVariants({
-/// variant: "ghost" })` + `size-(--cell-size) p-0`).
+/// variant: "ghost" })` + `size-(--cell-size) p-0 aria-disabled:opacity-50`).
+/// Colors follow the crate's ghost button; out-of-bounds targets render
+/// dimmed and inert (`aria-disabled`).
+#[allow(clippy::too_many_arguments)]
 fn ghost_icon_button(
     ui: &mut Ui,
     rect: Rect,
     id: Id,
     icon: Icon,
+    enabled: bool,
     p: &crate::theme::Palette,
+    dark: bool,
+    style: Style,
     radius: u8,
 ) -> Response {
     let response = ui.interact(rect, id, Sense::click());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::same(radius), p.accent);
+        let hovered = response.hovered() && enabled;
+        let fg = if enabled {
+            if hovered && style != Style::Nova {
+                p.accent_foreground
+            } else {
+                p.foreground
+            }
+        } else {
+            color_alpha(p.foreground, 0.5)
+        };
+        if hovered {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(radius),
+                ghost_hover_fill(p, dark, style),
+            );
         }
         let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(NAV_ICON_SIZE));
-        icon.paint(painter, icon_rect, p.foreground, 2.0 * NAV_ICON_SIZE / 24.0);
+        icon.paint(painter, icon_rect, fg, 2.0 * NAV_ICON_SIZE / 24.0);
+    }
+    response
+}
+
+/// A caption `dropdown_root` button: `rounded-md border border-input shadow-xs`,
+/// `has-focus:border-ring has-focus:ring-[3px] has-focus:ring-ring/50`, with
+/// the caption label (`text-sm`, `pl-1.5 pr-1`) and a muted `size-4` chevron
+/// (`caption_label` in dropdown layout).
+#[allow(clippy::too_many_arguments)]
+fn dropdown_root_button(
+    ui: &mut Ui,
+    rect: Rect,
+    id: Id,
+    label: &str,
+    open: bool,
+    p: &crate::theme::Palette,
+    dark: bool,
+    radius: u8,
+) -> Response {
+    let response = ui.interact(rect, id, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let focused = open || response.has_focus();
+        let sh = crate::utils::shadow::shadow_xs(dark);
+        painter.add(
+            egui::epaint::RectShape::filled(
+                rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
+                CornerRadius::same(radius),
+                sh.color,
+            )
+            .with_blur_width(2.0),
+        );
+        painter.rect_filled(rect, CornerRadius::same(radius), p.background);
+        let stroke = if focused { p.ring } else { p.input };
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(radius),
+            Stroke::new(1.0, stroke),
+            egui::epaint::StrokeKind::Inside,
+        );
+        if focused {
+            focus::paint_ring(painter, rect, color_alpha(p.ring, 0.5), 3.0, radius as f32);
+        }
+        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        let text_pos = Pos2::new(rect.min.x + CAPTION_DROPDOWN_PADDING_LEFT, rect.center().y);
+        painter.text(text_pos, Align2::LEFT_CENTER, label, font, p.foreground);
+        let icon_rect = Rect::from_center_size(
+            Pos2::new(
+                rect.max.x - CAPTION_DROPDOWN_PADDING_RIGHT - NAV_ICON_SIZE / 2.0,
+                rect.center().y,
+            ),
+            Vec2::splat(NAV_ICON_SIZE),
+        );
+        Icon::ChevronDown.paint(
+            painter,
+            icon_rect,
+            p.muted_foreground,
+            2.0 * NAV_ICON_SIZE / 24.0,
+        );
     }
     response
 }
@@ -797,7 +1177,6 @@ fn paint_day_cell(
     role: Option<CellRole>,
     outside: bool,
     disabled: bool,
-    dark: bool,
     p: &crate::theme::Palette,
     radius_md: u8,
 ) {
@@ -855,11 +1234,10 @@ fn paint_day_cell(
             text = p.accent_foreground;
         }
         Some(CellRole::Hover) => {
-            // `hover:bg-accent`, `dark:hover:text-accent-foreground`
+            // `hover:bg-accent hover:text-accent-foreground` (the dark-only
+            // override coincides with zinc light values).
             bg = Some((p.accent, CornerRadius::same(r)));
-            if dark {
-                text = p.accent_foreground;
-            }
+            text = p.accent_foreground;
         }
         None => {}
     }
@@ -1229,6 +1607,64 @@ mod tests {
     }
 
     #[test]
+    fn renders_new_caption_and_week_number_features_without_panic() {
+        let mut h = Harness::new();
+        let mut single = Some(CalendarDate::new(2026, 11, 10).unwrap());
+        for _ in 0..3 {
+            h.run(|ui| {
+                Calendar::single(&mut single)
+                    .id_salt("features")
+                    .caption_layout(CaptionLayout::Dropdown)
+                    .show_week_numbers(true)
+                    .week_starts_on(WeekStart::Monday)
+                    .min_month(CalendarDate::new(2026, 10, 1).unwrap())
+                    .max_month(CalendarDate::new(2027, 2, 1).unwrap())
+                    .show(ui);
+            });
+        }
+    }
+
+    #[test]
+    fn iso_week_numbers_match_known_dates() {
+        let d = |y, m, dd| CalendarDate::new(y, m, dd).unwrap();
+        // ISO week 1 contains January 4.
+        assert_eq!(iso_week_number(d(2026, 1, 1)), 1); // Thursday
+        assert_eq!(iso_week_number(d(2025, 12, 29)), 1); // Monday of week 1 2026
+        assert_eq!(iso_week_number(d(2025, 12, 28)), 52); // Sunday before
+        assert_eq!(iso_week_number(d(2026, 11, 9)), 46); // Monday
+        assert_eq!(iso_week_number(d(2026, 11, 10)), 46); // Tuesday
+        assert_eq!(iso_week_number(d(2026, 11, 15)), 46); // Sunday
+                                                          // 2027-01-01 (Friday) belongs to ISO week 53 of 2026.
+        assert_eq!(iso_week_number(d(2027, 1, 1)), 53);
+        // Long years: 2020 has 53 ISO weeks.
+        assert_eq!(iso_week_number(d(2020, 12, 31)), 53);
+        assert_eq!(iso_week_number(d(2021, 1, 1)), 53); // Friday, week 53 of 2020
+        assert_eq!(iso_week_number(d(2019, 12, 30)), 1); // Monday of week 1 2020
+    }
+
+    #[test]
+    fn home_end_offsets_find_week_bounds() {
+        let ws = |y, m, dd| CalendarDate::new(y, m, dd).unwrap();
+        // Tuesday 2026-11-10 with a Sunday week start: Home = Sun 8, End = Sat 14.
+        let tue = ws(2026, 11, 10);
+        let back = days_since_week_start(tue, WeekStart::Sunday);
+        assert_eq!(back, 2);
+        assert_eq!(
+            CalendarDate::from_epoch_days(tue.epoch_days() - back),
+            ws(2026, 11, 8)
+        );
+        assert_eq!(
+            CalendarDate::from_epoch_days(tue.epoch_days() + 6 - back),
+            ws(2026, 11, 14)
+        );
+        // Monday week start: Home = Mon 9.
+        assert_eq!(days_since_week_start(tue, WeekStart::Monday), 1);
+        // A week-start day is already Home.
+        assert_eq!(days_since_week_start(ws(2026, 11, 8), WeekStart::Sunday), 0);
+        assert_eq!(days_since_week_start(ws(2026, 11, 9), WeekStart::Monday), 0);
+    }
+
+    #[test]
     fn builders_keep_fields() {
         let mut single = None;
         let mut multi = Vec::new();
@@ -1237,10 +1673,18 @@ mod tests {
             .id_salt("c1")
             .default_month(CalendarDate::new(2026, 11, 1).unwrap())
             .show_outside_days(false)
-            .week_starts_on(WeekStart::Monday);
+            .week_starts_on(WeekStart::Monday)
+            .caption_layout(CaptionLayout::Dropdown)
+            .show_week_numbers(true)
+            .min_month(CalendarDate::new(2026, 10, 1).unwrap())
+            .max_month(CalendarDate::new(2027, 2, 1).unwrap());
         assert_eq!(c.id_salt.as_deref(), Some("c1"));
         assert!(!c.show_outside_days);
         assert_eq!(c.week_start, WeekStart::Monday);
+        assert_eq!(c.caption_layout, CaptionLayout::Dropdown);
+        assert!(c.show_week_numbers);
+        assert_eq!(c.min_month, Some(CalendarDate::new(2026, 10, 1).unwrap()));
+        assert_eq!(c.max_month, Some(CalendarDate::new(2027, 2, 1).unwrap()));
         assert_eq!(
             c.default_month,
             Some(CalendarDate::new(2026, 11, 1).unwrap())
@@ -1253,10 +1697,12 @@ mod tests {
 
     #[test]
     fn geometry_constants_match_nova() {
-        // .cn-calendar: p-2 (8), --cell-size:--spacing(7) (28), 7 columns.
+        // .cn-calendar: p-2 (8), --cell-size:--spacing(7) (28), 7 columns,
+        // `week: mt-2` = 8 px above every week row.
         assert_eq!(CALENDAR_CELL_SIZE, 28.0);
         assert_eq!(CALENDAR_PADDING, 8.0);
         assert_eq!(CALENDAR_GRID_WIDTH, 196.0);
+        assert_eq!(WEEK_GAP, 8.0);
     }
 
     #[test]

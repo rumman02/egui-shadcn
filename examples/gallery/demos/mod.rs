@@ -3091,7 +3091,7 @@ pub fn context_menu_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp(action_store).unwrap_or(None));
 
-    ui.label("Right-click inside a box to open its menu. Escape closes, Arrow keys navigate, Enter activates.");
+    ui.label("Right-click inside a box to open its menu. Escape closes, Arrow keys navigate, Enter activates, typing jumps to matching items.");
     ui.add_space(8.0);
 
     ui.label("Basic");
@@ -3679,6 +3679,33 @@ pub fn calendar_demo(ui: &mut egui::Ui) {
     let mut weekend = None;
     Calendar::single(&mut weekend)
         .disabled_when(|d| matches!(d.weekday(), 0 | 6))
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Dropdown captions (captionLayout=\"dropdown\")");
+    ui.add_space(4.0);
+    let mut dropdown = None;
+    Calendar::single(&mut dropdown)
+        .caption_layout(egui_shadcn_ui::components::calendar::CaptionLayout::Dropdown)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Week numbers (Monday start)");
+    ui.add_space(4.0);
+    let mut week_numbers = None;
+    Calendar::single(&mut week_numbers)
+        .week_starts_on(WeekStart::Monday)
+        .show_week_numbers(true)
+        .show(ui);
+
+    ui.add_space(16.0);
+    ui.label("Bounded navigation (Oct 2026 – Feb 2027)");
+    ui.add_space(4.0);
+    let mut bounded = None;
+    Calendar::single(&mut bounded)
+        .default_month(CalendarDate::new(2026, 11, 1).unwrap())
+        .min_month(CalendarDate::new(2026, 10, 1).unwrap())
+        .max_month(CalendarDate::new(2027, 2, 1).unwrap())
         .show(ui);
 
     ui.ctx().data_mut(|d| d.insert_temp(store, state));
