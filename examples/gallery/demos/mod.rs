@@ -3490,11 +3490,12 @@ pub fn combobox_demo(ui: &mut egui::Ui) {
             .unwrap_or((None, Vec::new(), String::new()))
     });
 
-    ui.label("Single select");
+    ui.label("Single select (with clear)");
     ui.add_space(4.0);
     let res = Combobox::new(&mut framework)
         .placeholder("Select a framework...")
         .id_salt("combobox_demo_single")
+        .show_clear(true)
         .options(["Next.js", "SvelteKit", "Nuxt.js", "Remix", "Astro"])
         .show_seeded(ui);
     ui.add_space(4.0);
@@ -3505,12 +3506,20 @@ pub fn combobox_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("Multi select (chips, removable)");
+    ui.label("Multi select (wrapped chips, removable)");
     ui.add_space(4.0);
     Combobox::multi(&mut picked)
         .placeholder("Frameworks...")
         .id_salt("combobox_demo_multi")
-        .options(["Next.js", "SvelteKit", "Nuxt.js", "Remix", "Astro"])
+        .options([
+            "Next.js",
+            "SvelteKit",
+            "Nuxt.js",
+            "Remix",
+            "Astro",
+            "Vite",
+            "Angular",
+        ])
         .show_seeded(ui);
 
     ui.add_space(12.0);

@@ -1,12 +1,25 @@
-//! shadcn `combobox` — the docs composition of Popover + Command.
+//! shadcn `combobox` — the docs composition, converged toward
+//! `ui/combobox.tsx`.
 //!
-//! There is no dedicated `ui/combobox.tsx` in the source; the component is
-//! documented as a popover trigger (`<Button variant="outline"
-//! className="w-[200px] justify-between font-normal">` showing the selected
-//! value or a placeholder with a chevron) opening a `w-[200px] p-0`
-//! popover that embeds a `Command` list (`CommandInput` + `CommandEmpty` +
-//! check-marked `CommandItem`s). The multi-select docs variant
-//! (`ComboboxChips`) shows removable chips in the trigger.
+//! The source has a dedicated `apps/v4/registry/new-york-v4/ui/combobox.tsx`
+//! (Base UI Combobox: InputGroup trigger, `ComboboxChips`, clear button and
+//! an anchored popup with an embedded search field). This port follows the
+//! docs demo composition — an outline-button trigger (`<Button
+//! variant="outline" className="w-[200px] justify-between font-normal">`
+//! showing the selected value or placeholder with a chevron) opening a
+//! popup that embeds a `Command` list — with the v4 deviations applied: the
+//! popup uses the nova content recipe (`rounded-lg ring-1
+//! ring-foreground/10 shadow-md`, `sideOffset=6`, `duration-100`,
+//! `min-w-[calc(var(--anchor-width)+28px)]` when the single-select content
+//! is wider than the trigger), the embedded search field is the compact
+//! nova InputGroup (`m-1 mb-0 h-8 bg-input/30 border-input/30`), the empty
+//! state is the compact `py-2 text-muted-foreground` variant, and
+//! single-select can show the `ComboboxClear` ghost X button.
+//!
+//! The multi-select docs variant (`ComboboxChips`) shows removable chips in
+//! the trigger: a `min-h-9 flex-wrap gap-1.5 px-2.5 py-1.5` input area that
+//! grows with wrapped rows of `h-[22px] bg-muted text-xs font-medium
+//! rounded-sm` chips with `opacity-50 hover:opacity-100` remove buttons.
 //!
 //! This port owns the popup (anchored below the trigger, dismiss on Escape
 //! and outside click) and reuses the command list internally for the
@@ -66,14 +79,31 @@ use egui::{
 pub const COMBOBOX_DEFAULT_WIDTH: f32 = 200.0;
 /// Trigger height (`h-9`).
 pub const COMBOBOX_TRIGGER_HEIGHT: f32 = crate::theme::tokens::spacing::CONTROL;
-/// Popup list max height.
-pub const COMBOBOX_LIST_MAX_HEIGHT: f32 = 300.0;
+/// Popup list max height: v4 `max-h-96` minus the embedded search field
+/// (`min(calc(--spacing(96)---spacing(9)), …)` ≈ 348 px).
+pub const COMBOBOX_LIST_MAX_HEIGHT: f32 = 348.0;
+/// Popup extra width over the trigger: v4
+/// `min-w-[calc(var(--anchor-width)+--spacing(7))]` (28 px).
+pub const COMBOBOX_WIDTH_EXTRA: f32 = 28.0;
+/// Popup side offset: v4 `sideOffset=6` (6 px).
+pub const COMBOBOX_SIDE_OFFSET: f32 = 6.0;
 /// Chevron icon size (`size-4`).
 const ICON_SIZE: f32 = 16.0;
-/// Chip height inside the multi trigger (`py-0.5` + `text-xs`).
-const CHIP_HEIGHT: f32 = 20.0;
-/// Chip horizontal padding + gap.
+/// Chip height: `h-[22px]` (docs `ComboboxChip`).
+const CHIP_HEIGHT: f32 = 22.0;
+/// Chip horizontal padding: `px-1.5` (6 px).
 const CHIP_PAD_X: f32 = 6.0;
+/// Chip row gap / chip-content gap: `gap-1.5` (6 px).
+const CHIP_GAP: f32 = 6.0;
+/// Chip remove button: ghost `icon-xs` (24 px).
+const CHIP_REMOVE_SIZE: f32 = 24.0;
+/// Gap between the chip text and its remove button: `gap-1` (4 px), with
+/// the button pulled 4 px left (`-ml-1`) over the zeroed right pad.
+const CHIP_INNER_GAP: f32 = 4.0;
+/// Chip container padding: `px-2.5` (10 px).
+const CHIPS_PAD_X: f32 = 10.0;
+/// Clear (X) button: ghost `icon-xs` (24 px).
+const CLEAR_SIZE: f32 = 24.0;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -280,10 +310,65 @@ pub(crate) fn resolve_trigger_colors(
     }
 }
 
-/// The chip look for multi-select triggers (`bg-secondary
-/// text-secondary-foreground`, docs `ComboboxChip`).
+/// The chip look for multi-select triggers: v4 `ComboboxChip` is
+/// `bg-muted text-foreground` with `text-xs font-medium`.
 pub(crate) fn chip_colors(p: &Palette) -> (Color32, Color32) {
-    (p.secondary, p.secondary_foreground)
+    (p.muted, p.foreground)
+}
+
+/// Chip width from its text: `px-1.5` + text + `gap-1` + 24 px remove
+/// button pulled 4 px left (`-ml-1` over the zeroed right pad).
+fn chip_width(text_w: f32) -> f32 {
+    CHIP_PAD_X + text_w + CHIP_INNER_GAP + CHIP_REMOVE_SIZE - CHIP_INNER_GAP
+}
+
+/// Lays chips into rows no wider than `available`; returns the rows of
+/// (value, display text, chip width). A chip wider than a whole line
+/// truncates its text with an ellipsis (the value stays intact for
+/// removal).
+fn wrap_chips(
+    values: &[String],
+    available: f32,
+    ui: &Ui,
+    font: &FontId,
+    fg: Color32,
+) -> Vec<Vec<(String, String, f32)>> {
+    let mut rows: Vec<Vec<(String, String, f32)>> = vec![Vec::new()];
+    let mut x = 0.0f32;
+    for value in values {
+        let mut text = value.clone();
+        let galley = ui.painter().layout_no_wrap(text.clone(), font.clone(), fg);
+        let mut chip_w = chip_width(galley.size().x);
+        if chip_w > available {
+            // Truncate with an ellipsis until the chip fits the line.
+            loop {
+                if text.chars().count() <= 1 {
+                    // Degenerate: even one character overflows; clamp.
+                    chip_w = available;
+                    break;
+                }
+                text.pop();
+                let g = ui
+                    .painter()
+                    .layout_no_wrap(format!("{text}…"), font.clone(), fg);
+                let w = chip_width(g.size().x);
+                if w <= available {
+                    text = format!("{text}…");
+                    chip_w = w;
+                    break;
+                }
+            }
+        }
+        if x > 0.0 && x + chip_w > available {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push((value.clone(), text, chip_w));
+        }
+        x += chip_w + CHIP_GAP;
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +429,9 @@ pub struct Combobox<'a> {
     list_max_height: f32,
     disabled: bool,
     invalid: bool,
+    /// Single-select only: the v4 `ComboboxClear` ghost X button that
+    /// empties the binding (`showClear`, default off).
+    show_clear: bool,
     id_salt: Option<String>,
 }
 
@@ -395,6 +483,7 @@ impl<'a> Combobox<'a> {
             list_max_height: COMBOBOX_LIST_MAX_HEIGHT,
             disabled: false,
             invalid: false,
+            show_clear: false,
             id_salt: None,
         }
     }
@@ -460,6 +549,14 @@ impl<'a> Combobox<'a> {
     /// Marks the trigger `aria-invalid` (destructive border + ring).
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Shows the v4 `ComboboxClear` ghost X left of the chevron for
+    /// single-select bindings; clicking it empties the value
+    /// (`showClear`, default off).
+    pub fn show_clear(mut self, show: bool) -> Self {
+        self.show_clear = show;
         self
     }
 
@@ -531,18 +628,36 @@ impl<'a> Combobox<'a> {
             !value_before.is_empty()
         };
 
-        // Trigger: outline button, `justify-between font-normal`, h-9.
+        // Trigger: outline button, `justify-between font-normal`, h-9. The
+        // multi chips variant grows into wrapped rows of 22 px chips.
+        let chip_font = FontId::proportional(crate::theme::tokens::type_scale::XS);
+        let chips_rows: Vec<Vec<(String, String, f32)>> = if is_multi && !multi_before.is_empty() {
+            let line_w =
+                (width - 2.0 * CHIPS_PAD_X - ICON_SIZE - crate::theme::tokens::spacing::SM)
+                    .max(20.0);
+            wrap_chips(&multi_before, line_w, ui, &chip_font, p.foreground)
+        } else {
+            Vec::new()
+        };
+        let trigger_height = if chips_rows.is_empty() {
+            COMBOBOX_TRIGGER_HEIGHT
+        } else {
+            // `min-h-9` with `py-1.5` rows: 26 px per row + 10 px shell.
+            ((chips_rows.len() as f32) * (CHIP_HEIGHT + CHIP_GAP) + 10.0)
+                .max(COMBOBOX_TRIGGER_HEIGHT)
+        };
         let sense = if self.disabled {
             Sense::hover()
         } else {
             Sense::click()
         };
-        let (_, rect) = ui.allocate_space(Vec2::new(width, COMBOBOX_TRIGGER_HEIGHT));
+        let (_, rect) = ui.allocate_space(Vec2::new(width, trigger_height));
         let trigger_id = state_id.with("trigger");
         let response = ui.interact(rect, trigger_id, sense);
 
         // Multi: removable chips drawn over the trigger.
         let mut chip_remove: Option<String> = None;
+        let mut clear_clicked = false;
         if ui.is_rect_visible(rect) {
             let c = resolve_trigger_colors(
                 &p,
@@ -580,85 +695,55 @@ impl<'a> Combobox<'a> {
             );
             Icon::ChevronDown.paint(painter, chev_rect, c.chevron, 2.0 * ICON_SIZE / 24.0);
 
-            let right_edge = chev_rect.min.x - crate::theme::tokens::spacing::SM;
-            if is_multi && !multi_before.is_empty() {
-                // Chips: as many as fit, then a `+N` chip.
-                let font = FontId::proportional(crate::theme::tokens::type_scale::XS);
+            if !chips_rows.is_empty() {
+                // Chips: wrapped rows of `h-[22px] bg-muted` chips with
+                // `opacity-50 hover:opacity-100` remove buttons.
                 let (chip_bg, chip_fg) = chip_colors(&p);
-                let mut x = rect.min.x + CHIP_PAD_X;
-                let mut shown = 0usize;
-                for value in &multi_before {
-                    let galley = ui
-                        .painter()
-                        .layout_no_wrap(value.clone(), font.clone(), chip_fg);
-                    let chip_w = galley.size().x + 2.0 * CHIP_PAD_X + ICON_SIZE + 4.0;
-                    if x + chip_w > right_edge {
-                        break;
+                let chip_corner = CornerRadius::same(theme.radius.sm_u8());
+                let content_h = (chips_rows.len() as f32) * CHIP_HEIGHT
+                    + ((chips_rows.len() - 1) as f32) * CHIP_GAP;
+                let mut y = rect.min.y + ((rect.height() - content_h) * 0.5).max(0.0);
+                for row in &chips_rows {
+                    let mut x = rect.min.x + CHIPS_PAD_X;
+                    for (value, text, chip_w) in row {
+                        let chip_rect =
+                            Rect::from_min_size(Pos2::new(x, y), Vec2::new(*chip_w, CHIP_HEIGHT));
+                        painter.rect_filled(chip_rect, chip_corner, chip_bg);
+                        let galley =
+                            painter.layout_no_wrap(text.clone(), chip_font.clone(), chip_fg);
+                        painter.galley(
+                            Pos2::new(
+                                chip_rect.min.x + CHIP_PAD_X,
+                                chip_rect.center().y - galley.size().y * 0.5,
+                            ),
+                            galley,
+                            chip_fg,
+                        );
+                        // Remove X: 24 px ghost button overlapping the
+                        // chip's zeroed right pad.
+                        let x_rect = Rect::from_min_size(
+                            Pos2::new(
+                                chip_rect.max.x - CHIP_REMOVE_SIZE,
+                                chip_rect.center().y - CHIP_REMOVE_SIZE * 0.5,
+                            ),
+                            Vec2::splat(CHIP_REMOVE_SIZE),
+                        );
+                        let x_id = trigger_id.with(("chip_x", value.clone()));
+                        let x_resp = ui.interact(x_rect, x_id, Sense::click());
+                        let x_color = if x_resp.hovered() {
+                            chip_fg
+                        } else {
+                            color_alpha(chip_fg, 0.5)
+                        };
+                        let x_icon =
+                            Rect::from_center_size(x_rect.center(), Vec2::splat(ICON_SIZE));
+                        Icon::X.paint(painter, x_icon, x_color, 2.0 * ICON_SIZE / 24.0);
+                        if x_resp.clicked() {
+                            chip_remove = Some(value.clone());
+                        }
+                        x = chip_rect.max.x + CHIP_GAP;
                     }
-                    let chip_rect = Rect::from_min_size(
-                        Pos2::new(x, rect.center().y - CHIP_HEIGHT * 0.5),
-                        Vec2::new(chip_w, CHIP_HEIGHT),
-                    );
-                    painter.rect_filled(
-                        chip_rect,
-                        CornerRadius::same(theme.radius.sm_u8()),
-                        chip_bg,
-                    );
-                    painter.galley(
-                        Pos2::new(
-                            chip_rect.min.x + CHIP_PAD_X,
-                            chip_rect.center().y - galley.size().y * 0.5,
-                        ),
-                        galley,
-                        chip_fg,
-                    );
-                    // Remove X (interactive; on top of the trigger).
-                    let x_rect = Rect::from_center_size(
-                        Pos2::new(
-                            chip_rect.max.x - CHIP_PAD_X - ICON_SIZE * 0.5,
-                            chip_rect.center().y,
-                        ),
-                        Vec2::splat(ICON_SIZE),
-                    );
-                    let x_id = trigger_id.with(("chip_x", value.clone()));
-                    let x_resp = ui.interact(x_rect, x_id, Sense::click());
-                    let x_color = if x_resp.hovered() {
-                        chip_fg
-                    } else {
-                        color_alpha(chip_fg, 0.6)
-                    };
-                    Icon::X.paint(painter, x_rect, x_color, 2.0 * ICON_SIZE / 24.0);
-                    if x_resp.clicked() {
-                        chip_remove = Some(value.clone());
-                    }
-                    x = chip_rect.max.x + CHIP_PAD_X;
-                    shown += 1;
-                }
-                let hidden = multi_before.len() - shown;
-                if hidden > 0 {
-                    let label = format!("+{hidden}");
-                    let galley = ui.painter().layout_no_wrap(label, font.clone(), chip_fg);
-                    let chip_w = galley.size().x + 2.0 * CHIP_PAD_X;
-                    let chip_rect = Rect::from_min_size(
-                        Pos2::new(
-                            x.min(right_edge - chip_w),
-                            rect.center().y - CHIP_HEIGHT * 0.5,
-                        ),
-                        Vec2::new(chip_w, CHIP_HEIGHT),
-                    );
-                    painter.rect_filled(
-                        chip_rect,
-                        CornerRadius::same(theme.radius.sm_u8()),
-                        chip_bg,
-                    );
-                    painter.galley(
-                        Pos2::new(
-                            chip_rect.min.x + CHIP_PAD_X,
-                            chip_rect.center().y - galley.size().y * 0.5,
-                        ),
-                        galley,
-                        chip_fg,
-                    );
+                    y += CHIP_HEIGHT + CHIP_GAP;
                 }
             } else {
                 let label = if is_multi {
@@ -679,6 +764,38 @@ impl<'a> Combobox<'a> {
                     font,
                     c.text,
                 );
+
+                // Single-select `ComboboxClear`: a 24 px ghost X left of
+                // the chevron that empties the binding.
+                if self.show_clear && has_value && !self.disabled {
+                    let clear_rect = Rect::from_center_size(
+                        Pos2::new(
+                            chev_rect.min.x - crate::theme::tokens::spacing::XS - CLEAR_SIZE * 0.5,
+                            rect.center().y,
+                        ),
+                        Vec2::splat(CLEAR_SIZE),
+                    );
+                    let clear_id = trigger_id.with("clear");
+                    let clear_resp = ui.interact(clear_rect, clear_id, Sense::click());
+                    if clear_resp.hovered() {
+                        painter.rect_filled(
+                            clear_rect,
+                            CornerRadius::same(theme.radius.sm_u8()),
+                            p.muted,
+                        );
+                    }
+                    let x_color = if clear_resp.hovered() {
+                        p.foreground
+                    } else {
+                        color_alpha(p.foreground, 0.5)
+                    };
+                    let x_icon =
+                        Rect::from_center_size(clear_rect.center(), Vec2::splat(ICON_SIZE));
+                    Icon::X.paint(painter, x_icon, x_color, 2.0 * ICON_SIZE / 24.0);
+                    if clear_resp.clicked() {
+                        clear_clicked = true;
+                    }
+                }
             }
 
             // Focus ring.
@@ -688,14 +805,22 @@ impl<'a> Combobox<'a> {
             }
         }
 
-        // Trigger toggles (unless the click hit a chip's remove X).
-        if !self.disabled && response.clicked() && chip_remove.is_none() {
+        // Trigger toggles (unless the click hit a chip's remove X or the
+        // clear button).
+        if !self.disabled && response.clicked() && chip_remove.is_none() && !clear_clicked {
             state.open = !state.open;
         }
 
-        // Apply chip removal (multi).
+        // Apply chip removal (multi) and the clear button (single).
         let mut changed = false;
         let mut toggled: Option<String> = None;
+        if clear_clicked {
+            match &mut self.binding {
+                Some(b) => b.set_single(None),
+                None => stored = None,
+            }
+            changed = true;
+        }
         if let Some(value) = chip_remove {
             let removed = match &mut self.binding {
                 Some(b) => !b.toggle_multi(&value),
@@ -729,13 +854,23 @@ impl<'a> Combobox<'a> {
 
         if state.open || was_open_last_frame {
             if let Some(trigger) = state.trigger {
-                let progress = crate::utils::animation::overlay_progress(
+                // Nova `.cn-combobox-content` runs its in/out animation at
+                // `duration-100`.
+                let progress = crate::utils::animation::nova_overlay_progress(
                     &ctx,
                     popup_id.with("anim"),
                     state.open,
                 );
                 if state.open || progress.alpha > 0.002 {
-                    let popup_width = width.max(SELECT_MIN_WIDTH_FLOOR);
+                    // v4 popup: `w-(--anchor-width)` with
+                    // `min-w-[calc(var(--anchor-width)+28px)]` in single
+                    // mode (`data-[chips=true]` keeps the trigger width).
+                    let popup_width = if is_multi {
+                        width
+                    } else {
+                        width + COMBOBOX_WIDTH_EXTRA
+                    }
+                    .max(SELECT_MIN_WIDTH_FLOOR);
                     let frame = egui::Frame::new()
                         .fill(p.popover)
                         .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
@@ -752,7 +887,7 @@ impl<'a> Combobox<'a> {
                     .open(true)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .align(RectAlign::BOTTOM_START)
-                    .gap(4.0 + (1.0 - progress.alpha) * 8.0)
+                    .gap(COMBOBOX_SIDE_OFFSET + (1.0 - progress.alpha) * 8.0)
                     .width(popup_width)
                     .frame(egui::Frame::new());
 
@@ -766,6 +901,8 @@ impl<'a> Combobox<'a> {
                             let res = Command::new()
                                 .chrome(false)
                                 .width(popup_width)
+                                .list_max_height(self.list_max_height)
+                                .empty_style(crate::components::command::CommandEmptyStyle::Compact)
                                 .autofocus(true)
                                 .reset_autofocus(just_opened)
                                 .force_keyboard(true)
@@ -952,6 +1089,58 @@ mod tests {
         assert_eq!(resting.stroke.color, p.input);
         let hovered = resolve_trigger_colors(&p, true, true, false, false, true);
         assert_eq!(hovered.fill, color_alpha(p.input, 0.5));
+    }
+
+    #[test]
+    fn chips_use_the_v4_muted_look() {
+        let p = palette(Mode::Light);
+        let (bg, fg) = chip_colors(&p);
+        assert_eq!(bg, p.muted, "v4 ComboboxChip is bg-muted");
+        assert_eq!(fg, p.foreground, "v4 chip text is text-foreground");
+    }
+
+    #[test]
+    fn chips_wrap_into_rows() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("wrap_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 600.0))),
+            );
+            let font = FontId::proportional(crate::theme::tokens::type_scale::XS);
+            let fg = Color32::WHITE;
+            // Wide line: all three chips fit on one row.
+            let rows = wrap_chips(
+                &["A".to_string(), "B".to_string(), "C".to_string()],
+                300.0,
+                ui,
+                &font,
+                fg,
+            );
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].len(), 3);
+            // Narrow line: each chip needs its own row.
+            let rows = wrap_chips(
+                &["Alpha".to_string(), "Beta".to_string()],
+                60.0,
+                ui,
+                &font,
+                fg,
+            );
+            assert_eq!(rows.len(), 2, "chips wrap to a second row");
+            // A chip wider than the whole line truncates to an ellipsis.
+            let rows = wrap_chips(&["VeryLongFrameworkName".to_string()], 60.0, ui, &font, fg);
+            assert_eq!(rows.len(), 1);
+            assert!(
+                rows[0][0].1.ends_with('…'),
+                "display text truncates: {:?}",
+                rows[0][0].1
+            );
+            assert_eq!(rows[0][0].0, "VeryLongFrameworkName", "value stays intact");
+        });
+        out.textures_delta.clear();
     }
 
     #[test]
@@ -1256,5 +1445,41 @@ mod tests {
         });
         assert!(!h.state("dis").open, "a disabled combobox cannot open");
         assert_eq!(value, None);
+    }
+
+    #[test]
+    fn clear_button_empties_the_value() {
+        let mut h = Harness::new();
+        let mut value: Option<String> = Some("Alpha".to_string());
+        let mut rect = Rect::ZERO;
+        h.run(|ui| {
+            rect = Combobox::new(&mut value)
+                .id_salt("clear")
+                .options(OPTS)
+                .show_clear(true)
+                .show_seeded(ui)
+                .trigger
+                .rect;
+        });
+        h.run(|ui| {
+            rect = Combobox::new(&mut value)
+                .id_salt("clear")
+                .options(OPTS)
+                .show_clear(true)
+                .show_seeded(ui)
+                .trigger
+                .rect;
+        });
+        // The clear X sits left of the chevron (chevron at pr-3 + size-4).
+        let clear_pos = Pos2::new(rect.max.x - 44.0, rect.center().y);
+        h.click(clear_pos, |ui| {
+            Combobox::new(&mut value)
+                .id_salt("clear")
+                .options(OPTS)
+                .show_clear(true)
+                .show_seeded(ui);
+        });
+        assert_eq!(value, None, "the clear X empties the binding");
+        assert!(!h.state("clear").open, "clearing does not open the popup");
     }
 }
