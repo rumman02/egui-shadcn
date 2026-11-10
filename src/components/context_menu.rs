@@ -6,7 +6,9 @@
 //! item rows as the dropdown-menu (nova puts the checkbox/radio indicator on
 //! the right: `pr-8`, indicator `right-2`), labels `text-muted-foreground
 //! text-xs`, destructive items `text-destructive` with
-//! `focus:bg-destructive/10` (dark: `/20`).
+//! `focus:bg-destructive/10` (dark: `/20`). The nova sub-content differs
+//! from the root: `min-w-32` with a `border`-token stroke and `shadow-lg`
+//! (`.cn-context-menu-sub-content`).
 //!
 //! The trigger is the region laid out so far in the current [`Ui`] (the
 //! manual analog of `response.context_menu`): a right-click anywhere in it
@@ -44,7 +46,7 @@
 use crate::components::dropdown_menu::{
     apply_activation, handle_menu_escape, handle_menu_keys, handle_outside_click, read_menu_state,
     render_level, write_menu_state, IndicatorSide, LevelShared, MenuActivated, MenuBuilder,
-    MenuSpec, MenuState, TriggerInfo, MENU_LABEL_HEIGHT, SUB_MENU_MIN_WIDTH,
+    MenuSpec, MenuState, TriggerInfo, MENU_LABEL_HEIGHT,
 };
 use crate::theme::ShadcnTheme;
 use egui::emath::RectAlign;
@@ -52,6 +54,10 @@ use egui::{Rect, Sense, Ui};
 
 /// Content min width: nova `min-w-36` (144 px).
 pub const CONTEXT_MENU_MIN_WIDTH: f32 = 144.0;
+
+/// Sub-menu content min width: nova `min-w-32` (128 px,
+/// `.cn-context-menu-sub-content`).
+pub const CONTEXT_MENU_SUB_MIN_WIDTH: f32 = 128.0;
 
 /// What [`ContextMenu::show`] returns.
 #[derive(Clone, Debug)]
@@ -184,8 +190,11 @@ impl<'a> ContextMenu<'a> {
                 indicator: IndicatorSide::Right,
                 label_muted: true,
                 label_height: MENU_LABEL_HEIGHT,
-                sub_min_width: SUB_MENU_MIN_WIDTH,
-                sub_border_is_ring: true,
+                sub_min_width: CONTEXT_MENU_SUB_MIN_WIDTH,
+                // Nova sub-content strokes with the `border` token
+                // (`.cn-context-menu-sub-content`: `border … shadow-lg`),
+                // while the root content stays `ring-foreground/10`.
+                sub_border_is_ring: false,
             };
             let mut shared = LevelShared {
                 p,
@@ -281,6 +290,7 @@ mod tests {
     #[test]
     fn min_width_matches_nova() {
         assert_eq!(CONTEXT_MENU_MIN_WIDTH, 144.0, "min-w-36");
+        assert_eq!(CONTEXT_MENU_SUB_MIN_WIDTH, 128.0, "sub-content min-w-32");
     }
 
     #[test]
