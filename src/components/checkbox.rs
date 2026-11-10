@@ -24,7 +24,7 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, Response, Sense, Stroke, Ui, Vec2, Widget};
 
 /// `size-4` — the checkbox side length.
@@ -50,11 +50,16 @@ pub(crate) struct CheckboxColors {
 /// data-[state=checked]:text-primary-foreground`,
 /// `aria-invalid:border-destructive aria-invalid:ring-destructive/20
 /// dark:aria-invalid:ring-destructive/40`.
+///
+/// Style deltas (nova recipe): `dark:aria-invalid:border-destructive/50` and
+/// `focus-visible:border-ring` recolors the border while focused.
 pub(crate) fn resolve_checkbox_colors(
     p: &Palette,
     dark: bool,
+    style: Style,
     checked: bool,
     invalid: bool,
+    focused: bool,
 ) -> CheckboxColors {
     let (fill, stroke_color, icon) = if checked {
         (p.primary, p.primary, p.primary_foreground)
@@ -72,7 +77,15 @@ pub(crate) fn resolve_checkbox_colors(
         color_alpha(p.ring, 0.5)
     };
     let stroke_color = if invalid && !checked {
-        p.destructive
+        if style == Style::Nova && dark {
+            // `dark:aria-invalid:border-destructive/50`
+            color_alpha(p.destructive, 0.5)
+        } else {
+            p.destructive
+        }
+    } else if focused {
+        // `focus-visible:border-ring` (invalid wins: `aria-invalid:border-destructive`).
+        p.ring
     } else {
         stroke_color
     };
@@ -162,14 +175,27 @@ impl<'a> Checkbox<'a> {
 
         if ui.is_rect_visible(rect) {
             let checked = *self.checked;
+            let focused = response.has_focus() && !self.disabled;
+            // `transition-colors`: the 75ms fill/stroke/icon cross-fade between
+            // the unchecked and checked recipes (no-op once settled).
+            let t = crate::utils::animation::animate_value(
+                ui.ctx(),
+                id.with("checked_anim"),
+                if checked { 1.0 } else { 0.0 },
+                crate::utils::animation::Duration::Fast,
+            );
+            let off = resolve_checkbox_colors(&p, dark, theme.style, false, self.invalid, focused);
+            let on = resolve_checkbox_colors(&p, dark, theme.style, true, self.invalid, focused);
+            let mix = |a: Color32, b: Color32| crate::components::attachment::mix(a, b, t);
+            let mut fill = mix(off.fill, on.fill);
+            let mut stroke = Stroke::new(1.0, mix(off.stroke.color, on.stroke.color));
+            let mut icon = mix(off.icon, on.icon);
             // Radix sets `data-state="indeterminate"` — the checked styling
             // does not apply; the minus icon renders in the foreground color.
-            let c = resolve_checkbox_colors(&p, dark, checked, self.invalid);
-            let icon_color = if self.indeterminate && !checked {
-                p.foreground
-            } else {
-                c.icon
-            };
+            if self.indeterminate && !checked {
+                icon = p.foreground;
+            }
+            let ring = on.ring;
             let corner = CornerRadius::same(CHECKBOX_RADIUS);
             let painter = ui.painter();
 
@@ -186,9 +212,6 @@ impl<'a> Checkbox<'a> {
                 );
             }
 
-            let mut fill = c.fill;
-            let mut stroke = c.stroke;
-            let mut icon = icon_color;
             if self.disabled {
                 // `disabled:opacity-50`
                 fill = color_alpha(fill, 0.5);
@@ -213,12 +236,12 @@ impl<'a> Checkbox<'a> {
 
             // `focus-visible:border-ring focus-visible:ring-[3px]
             // focus-visible:ring-ring/50`
-            if response.has_focus() && !self.disabled {
+            if focused {
                 let ring_rect = rect.expand2(egui::vec2(1.0, 1.0));
                 crate::utils::focus::paint_ring(
                     painter,
                     ring_rect,
-                    c.ring,
+                    ring,
                     3.0,
                     CHECKBOX_RADIUS as f32,
                 );
@@ -252,34 +275,70 @@ mod tests {
     #[test]
     fn checked_uses_primary() {
         let p = palette(Mode::Light);
-        let c = resolve_checkbox_colors(&p, false, true, false);
+        let c = resolve_checkbox_colors(&p, false, Style::Vega, true, false, false);
         assert_eq!(c.fill, p.primary);
         assert_eq!(c.stroke.color, p.primary);
         assert_eq!(c.icon, p.primary_foreground);
-        let u = resolve_checkbox_colors(&p, false, false, false);
+        let u = resolve_checkbox_colors(&p, false, Style::Vega, false, false, false);
         assert_eq!(u.fill, Color32::TRANSPARENT);
         assert_eq!(u.stroke.color, p.input);
         assert_eq!(u.icon, p.foreground);
+        // Nova keeps the same checked/unchecked colors (`data-checked:bg-primary
+        // data-checked:border-primary data-checked:text-primary-foreground`).
+        let nc = resolve_checkbox_colors(&p, false, Style::Nova, true, false, false);
+        assert_eq!(nc.fill, p.primary);
+        assert_eq!(nc.stroke.color, p.primary);
     }
 
     #[test]
     fn dark_unchecked_uses_input_30() {
         let dark = palette(Mode::Dark);
-        let u = resolve_checkbox_colors(&dark, true, false, false);
+        let u = resolve_checkbox_colors(&dark, true, Style::Vega, false, false, false);
         assert_eq!(u.fill, color_alpha(dark.input, 0.3));
+    }
+
+    #[test]
+    fn focused_border_uses_ring() {
+        let p = palette(Mode::Light);
+        // `focus-visible:border-ring` on the unchecked box.
+        let f = resolve_checkbox_colors(&p, false, Style::Nova, false, false, true);
+        assert_eq!(f.stroke.color, p.ring);
+        let fb = resolve_checkbox_colors(&p, false, Style::Vega, false, false, true);
+        assert_eq!(fb.stroke.color, p.ring);
+        // Invalid wins over focus: `aria-invalid:border-destructive`.
+        let fi = resolve_checkbox_colors(&p, false, Style::Nova, false, true, true);
+        assert_eq!(fi.stroke.color, p.destructive);
+    }
+
+    #[test]
+    fn nova_dark_invalid_border_fades() {
+        let dark = palette(Mode::Dark);
+        let base = resolve_checkbox_colors(&dark, true, Style::Vega, false, true, false);
+        assert_eq!(base.stroke.color, dark.destructive);
+        let nova = resolve_checkbox_colors(&dark, true, Style::Nova, false, true, false);
+        // `dark:aria-invalid:border-destructive/50`
+        assert_eq!(nova.stroke.color, color_alpha(dark.destructive, 0.5));
+        // Light keeps the full destructive border in both styles.
+        let p = palette(Mode::Light);
+        assert_eq!(
+            resolve_checkbox_colors(&p, false, Style::Nova, false, true, false)
+                .stroke
+                .color,
+            p.destructive
+        );
     }
 
     #[test]
     fn invalid_colors() {
         let p = palette(Mode::Light);
-        let i = resolve_checkbox_colors(&p, false, false, true);
+        let i = resolve_checkbox_colors(&p, false, Style::Vega, false, true, false);
         assert_eq!(i.stroke.color, p.destructive);
         assert_eq!(i.ring, color_alpha(p.destructive, 0.2));
         let dark = palette(Mode::Dark);
-        let di = resolve_checkbox_colors(&dark, true, false, true);
+        let di = resolve_checkbox_colors(&dark, true, Style::Vega, false, true, false);
         assert_eq!(di.ring, color_alpha(dark.destructive, 0.4));
         // A checked checkbox keeps its primary border even when invalid.
-        let ic = resolve_checkbox_colors(&p, false, true, true);
+        let ic = resolve_checkbox_colors(&p, false, Style::Vega, true, true, false);
         assert_eq!(ic.stroke.color, p.primary);
     }
 
