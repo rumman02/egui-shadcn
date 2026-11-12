@@ -1,13 +1,34 @@
-//! Lucide-style icons drawn in pure Rust with [`egui::Painter`] paths.
+//! Real Lucide icons, rasterized once and cached as textures.
 //!
-//! Every icon is defined on the lucide 24×24 grid with 2px strokes and round
-//! caps/joins, then scaled to the requested size. To add an icon, append a
-//! variant and define its elements in [`Icon::elements`].
+//! Every icon's geometry is REAL Lucide data from the official Lucide
+//! release (see [`data`] and `LICENSE-Lucide.txt`), converted to [`El`]
+//! values by `gen_icons.py` — nothing here is hand-drawn. Icons live on
+//! the Lucide 24×24 grid with 2px strokes and round caps/joins.
+//!
+//! Painting is cached: [`Icon::paint`] rasterizes the icon once per
+//! (icon, pixel size, stroke width) into a color-independent alpha mask
+//! stored as an egui texture in `Context` temp data, then draws it tinted
+//! with the requested color. Cache hits allocate nothing per frame.
+//! The cache is bounded (LRU, [`MAX_CACHE_ENTRIES`]); dropping an entry
+//! drops its texture.
+//!
+//! To add an icon, add one line to `ICONS` in `gen_icons.py`, add the
+//! variant to [`Icon`], and regenerate (command in `data.rs`).
 
-use egui::epaint::StrokeKind;
-use egui::{Color32, Painter, Pos2, Rect, Response, Shape, Stroke, Ui, Vec2};
+use std::collections::{HashMap, VecDeque};
+
+use egui::{
+    Color32, ColorImage, Context, Painter, Pos2, Rect, Response, TextureHandle, TextureOptions, Ui,
+    Vec2,
+};
+
+use super::data;
 
 /// One drawable element of an icon, in 24×24 icon coordinates.
+///
+/// This is the icon geometry vocabulary: generated icon data is a static
+/// slice of `El` values (see [`Icon::elements_static`]). [`Icon::elements`]
+/// keeps the historical owned-`Vec` form for compatibility.
 #[derive(Clone, Copy, Debug)]
 pub enum El {
     /// Straight line.
@@ -29,7 +50,7 @@ pub enum El {
     Rect([f32; 2], [f32; 2], f32),
 }
 
-/// A lucide-style icon.
+/// A Lucide icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     Check,
@@ -80,357 +101,72 @@ pub enum Icon {
 
 impl Icon {
     /// The elements composing this icon in 24×24 coordinates.
+    ///
+    /// Kept for compatibility; prefer [`Icon::elements_static`], which
+    /// returns the same data without allocating.
     pub fn elements(&self) -> Vec<El> {
-        match self {
-            Icon::Check => vec![El::Poly(&[[20.0, 6.0], [9.0, 17.0], [4.0, 12.0]])],
-            Icon::ChevronDown => vec![El::Poly(&[[6.0, 9.0], [12.0, 15.0], [18.0, 9.0]])],
-            Icon::ChevronUp => vec![El::Poly(&[[6.0, 15.0], [12.0, 9.0], [18.0, 15.0]])],
-            Icon::ChevronLeft => vec![El::Poly(&[[15.0, 18.0], [9.0, 12.0], [15.0, 6.0]])],
-            Icon::ChevronRight => vec![El::Poly(&[[9.0, 18.0], [15.0, 12.0], [9.0, 6.0]])],
-            Icon::ChevronsLeft => vec![
-                El::Poly(&[[11.0, 17.0], [6.0, 12.0], [11.0, 7.0]]),
-                El::Poly(&[[18.0, 17.0], [13.0, 12.0], [18.0, 7.0]]),
-            ],
-            Icon::ChevronsRight => vec![
-                El::Poly(&[[6.0, 17.0], [11.0, 12.0], [6.0, 7.0]]),
-                El::Poly(&[[13.0, 17.0], [18.0, 12.0], [13.0, 7.0]]),
-            ],
-            Icon::X => vec![
-                El::Line([18.0, 6.0], [6.0, 18.0]),
-                El::Line([6.0, 6.0], [18.0, 18.0]),
-            ],
-            Icon::Minus => vec![El::Line([5.0, 12.0], [19.0, 12.0])],
-            Icon::Plus => vec![
-                El::Line([12.0, 5.0], [12.0, 19.0]),
-                El::Line([5.0, 12.0], [19.0, 12.0]),
-            ],
-            Icon::CircleAlert => vec![
-                El::Circle([12.0, 12.0], 10.0),
-                El::Line([12.0, 8.0], [12.0, 12.0]),
-                El::Dot([12.0, 16.0], 1.0),
-            ],
-            Icon::CircleCheck => vec![
-                El::Circle([12.0, 12.0], 10.0),
-                El::Poly(&[[9.0, 12.0], [11.0, 14.0], [15.0, 10.0]]),
-            ],
-            Icon::CircleX => vec![
-                El::Circle([12.0, 12.0], 10.0),
-                El::Line([15.0, 9.0], [9.0, 15.0]),
-                El::Line([9.0, 9.0], [15.0, 15.0]),
-            ],
-            // lucide triangle-alert: rounded triangle + exclamation.
-            // The corner arcs of `m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3`
-            // are sampled into the outline polyline below.
-            Icon::TriangleAlert => vec![
-                El::PolyClosed(&[
-                    [21.73, 18.0],
-                    [13.73, 4.0],
-                    [12.99, 3.26],
-                    [11.99, 2.99],
-                    [10.99, 3.26],
-                    [10.25, 4.0],
-                    [2.25, 18.0],
-                    [1.98, 19.0],
-                    [2.25, 20.0],
-                    [2.98, 20.73],
-                    [4.0, 21.0],
-                    [20.0, 21.0],
-                    [21.01, 20.73],
-                    [21.74, 20.0],
-                    [22.01, 19.0],
-                    [21.73, 18.0],
-                ]),
-                El::Line([12.0, 9.0], [12.0, 13.0]),
-                El::Dot([12.0, 17.0], 1.0),
-            ],
-            // lucide octagon-x: `M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z` + x.
-            Icon::OctagonX => vec![
-                El::PolyClosed(&[
-                    [7.86, 2.0],
-                    [16.14, 2.0],
-                    [22.0, 7.86],
-                    [22.0, 16.14],
-                    [16.14, 22.0],
-                    [7.86, 22.0],
-                    [2.0, 16.14],
-                    [2.0, 7.86],
-                ]),
-                El::Line([15.0, 9.0], [9.0, 15.0]),
-                El::Line([9.0, 9.0], [15.0, 15.0]),
-            ],
-            Icon::Info => vec![
-                El::Circle([12.0, 12.0], 10.0),
-                El::Line([12.0, 16.0], [12.0, 12.0]),
-                El::Dot([12.0, 8.0], 1.0),
-            ],
-            // lucide loader-circle: 270° arc, radius 9, gap in the top-right quadrant.
-            Icon::LoaderCircle => vec![El::Arc([12.0, 12.0], 9.0, 0.0, 270.0)],
-            Icon::Calendar => vec![
-                El::Rect([3.0, 4.0], [18.0, 18.0], 2.0),
-                El::Line([8.0, 2.0], [8.0, 6.0]),
-                El::Line([16.0, 2.0], [16.0, 6.0]),
-                El::Line([3.0, 10.0], [21.0, 10.0]),
-            ],
-            Icon::CalendarDays => vec![
-                El::Rect([3.0, 4.0], [18.0, 18.0], 2.0),
-                El::Line([8.0, 2.0], [8.0, 6.0]),
-                El::Line([16.0, 2.0], [16.0, 6.0]),
-                El::Line([3.0, 10.0], [21.0, 10.0]),
-                El::Dot([8.0, 14.0], 0.6),
-                El::Dot([12.0, 14.0], 0.6),
-                El::Dot([16.0, 14.0], 0.6),
-                El::Dot([8.0, 18.0], 0.6),
-                El::Dot([12.0, 18.0], 0.6),
-                El::Dot([16.0, 18.0], 0.6),
-            ],
-            Icon::Search => vec![
-                El::Circle([11.0, 11.0], 8.0),
-                El::Line([21.0, 21.0], [16.65, 16.65]),
-            ],
-            Icon::MoreHorizontal => vec![
-                El::Dot([5.0, 12.0], 1.0),
-                El::Dot([12.0, 12.0], 1.0),
-                El::Dot([19.0, 12.0], 1.0),
-            ],
-            Icon::MoreVertical => vec![
-                El::Dot([12.0, 5.0], 1.0),
-                El::Dot([12.0, 12.0], 1.0),
-                El::Dot([12.0, 19.0], 1.0),
-            ],
-            Icon::ArrowDown => vec![
-                El::Line([12.0, 5.0], [12.0, 19.0]),
-                El::Poly(&[[19.0, 12.0], [12.0, 19.0], [5.0, 12.0]]),
-            ],
-            Icon::ArrowUp => vec![
-                El::Line([12.0, 19.0], [12.0, 5.0]),
-                El::Poly(&[[5.0, 12.0], [12.0, 5.0], [19.0, 12.0]]),
-            ],
-            Icon::ArrowUpDown => vec![
-                El::Line([5.0, 8.0], [5.0, 16.0]),
-                El::Poly(&[[2.0, 11.0], [5.0, 8.0], [8.0, 11.0]]),
-                El::Line([19.0, 16.0], [19.0, 8.0]),
-                El::Poly(&[[16.0, 13.0], [19.0, 16.0], [22.0, 13.0]]),
-            ],
-            Icon::ArrowLeft => vec![
-                El::Line([19.0, 12.0], [5.0, 12.0]),
-                El::Poly(&[[12.0, 19.0], [5.0, 12.0], [12.0, 5.0]]),
-            ],
-            Icon::ArrowRight => vec![
-                El::Line([5.0, 12.0], [19.0, 12.0]),
-                El::Poly(&[[12.0, 5.0], [19.0, 12.0], [12.0, 19.0]]),
-            ],
-            Icon::PanelLeft => vec![
-                El::Rect([3.0, 3.0], [18.0, 18.0], 2.0),
-                El::Line([9.0, 3.0], [9.0, 21.0]),
-            ],
-            Icon::User => vec![
-                El::Circle([12.0, 7.0], 4.0),
-                // Shoulders: M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2
-                El::Cubic([19.0, 21.0], [19.0, 21.0], [19.0, 15.0], [15.0, 15.0]),
-                El::Line([15.0, 15.0], [9.0, 15.0]),
-                El::Cubic([9.0, 15.0], [5.0, 15.0], [5.0, 15.0], [5.0, 21.0]),
-            ],
-            Icon::Paperclip => vec![El::Poly(&[
-                [21.44, 11.05],
-                [12.25, 20.24],
-                [11.46, 21.03],
-                [10.32, 21.34],
-                [9.14, 21.16],
-                [8.06, 20.5],
-                [7.36, 19.44],
-                [7.17, 18.23],
-                [7.53, 17.04],
-                [15.0, 9.57],
-                [15.83, 9.28],
-                [16.67, 9.46],
-                [17.24, 10.03],
-                [17.42, 10.87],
-                [17.13, 11.7],
-                [10.0, 18.83],
-            ])],
-            Icon::Trash => vec![
-                El::Line([3.0, 6.0], [21.0, 6.0]),
-                El::Cubic([19.0, 6.0], [19.0, 20.0], [19.0, 20.0], [17.0, 20.0]),
-                El::Line([17.0, 20.0], [7.0, 20.0]),
-                El::Cubic([7.0, 20.0], [5.0, 20.0], [5.0, 20.0], [5.0, 6.0]),
-                El::Cubic([8.0, 6.0], [8.0, 4.0], [8.0, 4.0], [10.0, 4.0]),
-                El::Line([10.0, 4.0], [14.0, 4.0]),
-                El::Cubic([14.0, 4.0], [16.0, 4.0], [16.0, 4.0], [16.0, 6.0]),
-            ],
-            Icon::Pencil => vec![El::Poly(&[
-                [17.0, 3.0],
-                [21.0, 7.0],
-                [7.5, 20.5],
-                [3.5, 20.5],
-                [3.5, 16.5],
-                [17.0, 3.0],
-            ])],
-            Icon::Sparkles => vec![
-                // Main four-point star.
-                El::PolyClosed(&[
-                    [12.0, 3.0],
-                    [13.9, 8.6],
-                    [19.5, 10.5],
-                    [13.9, 12.4],
-                    [12.0, 18.0],
-                    [10.1, 12.4],
-                    [4.5, 10.5],
-                    [10.1, 8.6],
-                ]),
-                El::Dot([19.0, 17.0], 0.8),
-                El::Dot([5.0, 19.0], 0.8),
-            ],
-            Icon::Copy => vec![
-                El::Rect([8.0, 8.0], [14.0, 14.0], 2.0),
-                El::Cubic([4.0, 16.0], [3.0, 16.0], [2.0, 15.0], [2.0, 14.0]),
-                El::Cubic([2.0, 4.0], [2.0, 3.0], [3.0, 2.0], [4.0, 2.0]),
-                El::Cubic([14.0, 2.0], [15.0, 2.0], [16.0, 3.0], [16.0, 4.0]),
-            ],
-            Icon::CornerDownLeft => vec![
-                El::Poly(&[[20.0, 4.0], [20.0, 11.0], [4.0, 11.0]]),
-                El::Poly(&[[9.0, 6.0], [4.0, 11.0], [9.0, 16.0]]),
-            ],
-            Icon::Message => vec![El::PolyClosed(&[
-                [7.9, 20.0],
-                [7.0, 20.0],
-                [4.0, 18.0],
-                [3.0, 16.0],
-                [2.6, 13.5],
-                [3.2, 10.0],
-                [5.0, 7.0],
-                [8.0, 4.5],
-                [12.0, 3.5],
-                [16.0, 4.5],
-                [19.0, 7.0],
-                [20.8, 10.0],
-                [21.4, 13.5],
-                [20.5, 16.5],
-                [18.5, 18.5],
-                [15.5, 19.7],
-                [12.0, 19.7],
-            ])],
-            Icon::Send => vec![El::PolyClosed(&[
-                [22.0, 2.0],
-                [11.0, 13.0],
-                [22.0, 2.0],
-                [2.0, 9.5],
-                [11.0, 13.0],
-                [11.0, 22.0],
-                [22.0, 2.0],
-            ])],
-            Icon::Circle => vec![El::Circle([12.0, 12.0], 10.0)],
-            Icon::Dot => vec![El::Dot([12.0, 12.0], 3.0)],
-            Icon::GripVertical => vec![
-                El::Dot([9.0, 5.0], 1.0),
-                El::Dot([9.0, 12.0], 1.0),
-                El::Dot([9.0, 19.0], 1.0),
-                El::Dot([15.0, 5.0], 1.0),
-                El::Dot([15.0, 12.0], 1.0),
-                El::Dot([15.0, 19.0], 1.0),
-            ],
-            Icon::GripHorizontal => vec![
-                El::Dot([5.0, 9.0], 1.0),
-                El::Dot([12.0, 9.0], 1.0),
-                El::Dot([19.0, 9.0], 1.0),
-                El::Dot([5.0, 15.0], 1.0),
-                El::Dot([12.0, 15.0], 1.0),
-                El::Dot([19.0, 15.0], 1.0),
-            ],
-            Icon::FileText => vec![
-                El::PolyClosed(&[
-                    [15.0, 2.0],
-                    [6.0, 2.0],
-                    [4.0, 4.0],
-                    [4.0, 20.0],
-                    [6.0, 22.0],
-                    [18.0, 22.0],
-                    [20.0, 20.0],
-                    [20.0, 7.0],
-                ]),
-                El::Poly(&[[14.0, 2.0], [14.0, 6.0], [16.0, 8.0], [20.0, 8.0]]),
-                El::Line([10.0, 9.0], [8.0, 9.0]),
-                El::Line([16.0, 13.0], [8.0, 13.0]),
-                El::Line([16.0, 17.0], [8.0, 17.0]),
-            ],
-            Icon::RefreshCw => vec![
-                El::Arc([12.0, 12.0], 9.0, 180.0, 340.0),
-                El::Poly(&[[21.0, 3.0], [21.0, 8.0], [16.0, 8.0]]),
-                El::Arc([12.0, 12.0], 9.0, 0.0, 156.0),
-                El::Poly(&[[8.0, 16.0], [3.0, 16.0], [3.0, 21.0]]),
-            ],
-            Icon::Clock => vec![
-                El::Circle([12.0, 12.0], 10.0),
-                El::Poly(&[[12.0, 6.0], [12.0, 12.0], [16.0, 14.0]]),
-            ],
-        }
+        self.elements_static().to_vec()
     }
 
-    /// Paints the icon scaled into `rect`.
-    pub fn paint(&self, painter: &Painter, rect: Rect, color: Color32, stroke_width: f32) {
-        let scale = rect.width().min(rect.height()) / 24.0;
-        let icon_size = Vec2::splat(24.0 * scale);
-        let origin = rect.min + 0.5 * (rect.size() - icon_size);
-        let to_screen =
-            |p: [f32; 2]| -> Pos2 { Pos2::new(origin.x + p[0] * scale, origin.y + p[1] * scale) };
-        let stroke = Stroke::new(stroke_width.max(1.0), color);
+    /// The elements composing this icon, as static data (no allocation).
+    pub fn elements_static(&self) -> &'static [El] {
+        data::elements(*self)
+    }
 
-        for el in self.elements() {
-            match el {
-                El::Line(a, b) => {
-                    painter.line_segment([to_screen(a), to_screen(b)], stroke);
-                }
-                El::Poly(points) => {
-                    let pts: Vec<Pos2> = points.iter().map(|p| to_screen(*p)).collect();
-                    painter.add(Shape::line(pts, stroke));
-                }
-                El::PolyClosed(points) => {
-                    let pts: Vec<Pos2> = points.iter().map(|p| to_screen(*p)).collect();
-                    painter.add(Shape::line(pts, stroke));
-                }
-                El::Circle(c, r) => {
-                    painter.circle_stroke(to_screen(c), r * scale, stroke);
-                }
-                El::Dot(c, r) => {
-                    painter.circle_filled(to_screen(c), (r * scale).max(0.5), color);
-                }
-                El::Arc(c, r, start_deg, end_deg) => {
-                    let pts: Vec<Pos2> = (0..=24)
-                        .map(|i| {
-                            let t = start_deg + (end_deg - start_deg) * (i as f32 / 24.0);
-                            let (sin, cos) = t.to_radians().sin_cos();
-                            to_screen([c[0] + r * cos, c[1] + r * sin])
-                        })
-                        .collect();
-                    painter.add(Shape::line(pts, stroke));
-                }
-                El::Cubic(p0, p1, p2, p3) => {
-                    let pts: Vec<Pos2> = (0..=12)
-                        .map(|i| {
-                            let t = i as f32 / 12.0;
-                            let a = lerp2(p0, p1, t);
-                            let b = lerp2(p1, p2, t);
-                            let c = lerp2(p2, p3, t);
-                            let ab = lerp2(a, b, t);
-                            let bc = lerp2(b, c, t);
-                            lerp2(ab, bc, t)
-                        })
-                        .map(to_screen)
-                        .collect();
-                    painter.add(Shape::line(pts, stroke));
-                }
-                El::Rect(pos, size, radius) => {
-                    let min = to_screen(pos);
-                    let max = to_screen([pos[0] + size[0], pos[1] + size[1]]);
-                    let rr = egui::CornerRadius::same((radius * scale).round() as u8);
-                    painter.rect_stroke(
-                        Rect::from_min_max(min, max),
-                        rr,
-                        egui::Stroke::new(stroke.width, color),
-                        StrokeKind::Inside,
-                    );
-                }
-            }
+    /// Every icon in the crate, in enum order.
+    pub fn all() -> &'static [Icon] {
+        data::ALL
+    }
+
+    /// The Lucide kebab-case name this icon's data comes from
+    /// (e.g. `Icon::CircleAlert` → `"circle-exclamation-point"`).
+    pub fn lucide_name(&self) -> &'static str {
+        data::lucide_name(*self)
+    }
+
+    /// Look up an icon by its Lucide kebab-case name.
+    pub fn from_lucide_name(name: &str) -> Option<Icon> {
+        data::from_lucide_name(name)
+    }
+
+    /// Paints the icon scaled into `rect`, tinted with `color`.
+    ///
+    /// The icon is rasterized once per (icon, pixel size, stroke width)
+    /// and cached as a texture; repainting the same icon at the same size
+    /// only draws the cached texture tinted with `color`. The icon is
+    /// centered in `rect` using its smaller side, exactly as before.
+    pub fn paint(&self, painter: &Painter, rect: Rect, color: Color32, stroke_width: f32) {
+        let size = rect.width().min(rect.height());
+        if !size.is_finite() || size <= 0.0 {
+            return;
         }
+        let ctx = painter.ctx();
+        let pixels_per_point = ctx.pixels_per_point().max(0.1);
+        let px = ((size * pixels_per_point).round() as u32).clamp(1, MAX_TEXTURE_PX);
+        // Same minimum-stroke rule as the old vector paint (1 logical point).
+        let stroke_px = stroke_width.max(1.0) * pixels_per_point;
+        let key = IconCacheKey {
+            icon: *self as u16,
+            px,
+            stroke_q: (stroke_px * 64.0).round() as u32,
+        };
+        let handle = cached_texture(ctx, key, || {
+            rasterize(
+                self.elements_static(),
+                px as usize,
+                stroke_px,
+                0.5 * pixels_per_point,
+            )
+        });
+        let icon_size = Vec2::splat(size);
+        let origin = rect.min + 0.5 * (rect.size() - icon_size);
+        let draw_rect = Rect::from_min_size(origin, icon_size);
+        painter.image(
+            handle.id(),
+            draw_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            color,
+        );
     }
 
     /// Paints centered in the current layout with the theme foreground color.
@@ -447,71 +183,379 @@ impl Icon {
     }
 }
 
-fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+/// Maximum cached texture side in physical pixels. Icons are small; this
+/// only guards against pathological rects (a 512px mask drawn larger
+/// still looks smooth under linear filtering).
+const MAX_TEXTURE_PX: u32 = 512;
+
+/// Maximum cached icon textures per context. A 16px icon mask is 1 KiB
+/// (32px at 2× DPI is 4 KiB), so the realistic worst case is ~1 MiB.
+const MAX_CACHE_ENTRIES: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct IconCacheKey {
+    /// `Icon` discriminant (declaration order; stable within a build).
+    icon: u16,
+    /// Texture side in physical pixels (icons are square).
+    px: u32,
+    /// Stroke width in physical pixels, quantized to 1/64 px.
+    stroke_q: u32,
+}
+
+/// LRU texture cache. Stored in `Context` temp data via
+/// [`Context::data_mut`]; never serialized. `Clone` is required by the
+/// `IdTypeMap` API (only `&mut` access is used on the hot path, so no
+/// clone ever happens per frame).
+#[derive(Clone)]
+struct IconTextureCache {
+    entries: HashMap<IconCacheKey, TextureHandle>,
+    /// Least-recently-used first; every lookup/insert moves the key to the back.
+    order: VecDeque<IconCacheKey>,
+    max_entries: usize,
+}
+
+impl Default for IconTextureCache {
+    fn default() -> Self {
+        Self::new(MAX_CACHE_ENTRIES)
+    }
+}
+
+impl IconTextureCache {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            max_entries: max_entries.max(1),
+        }
+    }
+
+    fn lookup(&mut self, key: IconCacheKey) -> Option<TextureHandle> {
+        let handle = self.entries.get(&key)?.clone();
+        self.touch(key);
+        Some(handle)
+    }
+
+    fn insert(&mut self, key: IconCacheKey, handle: TextureHandle) {
+        if self.entries.insert(key, handle).is_some() {
+            self.touch(key);
+            return;
+        }
+        // Evict least-recently-used entries until the new one fits. The new
+        // key is not in `order` yet, so it can never evict itself.
+        while self.entries.len() > self.max_entries {
+            if let Some(old) = self.order.pop_front() {
+                // Dropping the handle frees the GPU texture.
+                self.entries.remove(&old);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key);
+    }
+
+    fn touch(&mut self, key: IconCacheKey) {
+        if let Some(pos) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn cache_id() -> egui::Id {
+    egui::Id::unique("egui_shadcn_icon_texture_cache")
+}
+
+/// Look up (or rasterize + upload) the texture for one key. Lock discipline:
+/// the `Context` data lock is held only for the map lookup/insert;
+/// rasterization and texture upload happen outside it (`load_texture` takes
+/// its own locks and must never run inside `data_mut`).
+fn cached_texture(
+    ctx: &Context,
+    key: IconCacheKey,
+    make: impl FnOnce() -> ColorImage,
+) -> TextureHandle {
+    if let Some(handle) = ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<IconTextureCache>(cache_id())
+            .lookup(key)
+    }) {
+        return handle;
+    }
+    let image = make();
+    let handle = ctx.load_texture("egui-shadcn icon", image, TextureOptions::LINEAR);
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<IconTextureCache>(cache_id())
+            .insert(key, handle.clone());
+    });
+    handle
+}
+
+// --- Rasterizer ---
+//
+// Icons are rendered into a grayscale alpha mask with a distance-field
+// stroke: every element flattens to line segments (in pixel space), and
+// each pixel's coverage is its distance to the nearest segment, giving
+// round caps/joins and a 1px antialiased edge for free. The mask is
+// color-independent, so one texture serves every tint.
+
+/// A flattened stroke segment in pixel coordinates.
+type Segment = ([f32; 2], [f32; 2]);
+
+/// A filled disc in pixel coordinates.
+struct Disc {
+    center: [f32; 2],
+    radius: f32,
+}
+
+fn flatten(elements: &[El], scale: f32) -> (Vec<Segment>, Vec<Disc>) {
+    let mut segments = Vec::new();
+    let mut discs = Vec::new();
+    let to_px = |p: [f32; 2]| [p[0] * scale, p[1] * scale];
+    let push_polyline = |pts: &[[f32; 2]], closed: bool, segments: &mut Vec<Segment>| {
+        let pts: Vec<[f32; 2]> = pts.iter().map(|&p| to_px(p)).collect();
+        for w in pts.windows(2) {
+            segments.push((w[0], w[1]));
+        }
+        if closed && pts.len() > 1 {
+            let (first, last) = (pts[0], pts[pts.len() - 1]);
+            // Skip the closing segment when the polyline already ends
+            // where it started (avoids a zero-length segment).
+            if (first[0] - last[0]).abs() > 1e-6 || (first[1] - last[1]).abs() > 1e-6 {
+                segments.push((last, first));
+            }
+        }
+    };
+    for el in elements {
+        match *el {
+            El::Line(a, b) => segments.push((to_px(a), to_px(b))),
+            El::Poly(pts) => push_polyline(pts, false, &mut segments),
+            El::PolyClosed(pts) => push_polyline(pts, true, &mut segments),
+            El::Circle(c, r) => {
+                let pts: Vec<[f32; 2]> = (0..64)
+                    .map(|i| {
+                        let t = std::f32::consts::TAU * i as f32 / 64.0;
+                        [c[0] + r * t.cos(), c[1] + r * t.sin()]
+                    })
+                    .collect();
+                push_polyline(&pts, true, &mut segments);
+            }
+            El::Dot(c, r) => discs.push(Disc {
+                center: to_px(c),
+                radius: r * scale,
+            }),
+            El::Arc(c, r, start_deg, end_deg) => {
+                let span = (end_deg - start_deg).abs().max(1.0);
+                let steps = ((span / 4.0).ceil() as usize).max(2);
+                let pts: Vec<[f32; 2]> = (0..=steps)
+                    .map(|i| {
+                        let t = start_deg + (end_deg - start_deg) * i as f32 / steps as f32;
+                        let (sin, cos) = t.to_radians().sin_cos();
+                        [c[0] + r * cos, c[1] + r * sin]
+                    })
+                    .collect();
+                push_polyline(&pts, false, &mut segments);
+            }
+            El::Cubic(p0, p1, p2, p3) => {
+                let mut pts = vec![p0];
+                subdivide_cubic(p0, p1, p2, p3, 0.02, &mut pts);
+                push_polyline(&pts, false, &mut segments);
+            }
+            El::Rect(pos, size, radius) => {
+                push_polyline(
+                    &rounded_rect_outline(pos, size, radius),
+                    true,
+                    &mut segments,
+                );
+            }
+        }
+    }
+    (segments, discs)
+}
+
+fn subdivide_cubic(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    p2: [f32; 2],
+    p3: [f32; 2],
+    tol: f32,
+    out: &mut Vec<[f32; 2]>,
+) {
+    // Flatness: max distance of the control points from the chord.
+    let (dx, dy) = (p3[0] - p0[0], p3[1] - p0[1]);
+    let chord = dx.hypot(dy);
+    let dev = if chord < 1e-9 {
+        (p1[0] - p0[0])
+            .hypot(p1[1] - p0[1])
+            .max((p2[0] - p0[0]).hypot(p2[1] - p0[1]))
+    } else {
+        let d = |p: [f32; 2]| ((p[0] - p0[0]) * dy - (p[1] - p0[1]) * dx).abs() / chord;
+        d(p1).max(d(p2))
+    };
+    if dev <= tol {
+        out.push(p3);
+        return;
+    }
+    let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    let m01 = mid(p0, p1);
+    let m12 = mid(p1, p2);
+    let m23 = mid(p2, p3);
+    let m012 = mid(m01, m12);
+    let m123 = mid(m12, m23);
+    let m = mid(m012, m123);
+    subdivide_cubic(p0, m01, m012, m, tol, out);
+    subdivide_cubic(m, m123, m23, p3, tol, out);
+}
+
+/// Clockwise rounded-rectangle outline in grid coordinates, starting at the
+/// top edge. With radius 0 this is just the four corners.
+fn rounded_rect_outline(pos: [f32; 2], size: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
+    let (x, y, w, h) = (pos[0], pos[1], size[0], size[1]);
+    let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
+    if r <= 0.0 {
+        return vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    }
+    let mut pts = Vec::with_capacity(36);
+    // Corner arc helper: center + start angle (degrees, 0° = +x, clockwise).
+    let arc = |cx: f32, cy: f32, start_deg: f32, pts: &mut Vec<[f32; 2]>| {
+        for i in 1..=8 {
+            let t = (start_deg + 90.0 * i as f32 / 8.0).to_radians();
+            pts.push([cx + r * t.cos(), cy + r * t.sin()]);
+        }
+    };
+    pts.push([x + r, y]);
+    pts.push([x + w - r, y]);
+    arc(x + w - r, y + r, -90.0, &mut pts);
+    pts.push([x + w, y + h - r]);
+    arc(x + w - r, y + h - r, 0.0, &mut pts);
+    pts.push([x + r, y + h]);
+    arc(x + r, y + h - r, 90.0, &mut pts);
+    pts.push([x, y + r]);
+    arc(x + r, y + r, 180.0, &mut pts);
+    pts
+}
+
+fn dist_to_segment(px: f32, py: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-12 {
+        // Degenerate segment: distance to the point (renders as a disc).
+        return (px - a[0]).hypot(py - a[1]);
+    }
+    let t = (((px - a[0]) * dx + (py - a[1]) * dy) / len_sq).clamp(0.0, 1.0);
+    (px - (a[0] + t * dx)).hypot(py - (a[1] + t * dy))
+}
+
+/// Rasterize icon elements to a white-with-alpha mask image.
+///
+/// `px` is the texture side in physical pixels (the 24×24 viewBox maps to
+/// `px`×`px`); `stroke_px` is the stroke width in physical pixels;
+/// `dot_floor_px` is the minimum filled-dot radius (the historical 0.5
+/// logical-point floor, in physical pixels).
+fn rasterize(elements: &[El], px: usize, stroke_px: f32, dot_floor_px: f32) -> ColorImage {
+    let px = px.max(1);
+    let scale = px as f32 / 24.0;
+    let (segments, discs) = flatten(elements, scale);
+    let mut coverage = vec![0.0f32; px * px];
+    let half = stroke_px / 2.0;
+    for (a, b) in &segments {
+        stamp_segment(&mut coverage, px, *a, *b, half);
+    }
+    for disc in &discs {
+        stamp_disc(
+            &mut coverage,
+            px,
+            disc.center,
+            disc.radius.max(dot_floor_px),
+        );
+    }
+    let mut rgba = Vec::with_capacity(px * px * 4);
+    for cov in coverage {
+        rgba.extend_from_slice(&[255, 255, 255, (cov.clamp(0.0, 1.0) * 255.0).round() as u8]);
+    }
+    ColorImage::from_rgba_unmultiplied([px, px], &rgba)
+}
+
+fn stamp_segment(buf: &mut [f32], px: usize, a: [f32; 2], b: [f32; 2], half: f32) {
+    let pad = half + 1.0;
+    let min_x = ((a[0].min(b[0]) - pad).floor() as i32).max(0) as usize;
+    let max_x = ((a[0].max(b[0]) + pad).ceil() as i32).clamp(0, px as i32) as usize;
+    let min_y = ((a[1].min(b[1]) - pad).floor() as i32).max(0) as usize;
+    let max_y = ((a[1].max(b[1]) + pad).ceil() as i32).clamp(0, px as i32) as usize;
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let d = dist_to_segment(x as f32 + 0.5, y as f32 + 0.5, a, b);
+            let cov = (half + 0.5 - d).clamp(0.0, 1.0);
+            let idx = y * px + x;
+            if cov > buf[idx] {
+                buf[idx] = cov;
+            }
+        }
+    }
+}
+
+fn stamp_disc(buf: &mut [f32], px: usize, center: [f32; 2], radius: f32) {
+    let pad = radius + 1.0;
+    let min_x = ((center[0] - pad).floor() as i32).max(0) as usize;
+    let max_x = ((center[0] + pad).ceil() as i32).clamp(0, px as i32) as usize;
+    let min_y = ((center[1] - pad).floor() as i32).max(0) as usize;
+    let max_y = ((center[1] + pad).ceil() as i32).clamp(0, px as i32) as usize;
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let d = (x as f32 + 0.5 - center[0]).hypot(y as f32 + 0.5 - center[1]);
+            let cov = (radius + 0.5 - d).clamp(0.0, 1.0);
+            let idx = y * px + x;
+            if cov > buf[idx] {
+                buf[idx] = cov;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::LayerId;
 
-    const ALL: [Icon; 44] = [
-        Icon::Check,
-        Icon::ChevronDown,
-        Icon::ChevronUp,
-        Icon::ChevronLeft,
-        Icon::ChevronRight,
-        Icon::ChevronsLeft,
-        Icon::ChevronsRight,
-        Icon::X,
-        Icon::Minus,
-        Icon::Plus,
-        Icon::CircleAlert,
-        Icon::CircleCheck,
-        Icon::CircleX,
-        Icon::TriangleAlert,
-        Icon::OctagonX,
-        Icon::Info,
-        Icon::LoaderCircle,
-        Icon::Calendar,
-        Icon::CalendarDays,
-        Icon::Search,
-        Icon::MoreHorizontal,
-        Icon::MoreVertical,
-        Icon::ArrowDown,
-        Icon::ArrowUp,
-        Icon::ArrowUpDown,
-        Icon::ArrowLeft,
-        Icon::ArrowRight,
-        Icon::PanelLeft,
-        Icon::User,
-        Icon::Paperclip,
-        Icon::Trash,
-        Icon::Pencil,
-        Icon::Sparkles,
-        Icon::Copy,
-        Icon::CornerDownLeft,
-        Icon::Message,
-        Icon::Send,
-        Icon::Circle,
-        Icon::Dot,
-        Icon::GripVertical,
-        Icon::GripHorizontal,
-        Icon::FileText,
-        Icon::RefreshCw,
-        Icon::Clock,
-    ];
+    fn run_pass(ctx: &Context, f: impl FnOnce()) {
+        ctx.begin_pass(egui::RawInput {
+            time: Some(0.0),
+            ..Default::default()
+        });
+        f();
+        let mut full = ctx.end_pass();
+        full.textures_delta.clear();
+    }
+
+    fn cache_len(ctx: &Context) -> usize {
+        ctx.data_mut(|data| {
+            data.get_temp_mut_or_default::<IconTextureCache>(cache_id())
+                .len()
+        })
+    }
+
+    #[test]
+    fn icon_count_is_pinned() {
+        assert_eq!(Icon::all().len(), 44);
+    }
 
     #[test]
     fn every_icon_has_elements() {
-        for icon in ALL {
+        for icon in Icon::all() {
             assert!(!icon.elements().is_empty(), "{icon:?} has no elements");
+            assert!(
+                !icon.elements_static().is_empty(),
+                "{icon:?} has no static elements"
+            );
         }
     }
 
     #[test]
     fn elements_stay_in_viewbox() {
-        for icon in ALL {
+        for icon in Icon::all() {
             for el in icon.elements() {
                 let pts: Vec<[f32; 2]> = match el {
                     El::Line(a, b) => vec![a, b],
@@ -531,5 +575,135 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn lucide_names_roundtrip() {
+        let mut names = Vec::new();
+        for icon in Icon::all() {
+            let name = icon.lucide_name();
+            assert!(!name.is_empty());
+            assert_eq!(Icon::from_lucide_name(name), Some(*icon), "{name}");
+            names.push(name);
+        }
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 44, "lucide names must be distinct");
+        assert_eq!(Icon::from_lucide_name("no-such-icon"), None);
+    }
+
+    #[test]
+    fn generated_data_matches_known_lucide_geometry() {
+        // Spot-checks pinning the generated data against the Lucide source:
+        // `check` is the polyline M20 6 L9 17 L4 12; `circle` is r=10;
+        // `dot` is a stroked r=1 circle (renders as a dot at stroke width 2).
+        assert!(matches!(
+            Icon::Check.elements_static(),
+            [El::Poly(&[[20.0, 6.0], [9.0, 17.0], [4.0, 12.0]])]
+        ));
+        assert!(matches!(
+            Icon::Circle.elements_static(),
+            [El::Circle([12.0, 12.0], 10.0)]
+        ));
+        assert!(matches!(
+            Icon::Dot.elements_static(),
+            [El::Circle([12.0, 12.0], 1.0)]
+        ));
+    }
+
+    #[test]
+    fn rasterize_is_nonempty_and_deterministic() {
+        for icon in Icon::all() {
+            let a = rasterize(icon.elements_static(), 24, 2.0, 0.5);
+            let b = rasterize(icon.elements_static(), 24, 2.0, 0.5);
+            assert_eq!(a.size, [24, 24]);
+            assert_eq!(
+                a.pixels, b.pixels,
+                "{icon:?} rasterization not deterministic"
+            );
+            let alpha: u32 = a.pixels.iter().map(|c| u32::from(c.a())).sum();
+            assert!(alpha > 0, "{icon:?} rasterized empty");
+            // No fully-opaque flood: icons are strokes, not blobs.
+            let opaque = a.pixels.iter().filter(|c| c.a() == 255).count();
+            assert!(
+                opaque < 24 * 24 / 2,
+                "{icon:?} rasterized suspiciously solid"
+            );
+        }
+    }
+
+    #[test]
+    fn rasterize_scales_with_size() {
+        // The same icon at 2x pixels has ~4x the ink (area scales).
+        let small = rasterize(Icon::Check.elements_static(), 24, 2.0, 0.5);
+        let big = rasterize(Icon::Check.elements_static(), 48, 4.0, 1.0);
+        let sum = |img: &ColorImage| img.pixels.iter().map(|c| u32::from(c.a())).sum::<u32>();
+        let (s, b) = (sum(&small), sum(&big));
+        assert!(b > 3 * s && b < 5 * s, "small={s} big={b}");
+    }
+
+    #[test]
+    fn paint_all_icons_without_panicking() {
+        let ctx = Context::default();
+        run_pass(&ctx, || {
+            let painter = ctx.layer_painter(LayerId::background());
+            let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::splat(16.0));
+            for icon in Icon::all() {
+                icon.paint(&painter, rect, Color32::BLACK, 2.0 * 16.0 / 24.0);
+                icon.paint(&painter, rect, Color32::WHITE, 2.0);
+            }
+        });
+    }
+
+    #[test]
+    fn flatten_handles_all_element_kinds() {
+        // Generated data uses only Line/Poly/PolyClosed/Circle/Rect, but
+        // the other `El` variants stay constructible; pin that they all
+        // rasterize (a synthetic icon exercising every arm).
+        let elements = [
+            El::Line([2.0, 2.0], [6.0, 6.0]),
+            El::Poly(&[[8.0, 2.0], [12.0, 6.0]]),
+            El::PolyClosed(&[[14.0, 2.0], [18.0, 2.0], [16.0, 6.0]]),
+            El::Circle([5.0, 14.0], 3.0),
+            El::Dot([11.0, 14.0], 2.0),
+            El::Arc([18.0, 14.0], 3.0, 0.0, 270.0),
+            El::Cubic([2.0, 20.0], [6.0, 18.0], [10.0, 22.0], [14.0, 20.0]),
+            El::Rect([16.0, 18.0], [6.0, 4.0], 1.0),
+        ];
+        let a = rasterize(&elements, 24, 2.0, 0.5);
+        let b = rasterize(&elements, 24, 2.0, 0.5);
+        assert_eq!(a.pixels, b.pixels);
+        let alpha: u32 = a.pixels.iter().map(|c| u32::from(c.a())).sum();
+        assert!(alpha > 0, "synthetic icon rasterized empty");
+    }
+
+    #[test]
+    fn cache_reuses_texture_across_tints() {
+        let ctx = Context::default();
+        run_pass(&ctx, || {
+            let painter = ctx.layer_painter(LayerId::background());
+            let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::splat(16.0));
+            Icon::Check.paint(&painter, rect, Color32::BLACK, 2.0 * 16.0 / 24.0);
+            Icon::Check.paint(&painter, rect, Color32::RED, 2.0 * 16.0 / 24.0);
+            Icon::Check.paint(&painter, rect, Color32::BLUE, 2.0 * 16.0 / 24.0);
+            // Same icon/size/stroke in three colors: one mask texture.
+            assert_eq!(cache_len(&ctx), 1);
+            Icon::X.paint(&painter, rect, Color32::BLACK, 2.0 * 16.0 / 24.0);
+            assert_eq!(cache_len(&ctx), 2);
+        });
+    }
+
+    #[test]
+    fn cache_bound_is_enforced() {
+        let ctx = Context::default();
+        run_pass(&ctx, || {
+            let painter = ctx.layer_painter(LayerId::background());
+            // 300 distinct sizes of one icon force eviction past the bound.
+            for size in 8..308 {
+                let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::splat(size as f32));
+                Icon::Check.paint(&painter, rect, Color32::BLACK, 2.0 * size as f32 / 24.0);
+            }
+            assert_eq!(cache_len(&ctx), MAX_CACHE_ENTRIES);
+        });
     }
 }
