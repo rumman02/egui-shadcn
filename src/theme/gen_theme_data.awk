@@ -4,6 +4,11 @@
 #   awk -f src/theme/gen_theme_data.awk <path-to>/themes.ts > src/theme/theme_data.rs
 #   cargo fmt -- src/theme/theme_data.rs
 # The fmt step packs the THEMES list; the slot arrays are emitted final.
+# NOTE (fidelity table): presets.rs also carries EXPECTED_THEME_SLOTS, a
+# keyed transcription of themes.ts used by the regression tests. If the
+# registry gains themes/keys, regenerate that table from themes.ts with a
+# keyed parser (by key NAME, not position) and update the 24-theme count
+# assertion in the fidelity test; this generator does not emit it.
 
 BEGIN {
   # Emission order is `colors::SLOT_NAMES` exactly (41 slots). Do NOT reorder

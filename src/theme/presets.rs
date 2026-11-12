@@ -504,7 +504,9 @@ impl Preset {
     }
 
     /// Resolves the merged slot table for `mode`: base palette, overridden by
-    /// the accent theme's sparse palette, overridden by mode defaults.
+    /// the accent theme's sparse palette, overridden by mode defaults. In
+    /// light mode, `surface-foreground` / `code-foreground` then resolve from
+    /// the merged `foreground`, following the `globals.css` `var()` chain.
     pub fn slots(&self, mode: crate::theme::Mode) -> Slots {
         let base = find_theme(self.base_color.name()).unwrap_or(&NEUTRAL_FALLBACK);
         // A theme that names a base color means "no accent" — the base color
@@ -556,6 +558,19 @@ impl Preset {
                     }
                 }
             }
+        }
+        // Light mode resolves the globals.css var() chain
+        // --surface-foreground: var(--foreground) and
+        // --code-foreground: var(--surface-foreground) from the fully merged
+        // foreground, after base/default/accent/chart merging, so non-neutral
+        // bases get their own foreground instead of the neutral value in
+        // MODE_DEFAULTS_LIGHT. Dark mode keeps the verbatim globals.css
+        // defaults: dark --surface-foreground is not a var() reference.
+        if matches!(mode, crate::theme::Mode::Light) {
+            slots[crate::theme::colors::slot::SURFACE_FOREGROUND] =
+                slots[crate::theme::colors::slot::FOREGROUND];
+            slots[crate::theme::colors::slot::CODE_FOREGROUND] =
+                slots[crate::theme::colors::slot::SURFACE_FOREGROUND];
         }
         slots
     }
@@ -1027,5 +1042,90 @@ mod tests {
         assert_eq!(dark[slot::INPUT], "oklch(1 0 0 / 15%)");
         assert_eq!(dark[slot::SIDEBAR_FOREGROUND], "oklch(0.985 0 0)");
         assert_eq!(dark[slot::SIDEBAR_PRIMARY], "oklch(0.488 0.243 264.376)");
+    }
+
+    #[test]
+    fn light_surface_foreground_follows_active_theme_foreground() {
+        // globals.css light mode: --surface-foreground: var(--foreground)
+        // and --code-foreground: var(--surface-foreground), so both resolve
+        // through the ACTIVE theme's foreground. Expected values are the
+        // themes.ts light foregrounds per base color.
+        use crate::theme::colors::slot;
+        let cases = [
+            (BaseColor::Neutral, "oklch(0.145 0 0)"),
+            (BaseColor::Stone, "oklch(0.147 0.004 49.25)"),
+            (BaseColor::Zinc, "oklch(0.141 0.005 285.823)"),
+            // "gray" is not a registry theme; it falls back to neutral.
+            (BaseColor::Gray, "oklch(0.145 0 0)"),
+            (BaseColor::Mauve, "oklch(0.145 0.008 326)"),
+            (BaseColor::Olive, "oklch(0.153 0.006 107.1)"),
+            (BaseColor::Mist, "oklch(0.148 0.004 228.8)"),
+            (BaseColor::Taupe, "oklch(0.147 0.004 49.3)"),
+        ];
+        for (base, expected) in cases {
+            let preset = Preset::default_preset().with_base_color(base);
+            let light = preset.slots(crate::theme::Mode::Light);
+            assert_eq!(light[slot::FOREGROUND], expected, "{base:?} foreground");
+            assert_eq!(
+                light[slot::SURFACE_FOREGROUND],
+                expected,
+                "{base:?} surface-foreground"
+            );
+            assert_eq!(
+                light[slot::CODE_FOREGROUND],
+                light[slot::SURFACE_FOREGROUND],
+                "{base:?} code-foreground"
+            );
+        }
+    }
+
+    #[test]
+    fn dark_surface_foreground_unchanged_across_bases() {
+        // globals.css dark --surface-foreground is a verbatim value, not a
+        // var() reference, so every base keeps the same dark defaults.
+        use crate::theme::colors::slot;
+        for base in [
+            BaseColor::Neutral,
+            BaseColor::Stone,
+            BaseColor::Zinc,
+            BaseColor::Gray,
+            BaseColor::Mauve,
+            BaseColor::Olive,
+            BaseColor::Mist,
+            BaseColor::Taupe,
+        ] {
+            let preset = Preset::default_preset().with_base_color(base);
+            let dark = preset.slots(crate::theme::Mode::Dark);
+            assert_eq!(
+                dark[slot::SURFACE_FOREGROUND],
+                "oklch(0.708 0 0)",
+                "{base:?} dark surface-foreground"
+            );
+            assert_eq!(
+                dark[slot::CODE_FOREGROUND],
+                "oklch(0.708 0 0)",
+                "{base:?} dark code-foreground"
+            );
+        }
+    }
+
+    #[test]
+    fn light_surface_foreground_follows_merged_foreground_with_accent() {
+        // Accent themes carry no foreground key, so the merged foreground is
+        // the base theme's; the light var() chain must follow it. Blue
+        // accent over a stone base resolves to stone's foreground, while the
+        // accent still overrides its own slots (primary).
+        use crate::theme::colors::slot;
+        let preset = Preset::default_preset()
+            .with_base_color(BaseColor::Stone)
+            .with_theme_color(ThemeColor::Blue);
+        let light = preset.slots(crate::theme::Mode::Light);
+        assert_eq!(light[slot::PRIMARY], "oklch(0.488 0.243 264.376)");
+        assert_eq!(light[slot::FOREGROUND], "oklch(0.147 0.004 49.25)");
+        assert_eq!(light[slot::SURFACE_FOREGROUND], "oklch(0.147 0.004 49.25)");
+        assert_eq!(light[slot::CODE_FOREGROUND], "oklch(0.147 0.004 49.25)");
+        let dark = preset.slots(crate::theme::Mode::Dark);
+        assert_eq!(dark[slot::SURFACE_FOREGROUND], "oklch(0.708 0 0)");
+        assert_eq!(dark[slot::CODE_FOREGROUND], "oklch(0.708 0 0)");
     }
 }

@@ -251,6 +251,13 @@ pub mod slot {
 /// so they carry the same values as the surface defaults below. Without them
 /// the slots stay empty and resolve to the black/white fallbacks, which is
 /// inverted versus the original in light mode.
+///
+/// Note: the light `surface-foreground` / `code-foreground` entries below are
+/// superseded at merge time — `Preset::slots` resolves both from the merged
+/// theme foreground, because `globals.css` defines `--surface-foreground:
+/// var(--foreground)` and the value is theme-dependent. The entries here
+/// document the neutral values and keep every globals.css-only slot covered
+/// by a default.
 pub const MODE_DEFAULTS_LIGHT: [&str; 41] = {
     let mut slots = [""; 41];
     slots[slot::DESTRUCTIVE_FOREGROUND] = "oklch(0.97 0.01 17)";
