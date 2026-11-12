@@ -7,6 +7,14 @@ description = "A shadcn/ui-flavoured component library for egui, in pure Rust."
 license = "MIT"
 readme = "README.md"
 
+[features]
+default = ["fonts"]
+# Embed Inter + Geist Mono and install them on `Preset::install` (see
+# `src/theme/fonts.rs`). Disable to ship without the embedded font bytes;
+# text then renders with the host's fonts and weight helpers degrade to
+# regular-weight rendering.
+fonts = []
+
 [dependencies]
 egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
 

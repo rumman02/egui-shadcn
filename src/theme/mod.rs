@@ -5,6 +5,7 @@
 //! [`ShadcnTheme::of`].
 
 pub mod colors;
+pub mod fonts;
 pub mod presets;
 pub mod theme_data;
 pub mod tokens;
@@ -263,7 +264,10 @@ impl ShadcnTheme {
 
     /// Applies the palette to egui's global [`egui::Visuals`] so plain egui
     /// widgets (TextEdit, ScrollArea, Window, tooltips) match the theme.
+    /// Also installs the embedded fonts and maps [`egui::TextStyle`]s onto
+    /// the shadcn type scale (see [`fonts`]).
     pub fn apply_visuals(&self, ctx: &egui::Context) {
+        fonts::install(ctx);
         let p = &self.palette;
         let dark = self.mode.is_dark();
         let r = self.radius;
@@ -332,6 +336,7 @@ impl ShadcnTheme {
         visuals.hyperlink_color = p.primary;
 
         ctx.all_styles_mut(|style| {
+            fonts::apply_text_styles(style);
             let sp = &mut style.spacing;
             sp.item_spacing = egui::vec2(8.0, 8.0);
             sp.button_padding = egui::vec2(16.0, 7.0); // px-4 + h-9
