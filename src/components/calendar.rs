@@ -790,7 +790,7 @@ impl<'a> Calendar<'a> {
                 ui.painter().text(
                     week_rect.center(),
                     Align2::CENTER_CENTER,
-                    iso_week_number(day).to_string(),
+                    iso_week_number(day),
                     FontId::proportional(WEEKDAY_TEXT_SIZE),
                     p.muted_foreground,
                 );
@@ -1251,10 +1251,12 @@ fn paint_day_cell(
     if let Some((color, corner)) = bg {
         painter.rect_filled(rect, corner, color);
     }
+    // `day.day` passed directly: `Painter::text` formats it once, instead
+    // of `to_string()` here plus a second copy inside `text`.
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
-        day.day.to_string(),
+        day.day,
         FontId::proportional(DAY_TEXT_SIZE),
         text,
     );

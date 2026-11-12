@@ -224,14 +224,17 @@ impl CollapsibleTrigger {
         let pad_x = crate::theme::tokens::spacing::MD;
         let gap = crate::theme::tokens::spacing::XS_HALF;
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let text_w = if self.label.is_empty() {
-            0.0
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
+        let galley = if self.label.is_empty() {
+            None
         } else {
-            ui.painter()
-                .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
-                .size()
-                .x
+            Some(
+                ui.painter()
+                    .layout_no_wrap(self.label.clone(), font, Color32::PLACEHOLDER),
+            )
         };
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
         let icon_size = crate::theme::tokens::spacing::LG;
         let has_icon = self.icon_start.is_some() || self.icon_end.is_some();
         let n_children = self.icon_start.is_some() as i32
@@ -297,14 +300,13 @@ impl CollapsibleTrigger {
                 icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
                 cursor += icon_size + gap;
             }
-            if !self.label.is_empty() {
-                painter.text(
+            if let Some(galley) = galley {
+                // Same paint math as `Painter::text`, reusing the galley.
+                let text_rect = Align2::LEFT_CENTER.anchor_size(
                     egui::Pos2::new(cursor + text_w * 0.5, center.y),
-                    Align2::LEFT_CENTER,
-                    self.label.clone(),
-                    font,
-                    fg,
+                    galley.size(),
                 );
+                painter.galley(text_rect.min, galley, fg);
                 cursor += text_w + gap;
             }
             if let Some(icon) = self.icon_end {

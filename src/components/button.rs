@@ -570,20 +570,32 @@ impl Button {
     /// The widget's intrinsic size for the current theme, before any
     /// [`crate::components::button_group::ButtonGroup`] adjustments.
     pub fn content_size(&self, ui: &Ui) -> Vec2 {
+        self.content_layout(ui).0
+    }
+
+    /// Size plus the label galley, laid out once.
+    ///
+    /// The galley uses [`Color32::PLACEHOLDER`] (egui's delayed-color
+    /// layout: the paint-time fallback color replaces it exactly), so
+    /// [`Button::show`] can paint this same galley instead of laying the
+    /// label out a second time with the resolved foreground color. The
+    /// galley is `None` exactly when the label is empty.
+    fn content_layout(&self, ui: &Ui) -> (Vec2, Option<std::sync::Arc<egui::Galley>>) {
         let style = ShadcnTheme::of_ui(ui).style;
         let size = self.size;
-        if size.is_icon() {
-            return Vec2::splat(metrics::height(size, style));
-        }
         let font = FontId::proportional(metrics::text_size(size, style));
-        let text_w = if self.label.is_empty() {
-            0.0
+        let galley = if self.label.is_empty() {
+            None
         } else {
-            ui.painter()
-                .layout_no_wrap(self.label.clone(), font, Color32::WHITE)
-                .size()
-                .x
+            Some(
+                ui.painter()
+                    .layout_no_wrap(self.label.clone(), font, Color32::PLACEHOLDER),
+            )
         };
+        if size.is_icon() {
+            return (Vec2::splat(metrics::height(size, style)), galley);
+        }
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
         let has_start = self.icon_start.is_some();
         let has_end = self.icon_end.is_some();
         let icon_w = if has_start || has_end {
@@ -593,13 +605,16 @@ impl Button {
         };
         let n_children = has_start as i32 + has_end as i32 + (!self.label.is_empty()) as i32;
         let gaps = (n_children - 1).max(0) as f32 * metrics::gap(size, style);
-        Vec2::new(
-            metrics::padding_left(size, style, has_start, has_end)
-                + metrics::padding_right(size, style, has_start, has_end)
-                + icon_w
-                + gaps
-                + text_w,
-            metrics::height(size, style),
+        (
+            Vec2::new(
+                metrics::padding_left(size, style, has_start, has_end)
+                    + metrics::padding_right(size, style, has_start, has_end)
+                    + icon_w
+                    + gaps
+                    + text_w,
+                metrics::height(size, style),
+            ),
+            galley,
         )
     }
 
@@ -620,7 +635,7 @@ impl Button {
             .unwrap_or(GroupOrientation::Horizontal);
         let in_group = position != GroupPosition::Only;
 
-        let desired = self.content_size(ui);
+        let (desired, label_galley) = self.content_layout(ui);
 
         // Reserve space without registering an auto-id focusable response, so
         // egui's spatial arrow-key navigation only sees the explicit widget id.
@@ -744,19 +759,13 @@ impl Button {
             }
 
             // Content: [icon] gap [label] gap [icon], centered.
-            let font = FontId::proportional(metrics::text_size(size, style));
             let icon_size = metrics::icon_size(size, style);
             let gap = metrics::gap(size, style);
             let has_start = self.icon_start.is_some();
             let has_end = self.icon_end.is_some();
-            let text_w = if self.label.is_empty() {
-                0.0
-            } else {
-                painter
-                    .layout_no_wrap(self.label.clone(), font.clone(), c.fg)
-                    .size()
-                    .x
-            };
+            // The label galley from `content_layout` (laid out once); its
+            // width is the paint width.
+            let text_w = label_galley.as_ref().map_or(0.0, |g| g.size().x);
             let icons_w = (has_start as i32 + has_end as i32) as f32 * icon_size;
             let n_children = has_start as i32 + has_end as i32 + (!self.label.is_empty()) as i32;
             let gaps = (n_children - 1).max(0) as f32 * gap;
@@ -776,13 +785,13 @@ impl Button {
 
             if !self.label.is_empty() {
                 let text_center = Pos2::new(cursor + text_w * 0.5, center.y);
-                painter.text(
-                    text_center,
-                    Align2::CENTER_CENTER,
-                    self.label.clone(),
-                    font,
-                    c.fg,
-                );
+                if let Some(galley) = label_galley {
+                    // Same paint math as `Painter::text`: anchor the galley
+                    // at the anchor point, paint with the resolved color as
+                    // the fallback that replaces the placeholder color.
+                    let rect = Align2::CENTER_CENTER.anchor_size(text_center, galley.size());
+                    painter.galley(rect.min, galley, c.fg);
+                }
                 if c.underline {
                     // `underline-offset-4`
                     let y = text_center.y + metrics::text_size(size, style) * 0.62 + 2.0;

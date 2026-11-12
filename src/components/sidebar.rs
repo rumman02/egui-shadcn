@@ -1098,21 +1098,18 @@ impl SidebarMenuButton {
                     },
                     FontFamily::Proportional,
                 );
-                let badge_w = match &self.badge {
-                    Some(b) => {
-                        let bfont = FontId::new(
-                            crate::theme::tokens::type_scale::XS,
-                            FontFamily::Proportional,
-                        );
-                        ui.painter()
-                            .layout_no_wrap(b.clone(), bfont, fg)
-                            .size()
-                            .x
-                            .max(20.0)
-                            + 4.0
-                    }
-                    None => 0.0,
-                };
+                // Laid out once with the paint color: the same galley sizes
+                // the badge and paints it.
+                let badge_galley = self.badge.as_ref().map(|b| {
+                    let bfont = FontId::new(
+                        crate::theme::tokens::type_scale::XS,
+                        FontFamily::Proportional,
+                    );
+                    ui.painter().layout_no_wrap(b.clone(), bfont, fg)
+                });
+                let badge_w = badge_galley
+                    .as_ref()
+                    .map_or(0.0, |g| g.size().x.max(20.0) + 4.0);
                 let avail = (rect.right() - pad - cx - badge_w).max(0.0);
                 let galley = ui
                     .painter()
@@ -1121,12 +1118,7 @@ impl SidebarMenuButton {
                 ui.painter()
                     .galley(Pos2::new(cx, cy - galley.size().y * 0.5), galley, fg);
 
-                if let Some(badge) = &self.badge {
-                    let bfont = FontId::new(
-                        crate::theme::tokens::type_scale::XS,
-                        FontFamily::Proportional,
-                    );
-                    let galley = ui.painter().layout_no_wrap(badge.clone(), bfont, fg);
+                if let Some(galley) = badge_galley {
                     ui.painter().galley(
                         Pos2::new(
                             rect.right() - 4.0 - galley.size().x,

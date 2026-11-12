@@ -570,11 +570,12 @@ fn paint_trigger(ui: &mut Ui, id: Id, label: &str, open: bool) -> Response {
     let p = theme.palette;
     let radius = theme.radius;
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-    let text_width = ui
+    // Placeholder color: the paint-time fallback replaces it exactly,
+    // so this one galley serves both sizing and painting.
+    let galley = ui
         .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
-        .size()
-        .x;
+        .layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER);
+    let text_width = galley.size().x;
     let width = text_width + 2.0 * MENUBAR_TRIGGER_PAD_X;
     let (_, rect) = ui.allocate_space(Vec2::new(width, MENUBAR_TRIGGER_HEIGHT));
     let response = ui.interact(rect, id, Sense::click());
@@ -596,13 +597,10 @@ fn paint_trigger(ui: &mut Ui, id: Id, label: &str, open: bool) -> Response {
         } else {
             p.foreground
         };
-        painter.text(
-            Pos2::new(rect.center().x, rect.center().y),
-            Align2::CENTER_CENTER,
-            label,
-            font,
-            text_color,
-        );
+        // Same paint math as `Painter::text`, reusing the galley.
+        let text_rect = Align2::CENTER_CENTER
+            .anchor_size(Pos2::new(rect.center().x, rect.center().y), galley.size());
+        painter.galley(text_rect.min, galley, text_color);
         if response.has_focus() {
             crate::utils::focus::paint_focus_ring(ui, &response, radius.sm(), true);
         }

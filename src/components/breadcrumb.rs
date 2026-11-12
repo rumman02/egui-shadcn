@@ -158,11 +158,12 @@ impl BreadcrumbLink {
         let p = theme.palette;
         let font = FontId::proportional(TEXT_SIZE);
 
-        let text_w = ui
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
+        let galley = ui
             .painter()
-            .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
-            .size()
-            .x;
+            .layout_no_wrap(self.label.clone(), font, Color32::PLACEHOLDER);
+        let text_w = galley.size().x;
         let desired = Vec2::new(text_w, LINE_HEIGHT);
 
         let id = match self.id_salt.as_deref() {
@@ -178,13 +179,10 @@ impl BreadcrumbLink {
             } else {
                 p.muted_foreground
             };
-            ui.painter().text(
-                Pos2::new(rect.min.x, rect.center().y),
-                Align2::LEFT_CENTER,
-                self.label.clone(),
-                font,
-                fg,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::LEFT_CENTER
+                .anchor_size(Pos2::new(rect.min.x, rect.center().y), galley.size());
+            ui.painter().galley(text_rect.min, galley, fg);
             if response.has_focus() {
                 crate::utils::focus::paint_ring(
                     ui.painter(),
@@ -222,21 +220,20 @@ impl BreadcrumbPage {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let font = FontId::proportional(TEXT_SIZE);
-        let text_w = ui
-            .painter()
-            .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
-            .size()
-            .x;
+        // Laid out once with the paint color: the same galley sizes the
+        // widget and paints the text.
+        let galley =
+            ui.painter()
+                .layout_no_wrap(self.label.clone(), font, theme.palette.foreground);
+        let text_w = galley.size().x;
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(text_w, LINE_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
-            ui.painter().text(
-                Pos2::new(rect.min.x, rect.center().y),
-                Align2::LEFT_CENTER,
-                self.label.clone(),
-                font,
-                theme.palette.foreground,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::LEFT_CENTER
+                .anchor_size(Pos2::new(rect.min.x, rect.center().y), galley.size());
+            ui.painter()
+                .galley(text_rect.min, galley, theme.palette.foreground);
         }
         response
     }

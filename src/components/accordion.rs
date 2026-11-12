@@ -556,23 +556,20 @@ impl AccordionTrigger {
 
             let painter = ui.painter();
             let center_y = rect.center().y;
+            // Laid out once: the same galley sizes the underline and paints
+            // the label (previously `painter.text` laid it out a second time).
+            let galley = painter.layout_no_wrap(self.label.clone(), font, fg);
             let text_w = if self.label.is_empty() {
                 0.0
             } else {
-                painter
-                    .layout_no_wrap(self.label.clone(), font.clone(), fg)
-                    .size()
-                    .x
+                galley.size().x
             };
             let icon_size = crate::theme::tokens::spacing::LG;
 
-            painter.text(
-                Pos2::new(rect.min.x, center_y),
-                Align2::LEFT_CENTER,
-                self.label.clone(),
-                font,
-                fg,
-            );
+            // Same paint math as `Painter::text`.
+            let text_rect =
+                Align2::LEFT_CENTER.anchor_size(Pos2::new(rect.min.x, center_y), galley.size());
+            painter.galley(text_rect.min, galley, fg);
             if underline {
                 let y = center_y + crate::theme::tokens::type_scale::SM * 0.5 + 1.5;
                 painter.line_segment(

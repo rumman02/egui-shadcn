@@ -491,14 +491,17 @@ impl TabsTrigger {
         let pad_x = crate::theme::tokens::spacing::XS_HALF; // nova `px-1.5`
         let gap = crate::theme::tokens::spacing::XS_HALF; // `gap-1.5`
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let text_w = if self.label.is_empty() {
-            0.0
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
+        let galley = if self.label.is_empty() {
+            None
         } else {
-            ui.painter()
-                .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE)
-                .size()
-                .x
+            Some(
+                ui.painter()
+                    .layout_no_wrap(self.label.clone(), font, Color32::PLACEHOLDER),
+            )
         };
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
         let icon_w = if self.icon.is_some() {
             crate::theme::tokens::spacing::LG
         } else {
@@ -740,13 +743,15 @@ impl TabsTrigger {
                 icon.paint(painter, r, fg, 2.0 * icon_w / 24.0);
                 cursor += icon_w + gap;
             }
-            if !self.label.is_empty() {
+            if let Some(galley) = galley {
                 let pos = if vertical {
                     Pos2::new(cursor, center.y)
                 } else {
                     Pos2::new(cursor + text_w * 0.5, center.y)
                 };
-                painter.text(pos, align, self.label.clone(), font, fg);
+                // Same paint math as `Painter::text`, reusing the galley.
+                let text_rect = align.anchor_size(pos, galley.size());
+                painter.galley(text_rect.min, galley, fg);
             }
 
             // `line` variant indicator: bottom bar (horizontal) or right bar

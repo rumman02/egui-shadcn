@@ -235,9 +235,11 @@ impl ButtonGroupText {
         let height = natural.max(stretch);
 
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
         let galley = ui
             .painter()
-            .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE);
+            .layout_no_wrap(self.text.clone(), font, Color32::PLACEHOLDER);
 
         let (pad_x, corner_radius) = text_metrics(theme.style, &theme.radius);
         let icon_size = 16.0; // [&_svg:not([class*='size-'])]:size-4
@@ -298,13 +300,10 @@ impl ButtonGroupText {
                 icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
                 cursor += icon_size + icon_gap;
             }
-            painter.text(
-                Pos2::new(cursor + galley.size().x * 0.5, cy),
-                Align2::CENTER_CENTER,
-                self.text,
-                font,
-                fg,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::CENTER_CENTER
+                .anchor_size(Pos2::new(cursor + galley.size().x * 0.5, cy), galley.size());
+            painter.galley(text_rect.min, galley, fg);
         }
 
         response

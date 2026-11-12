@@ -350,9 +350,11 @@ impl FieldLabel {
 
         let color = field_label_color(&p, ctx.invalid, disabled);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        // Laid out once with the paint color: the same galley sizes the
+        // widget and paints the text.
         let galley = ui
             .painter()
-            .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE);
+            .layout_no_wrap(self.text.clone(), font.clone(), color);
         let desired = Vec2::new(galley.size().x, galley.size().y.max(font.size));
 
         let interactive = self.for_id.is_some() && !disabled;
@@ -380,13 +382,9 @@ impl FieldLabel {
         }
 
         if ui.is_rect_visible(rect) {
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                self.text,
-                font,
-                color,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = egui::Align2::CENTER_CENTER.anchor_size(rect.center(), galley.size());
+            ui.painter().galley(text_rect.min, galley, color);
         }
         response
     }
@@ -559,11 +557,12 @@ impl FieldTitle {
 
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let icon_size = crate::theme::tokens::spacing::LG;
-        let text_w = ui
+        // Laid out once with the paint color: the same galley sizes the
+        // widget and paints the text.
+        let galley = ui
             .painter()
-            .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE)
-            .size()
-            .x;
+            .layout_no_wrap(self.text.clone(), font.clone(), color);
+        let text_w = galley.size().x;
         let gap = self
             .icon
             .map(|_| crate::theme::tokens::spacing::SM)
@@ -584,13 +583,10 @@ impl FieldTitle {
                 icon.paint(painter, icon_rect, color, 2.0 * icon_size / 24.0);
                 cursor += icon_size + gap;
             }
-            painter.text(
-                egui::Pos2::new(cursor, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                self.text,
-                font,
-                color,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = egui::Align2::LEFT_CENTER
+                .anchor_size(egui::Pos2::new(cursor, rect.center().y), galley.size());
+            painter.galley(text_rect.min, galley, color);
         }
         response
     }
@@ -961,7 +957,9 @@ impl FieldSeparator {
             if let Some(text) = self.content {
                 // The chip paints `bg-background` over the rule, then the text.
                 let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-                let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
+                // Laid out once with the paint color: the same galley sizes
+                // the chip and paints the text.
+                let galley = painter.layout_no_wrap(text, font, p.muted_foreground);
                 let pad = crate::theme::tokens::spacing::SM; // px-2
                 let chip_w = galley.size().x + pad * 2.0;
                 let chip = egui::Rect::from_center_size(
@@ -969,13 +967,12 @@ impl FieldSeparator {
                     Vec2::new(chip_w, galley.size().y.max(height)),
                 );
                 painter.rect_filled(chip, 0, p.background);
-                painter.text(
+                // Same paint math as `Painter::text`, reusing the galley.
+                let text_rect = egui::Align2::CENTER_CENTER.anchor_size(
                     egui::Pos2::new(chip.center().x, chip.center().y),
-                    egui::Align2::CENTER_CENTER,
-                    text,
-                    font,
-                    p.muted_foreground,
+                    galley.size(),
                 );
+                painter.galley(text_rect.min, galley, p.muted_foreground);
             }
         }
         response

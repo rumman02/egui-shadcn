@@ -1137,13 +1137,10 @@ fn paint_row(
         let max_label_w = (rect.max.x - right_reserve - text_x).max(1.0);
         let label_galley = painter.layout_no_wrap(item.label.clone(), font.clone(), colors.text);
         if label_galley.size().x <= max_label_w {
-            painter.text(
-                Pos2::new(text_x, rect.center().y),
-                Align2::LEFT_CENTER,
-                item.label.clone(),
-                font,
-                colors.text,
-            );
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::LEFT_CENTER
+                .anchor_size(Pos2::new(text_x, rect.center().y), label_galley.size());
+            painter.galley(text_rect.min, label_galley, colors.text);
         } else {
             // Truncate with an ellipsis instead of drawing under the check.
             let mut text = item.label.clone();

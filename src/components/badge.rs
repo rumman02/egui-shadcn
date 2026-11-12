@@ -206,9 +206,11 @@ impl Badge {
 
         let text_size = crate::theme::tokens::type_scale::XS;
         let font = FontId::proportional(text_size);
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
         let galley = ui
             .painter()
-            .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE);
+            .layout_no_wrap(self.label.clone(), font, Color32::PLACEHOLDER);
 
         // `[&>svg]:size-3` icons with `gap-1`.
         let icon_size = 12.0;
@@ -274,13 +276,9 @@ impl Badge {
             }
             if !self.label.is_empty() {
                 let text_center = Pos2::new(cursor + galley.size().x * 0.5, center.y);
-                painter.text(
-                    text_center,
-                    Align2::CENTER_CENTER,
-                    self.label.clone(),
-                    font,
-                    c.fg,
-                );
+                // Same paint math as `Painter::text`, reusing the galley.
+                let text_rect = Align2::CENTER_CENTER.anchor_size(text_center, galley.size());
+                painter.galley(text_rect.min, galley.clone(), c.fg);
                 if c.underline {
                     // `underline-offset-4` approximation (button.rs pattern).
                     let y = text_center.y + text_size * 0.62 + 2.0;

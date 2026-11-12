@@ -845,12 +845,13 @@ fn paint_bar_item(
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
     let pad_x = trigger_pad_x(theme.style);
 
-    // Measure: px-4 + text + (ml-1 size-3 chevron).
-    let text_w = ui
+    // Measure: px-4 + text + (ml-1 size-3 chevron). The galley uses the
+    // placeholder color so the paint below can reuse it with the resolved
+    // trigger color instead of laying the label out a second time.
+    let galley = ui
         .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
-        .size()
-        .x;
+        .layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER);
+    let text_w = galley.size().x;
     let width = pad_x * 2.0
         + text_w
         + if with_chevron {
@@ -881,13 +882,10 @@ fn paint_bar_item(
             painter.rect_filled(rect, CornerRadius::same(radius), c.fill);
         }
         let text_x = rect.min.x + pad_x;
-        painter.text(
-            Pos2::new(text_x, rect.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            font,
-            c.text,
-        );
+        // Same paint math as `Painter::text`, reusing the galley.
+        let text_rect =
+            Align2::LEFT_CENTER.anchor_size(Pos2::new(text_x, rect.center().y), galley.size());
+        painter.galley(text_rect.min, galley, c.text);
         if with_chevron {
             // `size-3 ml-1`, rotated when open.
             let chev_rect = Rect::from_center_size(
@@ -938,9 +936,11 @@ fn paint_links(
             ))
         };
         let title_font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
         let title_galley =
             ui.painter()
-                .layout_no_wrap(link.title.clone(), title_font.clone(), Color32::WHITE);
+                .layout_no_wrap(link.title.clone(), title_font, Color32::PLACEHOLDER);
         let row_h = LINK_PAD * 2.0
             + title_galley.size().y
             + desc_galley
@@ -969,13 +969,12 @@ fn paint_links(
                 painter.rect_filled(rect, CornerRadius::same(radius), c.fill);
             }
             let mut y = rect.min.y + LINK_PAD;
-            painter.text(
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::LEFT_CENTER.anchor_size(
                 Pos2::new(rect.min.x + LINK_PAD, y + title_galley.size().y * 0.5),
-                Align2::LEFT_CENTER,
-                link.title.clone(),
-                title_font,
-                c.title,
+                title_galley.size(),
             );
+            painter.galley(text_rect.min, title_galley.clone(), c.title);
             y += title_galley.size().y;
             if let Some(g) = desc_galley {
                 y += LINK_GAP;

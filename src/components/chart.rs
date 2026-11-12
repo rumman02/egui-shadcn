@@ -837,15 +837,18 @@ fn legend_row(ui: &mut Ui, chart_id: Id, data: &ChartData, hidden: &mut [bool], 
         FontFamily::Proportional,
     );
 
-    // Measure the total width first so the row can be centered.
+    // Measure the total width first so the row can be centered. The
+    // galleys use the placeholder color so the paint loop can reuse them
+    // with the hidden-dependent fallback color instead of laying every
+    // label out a second time.
+    let mut galleys: Vec<std::sync::Arc<egui::Galley>> = Vec::with_capacity(data.series.len());
     let mut widths: Vec<f32> = Vec::with_capacity(data.series.len());
     for s in &data.series {
-        let label_w = ui
-            .painter()
-            .layout_no_wrap(s.label.clone(), font.clone(), Color32::WHITE)
-            .size()
-            .x;
-        widths.push(8.0 + 6.0 + label_w); // dot + gap-1.5 + label
+        let galley =
+            ui.painter()
+                .layout_no_wrap(s.label.clone(), font.clone(), Color32::PLACEHOLDER);
+        widths.push(8.0 + 6.0 + galley.size().x); // dot + gap-1.5 + label
+        galleys.push(galley);
     }
     let total: f32 = widths.iter().sum::<f32>() + 16.0 * (widths.len().saturating_sub(1)) as f32;
     let available = ui.available_width();
@@ -876,21 +879,13 @@ fn legend_row(ui: &mut Ui, chart_id: Id, data: &ChartData, hidden: &mut [bool], 
                 CornerRadius::same(2), // rounded-[2px] — clamped up for visibility
                 dot_color,
             );
-            let galley = painter.layout_no_wrap(
-                series.label.clone(),
-                font.clone(),
-                if is_hidden {
-                    p.muted_foreground
-                } else {
-                    p.foreground
-                },
-            );
+            let galley = &galleys[i];
             painter.galley(
                 Pos2::new(
                     rect.left() + 14.0, // dot (8) + gap-1.5 (6)
                     rect.center().y - galley.size().y * 0.5,
                 ),
-                galley,
+                galley.clone(),
                 if is_hidden {
                     p.muted_foreground
                 } else {

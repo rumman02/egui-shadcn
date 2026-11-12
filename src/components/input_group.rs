@@ -861,14 +861,14 @@ impl InputGroupText {
         };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let icon_size = crate::theme::tokens::spacing::LG;
-        let text_w = if self.text.is_empty() {
-            0.0
+        // Laid out once with the paint color: the same galley sizes the
+        // widget and paints the text.
+        let galley = if self.text.is_empty() {
+            None
         } else {
-            ui.painter()
-                .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE)
-                .size()
-                .x
+            Some(ui.painter().layout_no_wrap(self.text.clone(), font, color))
         };
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
         let gap = self
             .icon
             .map(|_| crate::theme::tokens::spacing::SM)
@@ -896,14 +896,11 @@ impl InputGroupText {
                 icon.paint(painter, icon_rect, color, 2.0 * icon_size / 24.0);
                 cursor += icon_size + gap;
             }
-            if !self.text.is_empty() {
-                painter.text(
-                    egui::Pos2::new(cursor, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    self.text,
-                    font,
-                    color,
-                );
+            if let Some(galley) = galley {
+                // Same paint math as `Painter::text`, reusing the galley.
+                let text_rect = Align2::LEFT_CENTER
+                    .anchor_size(egui::Pos2::new(cursor, rect.center().y), galley.size());
+                painter.galley(text_rect.min, galley, color);
             }
         }
         response

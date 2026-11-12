@@ -2,7 +2,9 @@
 //! radius tokens, the active style, and the installed [`Preset`].
 //!
 //! Install once at startup with [`Preset::install`], then read anywhere with
-//! [`ShadcnTheme::of`].
+//! [`ShadcnTheme::of`]. The installed theme is shared: [`ShadcnTheme::of`]
+//! returns an [`Arc`] to the single installed instance, so reading the theme
+//! costs a reference-count bump instead of a whole-struct copy.
 
 pub mod colors;
 pub mod fonts;
@@ -18,6 +20,7 @@ pub use tokens::{spacing, type_scale, RadiusTokens};
 
 use crate::theme::colors::{slot, ColorSpec};
 use egui::Color32;
+use std::sync::Arc;
 
 /// Light or dark palette mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -184,8 +187,11 @@ pub fn blend(base: Color32, overlay: Color32) -> Color32 {
 
 /// The fully resolved shadcn theme: palette + tokens + style + preset.
 ///
-/// Stored in the [`egui::Context`] memory by [`Preset::install`]; read with
-/// [`ShadcnTheme::of`].
+/// Stored in the [`egui::Context`] memory by [`Preset::install`] as a
+/// shared [`Arc`]; read with [`ShadcnTheme::of`]. The struct itself stays
+/// an owned value (built by [`Preset::build`]); only the installed,
+/// per-frame-read instance is shared, so every widget sees the same
+/// allocation until the next install replaces it.
 #[derive(Clone, Debug)]
 pub struct ShadcnTheme {
     /// Active palette mode.
@@ -224,34 +230,50 @@ impl ShadcnTheme {
     }
 
     /// The currently installed mode, if any.
+    ///
+    /// Reads the shared instance (a reference-count bump); it does not
+    /// copy the theme.
     pub fn current_mode(ctx: &egui::Context) -> Option<Mode> {
-        ctx.data_mut(|data| data.get_temp::<Self>(Self::id()))
+        ctx.data_mut(|data| data.get_temp::<Arc<Self>>(Self::id()))
             .map(|t| t.mode)
     }
 
     /// Reads the theme from the context, installing the default preset if
     /// none is present yet.
-    pub fn of(ctx: &egui::Context) -> Self {
+    ///
+    /// Returns the shared installed instance: every call in a frame sees
+    /// the same allocation, and the call costs a reference-count bump
+    /// instead of a whole-struct copy. Field access works through the
+    /// [`Arc`] exactly as it did on the owned value (`theme.palette`,
+    /// `theme.mode`, ...). Installing a new preset (or switching mode)
+    /// replaces the shared instance; widgets pick the new instance up on
+    /// their next read — no stale theme can survive an install.
+    pub fn of(ctx: &egui::Context) -> Arc<Self> {
         let id = Self::id();
         ctx.data_mut(|data| {
-            if let Some(theme) = data.get_temp::<Self>(id) {
+            if let Some(theme) = data.get_temp::<Arc<Self>>(id) {
                 theme
             } else {
-                let theme = Preset::default().build(Mode::Light);
+                let theme = Arc::new(Preset::default().build(Mode::Light));
                 data.insert_temp(id, theme.clone());
                 theme
             }
         })
     }
 
-    /// Convenience accessor for [`egui::Ui`].
-    pub fn of_ui(ui: &egui::Ui) -> Self {
+    /// Convenience accessor for [`egui::Ui`]. See [`ShadcnTheme::of`].
+    pub fn of_ui(ui: &egui::Ui) -> Arc<Self> {
         Self::of(ui.ctx())
     }
 
     /// Installs this theme into the context and applies it to egui visuals.
+    ///
+    /// The installed copy becomes the shared instance returned by
+    /// [`ShadcnTheme::of`] until the next install. The one struct copy
+    /// here runs only at install time (startup / preset or mode switch),
+    /// never per frame.
     pub fn install(&self, ctx: &egui::Context) {
-        ctx.data_mut(|data| data.insert_temp(Self::id(), self.clone()));
+        ctx.data_mut(|data| data.insert_temp(Self::id(), Arc::new(self.clone())));
         self.apply_visuals(ctx);
     }
 
@@ -426,5 +448,61 @@ mod tests {
         let theme = ShadcnTheme::of(&ctx);
         assert_eq!(theme.mode, Mode::Light);
         assert_eq!(theme.style, Style::Nova);
+    }
+
+    #[test]
+    fn theme_of_shares_one_allocation() {
+        // Two reads return the SAME allocation: no struct copy happens on
+        // the per-frame read path. This fails on the old owned-return API
+        // (two distinct values, no shared allocation to compare).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let first = ShadcnTheme::of(&ctx);
+        let second = ShadcnTheme::of(&ctx);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.palette.background, second.palette.background);
+    }
+
+    #[test]
+    fn theme_of_default_install_shares() {
+        // The default-install branch stores the shared instance too: the
+        // first read installs it, the second read returns the same Arc.
+        let ctx = egui::Context::default();
+        let first = ShadcnTheme::of(&ctx);
+        let second = ShadcnTheme::of(&ctx);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn install_replaces_shared_theme() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let before = ShadcnTheme::of(&ctx);
+        Preset::default()
+            .with_theme_color(ThemeColor::Blue)
+            .install(&ctx);
+        let after = ShadcnTheme::of(&ctx);
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(after.preset.theme_color, ThemeColor::Blue);
+        // A stale handle keeps the OLD values; only fresh reads see new.
+        assert_eq!(before.preset.theme_color, ThemeColor::Neutral);
+        assert_eq!(ShadcnTheme::of(&ctx).preset.theme_color, ThemeColor::Blue);
+    }
+
+    #[test]
+    fn mode_switch_replaces_shared_theme_without_stale_reads() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let light = ShadcnTheme::of(&ctx);
+        ShadcnTheme::set_mode(&ctx, Mode::Dark);
+        let dark = ShadcnTheme::of(&ctx);
+        assert!(!Arc::ptr_eq(&light, &dark));
+        assert_eq!(dark.mode, Mode::Dark);
+        assert_eq!(dark.preset, light.preset);
+        ShadcnTheme::set_mode(&ctx, Mode::Light);
+        let light_again = ShadcnTheme::of(&ctx);
+        assert!(!Arc::ptr_eq(&dark, &light_again));
+        assert_eq!(light_again.mode, Mode::Light);
+        assert_eq!(light_again.palette.background, Color32::WHITE);
     }
 }

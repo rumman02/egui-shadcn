@@ -312,21 +312,24 @@ impl<'a> Toggle<'a> {
         self
     }
 
-    /// Content width for the current text/icon, before `min_width`.
-    fn content_width(&self, ui: &Ui, style: Style) -> f32 {
-        let text_w = match self.text.as_deref() {
-            Some(t) if !t.is_empty() => {
-                ui.painter()
-                    .layout_no_wrap(
-                        t.to_owned(),
-                        FontId::proportional(metrics::text_size(self.size, style)),
-                        Color32::WHITE,
-                    )
-                    .size()
-                    .x
-            }
-            _ => 0.0,
+    /// Content width for the current text/icon, before `min_width`, plus
+    /// the text galley laid out once.
+    ///
+    /// The galley uses [`Color32::PLACEHOLDER`] (egui's delayed-color
+    /// layout: the paint-time fallback color replaces it exactly), so
+    /// [`Toggle::show`] can paint this same galley instead of laying the
+    /// text out again with the resolved foreground color. The galley is
+    /// `None` exactly when there is no non-empty text.
+    fn content_layout(&self, ui: &Ui, style: Style) -> (f32, Option<std::sync::Arc<egui::Galley>>) {
+        let galley = match self.text.as_deref() {
+            Some(t) if !t.is_empty() => Some(ui.painter().layout_no_wrap(
+                t.to_owned(),
+                FontId::proportional(metrics::text_size(self.size, style)),
+                Color32::PLACEHOLDER,
+            )),
+            _ => None,
         };
+        let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
         let icon_w = self
             .icon
             .map(|_| metrics::icon_size(self.size, style))
@@ -336,7 +339,7 @@ impl<'a> Toggle<'a> {
         let px = self
             .padding_x_override
             .unwrap_or_else(|| metrics::padding_x(self.size, style));
-        px * 2.0 + icon_w + gaps + text_w
+        (px * 2.0 + icon_w + gaps + text_w, galley)
     }
 
     /// Renders the toggle.
@@ -354,7 +357,8 @@ impl<'a> Toggle<'a> {
         let orientation = grp.map(|(o, _)| o).unwrap_or(GroupOrientation::Horizontal);
 
         let height = metrics::height(size, style);
-        let desired = Vec2::new(self.content_width(ui, style).max(height), height);
+        let (content_w, text_galley) = self.content_layout(ui, style);
+        let desired = Vec2::new(content_w.max(height), height);
         let sense = if self.disabled {
             Sense::hover()
         } else {
@@ -441,16 +445,10 @@ impl<'a> Toggle<'a> {
 
             // Content: [icon] gap [text], centered.
             let icon_size = metrics::icon_size(size, style);
-            let text = self.text.clone().unwrap_or_default();
-            let font = FontId::proportional(metrics::text_size(size, style));
-            let text_w = if text.is_empty() {
-                0.0
-            } else {
-                painter
-                    .layout_no_wrap(text.clone(), font.clone(), c.fg)
-                    .size()
-                    .x
-            };
+            let text = self.text.as_deref().unwrap_or("");
+            // The text galley from `content_layout` (laid out once); its
+            // width is the paint width.
+            let text_w = text_galley.as_ref().map_or(0.0, |g| g.size().x);
             let has_icon = self.icon.is_some();
             let children = has_icon as i32 + (!text.is_empty()) as i32;
             let gaps = (children - 1).max(0) as f32 * metrics::gap(size, style);
@@ -467,13 +465,12 @@ impl<'a> Toggle<'a> {
                 cursor += icon_size + size.gap();
             }
             if !text.is_empty() {
-                painter.text(
-                    Pos2::new(cursor + text_w * 0.5, center.y),
-                    Align2::CENTER_CENTER,
-                    text,
-                    font,
-                    c.fg,
-                );
+                if let Some(galley) = text_galley {
+                    // Same paint math as `Painter::text`, reusing the galley.
+                    let text_rect = Align2::CENTER_CENTER
+                        .anchor_size(Pos2::new(cursor + text_w * 0.5, center.y), galley.size());
+                    painter.galley(text_rect.min, galley, c.fg);
+                }
             }
 
             // `focus-visible:border-ring focus-visible:ring-[3px]

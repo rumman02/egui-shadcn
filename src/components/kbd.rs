@@ -72,9 +72,9 @@ impl Kbd {
 
         let text_size = crate::theme::tokens::type_scale::XS;
         let font = FontId::proportional(text_size);
-        let galley = ui
-            .painter()
-            .layout_no_wrap(self.label.clone(), font.clone(), Color32::WHITE);
+        // Laid out once with the paint color: the same galley sizes the
+        // chip and paints the label.
+        let galley = ui.painter().layout_no_wrap(self.label.clone(), font, fg);
 
         // h-5 min-w-5 px-1 → 20px tall, at least 20px wide, 4px side padding.
         let height = crate::theme::tokens::spacing::XS * 5.0;
@@ -111,13 +111,12 @@ impl Kbd {
                 icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
                 cursor += icon_size + icon_gap;
             }
-            painter.text(
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::CENTER_CENTER.anchor_size(
                 Pos2::new(cursor + galley.size().x * 0.5, center.y),
-                Align2::CENTER_CENTER,
-                self.label,
-                font,
-                fg,
+                galley.size(),
             );
+            painter.galley(text_rect.min, galley, fg);
         }
 
         response

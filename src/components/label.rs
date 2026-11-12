@@ -84,9 +84,11 @@ impl Label {
 
         let text_size = crate::theme::tokens::type_scale::SM;
         let font = FontId::proportional(text_size);
+        // Placeholder color: the paint-time fallback replaces it exactly,
+        // so this one galley serves both sizing and painting.
         let galley = ui
             .painter()
-            .layout_no_wrap(self.text.clone(), font.clone(), Color32::WHITE);
+            .layout_no_wrap(self.text.clone(), font, Color32::PLACEHOLDER);
 
         // `leading-none` → the text line box is the font size.
         let line_h = text_size;
@@ -140,13 +142,12 @@ impl Label {
                 icon.paint(painter, r, color, 2.0 * icon_size / 24.0);
                 cursor += icon_size + icon_gap;
             }
-            painter.text(
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::CENTER_CENTER.anchor_size(
                 Pos2::new(cursor + galley.size().x * 0.5, center_y),
-                Align2::CENTER_CENTER,
-                self.text,
-                font,
-                color,
+                galley.size(),
             );
+            painter.galley(text_rect.min, galley, color);
         }
 
         response

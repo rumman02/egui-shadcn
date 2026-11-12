@@ -493,9 +493,11 @@ impl InlineCode {
         let p = theme.palette;
         let size = sizes::SMALL;
         let font = FontId::monospace(size);
+        // Laid out once with the paint color: the same galley sizes the
+        // chip and paints the text.
         let galley = ui
             .painter()
-            .layout_no_wrap(self.text.clone(), font.clone(), p.foreground);
+            .layout_no_wrap(self.text.clone(), font, p.foreground);
         // px-[0.3rem] py-[0.2rem] → 4.8 / 3.2 points.
         let width = galley.size().x + 9.6;
         let height = line_heights::SMALL + 6.4;
@@ -503,13 +505,9 @@ impl InlineCode {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
             painter.rect_filled(rect, 4, p.muted); // plain `rounded` = 4px
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                self.text,
-                font,
-                p.foreground,
-            );
+                                                   // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::CENTER_CENTER.anchor_size(rect.center(), galley.size());
+            painter.galley(text_rect.min, galley, p.foreground);
         }
         response
     }

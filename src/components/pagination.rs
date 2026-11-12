@@ -287,14 +287,17 @@ fn pager_button(
     let font = FontId::proportional(button::metrics::text_size(ButtonSize::Default, style));
     let icon_size = button::metrics::icon_size(ButtonSize::Default, style);
     let radius = button::metrics::radius(ButtonSize::Default, style, &theme.radius, false);
-    let text_w = if label.is_empty() {
-        0.0
+    // Placeholder color: the paint-time fallback replaces it exactly,
+    // so this one galley serves both sizing and painting.
+    let galley = if label.is_empty() {
+        None
     } else {
-        ui.painter()
-            .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
-            .size()
-            .x
+        Some(
+            ui.painter()
+                .layout_no_wrap(label.to_owned(), font, Color32::PLACEHOLDER),
+        )
     };
+    let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
     let desired = Vec2::new(
         pad_left + pad_right + icon_size + PAGER_GAP + text_w,
         height,
@@ -371,14 +374,13 @@ fn pager_button(
             icon.paint(painter, r, fg, 2.0 * icon_size / 24.0);
             cursor_x += icon_size + PAGER_GAP;
         }
-        if !label.is_empty() {
-            painter.text(
+        if let Some(galley) = galley {
+            // Same paint math as `Painter::text`, reusing the galley.
+            let text_rect = Align2::CENTER_CENTER.anchor_size(
                 egui::Pos2::new(cursor_x + text_w * 0.5, center.y),
-                Align2::CENTER_CENTER,
-                label,
-                font,
-                fg,
+                galley.size(),
             );
+            painter.galley(text_rect.min, galley, fg);
             cursor_x += text_w + PAGER_GAP;
         }
         if side == PagerSide::Next {

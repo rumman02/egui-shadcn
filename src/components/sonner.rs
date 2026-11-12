@@ -249,10 +249,12 @@ fn render_toast(ui: &mut Ui, entry: &ToastEntry, now: f64, theme: &ShadcnTheme, 
     // it at the 14px `text-sm` scale with 0.85 alpha.
     let desc_font = FontId::proportional(crate::theme::tokens::type_scale::SM);
 
-    // Measure the text block (layout color is irrelevant for sizing).
+    // Measure the text block (layout color is irrelevant for sizing; the
+    // placeholder color lets the paint-time fallback supply the real one,
+    // so the title is laid out once and this galley is reused at paint).
     let title_galley =
         ui.painter()
-            .layout_no_wrap(entry.toast.title.clone(), font.clone(), Color32::WHITE);
+            .layout_no_wrap(entry.toast.title.clone(), font, Color32::PLACEHOLDER);
     let desc_galley = entry.toast.description.as_ref().map(|d| {
         ui.painter()
             .layout(d.clone(), desc_font.clone(), Color32::WHITE, width - 48.0)
@@ -321,11 +323,12 @@ fn render_toast(ui: &mut Ui, entry: &ToastEntry, now: f64, theme: &ShadcnTheme, 
 
         let text_x = cursor_x;
         let mut text_y = rect.center().y - text_h * 0.5;
-        let title =
-            ui.painter()
-                .layout_no_wrap(entry.toast.title.clone(), font, p.popover_foreground);
-        let title_h = title.size().y;
-        painter.galley(Pos2::new(text_x, text_y), title, p.popover_foreground);
+        let title_h = title_galley.size().y;
+        painter.galley(
+            Pos2::new(text_x, text_y),
+            title_galley,
+            p.popover_foreground,
+        );
         text_y += title_h + 4.0;
         if let Some(desc) = &entry.toast.description {
             let muted = color_alpha(p.popover_foreground, 0.85);
