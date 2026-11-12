@@ -1,9 +1,21 @@
 #!/usr/bin/awk -f
 # Converts apps/v4/registry/themes.ts into src/theme/theme_data.rs
-# Usage: awk -f gen_theme_data.awk themes.ts > theme_data.rs
+# Usage (from the repo root):
+#   awk -f src/theme/gen_theme_data.awk <path-to>/themes.ts > src/theme/theme_data.rs
+#   cargo fmt -- src/theme/theme_data.rs
+# The fmt step packs the THEMES list; the slot arrays are emitted final.
 
 BEGIN {
-  n = split("background foreground card card-foreground popover popover-foreground primary primary-foreground secondary secondary-foreground muted muted-foreground accent accent-foreground destructive border input ring chart-1 chart-2 chart-3 chart-4 chart-5 radius sidebar sidebar-foreground sidebar-primary sidebar-primary-foreground sidebar-accent sidebar-accent-foreground sidebar-border sidebar-ring", order, " ");
+  # Emission order is `colors::SLOT_NAMES` exactly (41 slots). Do NOT reorder
+  # this list without changing SLOT_NAMES to match; a positional mismatch
+  # silently shifts every later slot (see fix/token-slot-shift history).
+  # Keys the registry does not carry per theme emit "" and are filled at
+  # runtime by MODE_DEFAULTS_* (colors.rs) via Preset::slots:
+  # destructive-foreground (themes.ts jumps from destructive straight to
+  # border; the value lives in globals.css), and surface, surface-foreground,
+  # code, code-foreground, code-highlight, code-number, selection,
+  # selection-foreground (globals.css only).
+  n = split("background foreground card card-foreground popover popover-foreground primary primary-foreground secondary secondary-foreground muted muted-foreground accent accent-foreground destructive destructive-foreground border input ring chart-1 chart-2 chart-3 chart-4 chart-5 radius sidebar sidebar-foreground sidebar-primary sidebar-primary-foreground sidebar-accent sidebar-accent-foreground sidebar-border sidebar-ring surface surface-foreground code code-foreground code-highlight code-number selection selection-foreground", order, " ");
   nslots = 41;
   nthemes = 0;
 }
@@ -43,9 +55,13 @@ BEGIN {
 
 END {
   print "// Generated from the shadcn/ui source (apps/v4/registry/themes.ts) by";
-  print "// src/theme/gen_theme_data.awk. Do not edit the data by hand; regenerate instead.";
+  print "// src/theme/gen_theme_data.awk. Do not edit the data by hand; regenerate instead:";
+  print "//   awk -f src/theme/gen_theme_data.awk themes.ts > src/theme/theme_data.rs && cargo fmt -- src/theme/theme_data.rs";
   print "//";
-  print "// Slot order matches `colors::SLOT_NAMES` (41 slots).";
+  print "// Slot order is `colors::SLOT_NAMES` (41 slots), by construction:";
+  print "// the generator emits SLOT_NAMES order. Slots the registry does not";
+  print "// carry (destructive-foreground, surface/code/selection families) are";
+  print "// empty here and filled by MODE_DEFAULTS_* at preset build time.";
   print "use super::colors::Slots;";
   print "";
   print "/// One named theme from the source registry.";
@@ -86,7 +102,7 @@ END {
   for (t = 1; t <= nthemes; t++) {
     const = toupper(theme[t]);
     gsub(/-/, "_", const);
-    printf "    &%s,\n", const;
+    printf "    %s,\n", const;
   }
   print "];";
 }

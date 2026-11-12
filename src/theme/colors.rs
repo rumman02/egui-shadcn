@@ -245,11 +245,19 @@ pub mod slot {
 
 /// Mode-level defaults for slots that `themes.ts` does not carry per-theme;
 /// values come verbatim from the source `globals.css`.
+///
+/// `code` / `code-foreground` resolve `globals.css` indirections:
+/// `--code: var(--surface)` and `--code-foreground: var(--surface-foreground)`,
+/// so they carry the same values as the surface defaults below. Without them
+/// the slots stay empty and resolve to the black/white fallbacks, which is
+/// inverted versus the original in light mode.
 pub const MODE_DEFAULTS_LIGHT: [&str; 41] = {
     let mut slots = [""; 41];
     slots[slot::DESTRUCTIVE_FOREGROUND] = "oklch(0.97 0.01 17)";
     slots[slot::SURFACE] = "oklch(0.98 0 0)";
     slots[slot::SURFACE_FOREGROUND] = "oklch(0.145 0 0)";
+    slots[slot::CODE] = "oklch(0.98 0 0)";
+    slots[slot::CODE_FOREGROUND] = "oklch(0.145 0 0)";
     slots[slot::CODE_HIGHLIGHT] = "oklch(0.96 0 0)";
     slots[slot::CODE_NUMBER] = "oklch(0.56 0 0)";
     slots[slot::SELECTION] = "oklch(0% 0 0)";
@@ -263,6 +271,8 @@ pub const MODE_DEFAULTS_DARK: [&str; 41] = {
     slots[slot::DESTRUCTIVE_FOREGROUND] = "oklch(0.58 0.22 27)";
     slots[slot::SURFACE] = "oklch(0.2 0 0)";
     slots[slot::SURFACE_FOREGROUND] = "oklch(0.708 0 0)";
+    slots[slot::CODE] = "oklch(0.2 0 0)";
+    slots[slot::CODE_FOREGROUND] = "oklch(0.708 0 0)";
     slots[slot::CODE_HIGHLIGHT] = "oklch(0.27 0 0)";
     slots[slot::CODE_NUMBER] = "oklch(0.72 0 0)";
     slots[slot::SELECTION] = "oklch(0.922 0 0)";
@@ -385,5 +395,109 @@ mod tests {
         slots[slot::RADIUS] = "0.625rem";
         let spec = ColorSpec::from_slots(slots);
         assert!((spec.radius_px(8.0) - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn slot_constants_match_slot_names() {
+        // Every `slot::*` index must point at its own name in SLOT_NAMES:
+        // generated theme data is positional, so any drift here silently
+        // shifts every slot read. The generator emits SLOT_NAMES order.
+        use slot::*;
+        let expected: [(usize, &str); 41] = [
+            (BACKGROUND, "background"),
+            (FOREGROUND, "foreground"),
+            (CARD, "card"),
+            (CARD_FOREGROUND, "card-foreground"),
+            (POPOVER, "popover"),
+            (POPOVER_FOREGROUND, "popover-foreground"),
+            (PRIMARY, "primary"),
+            (PRIMARY_FOREGROUND, "primary-foreground"),
+            (SECONDARY, "secondary"),
+            (SECONDARY_FOREGROUND, "secondary-foreground"),
+            (MUTED, "muted"),
+            (MUTED_FOREGROUND, "muted-foreground"),
+            (ACCENT, "accent"),
+            (ACCENT_FOREGROUND, "accent-foreground"),
+            (DESTRUCTIVE, "destructive"),
+            (DESTRUCTIVE_FOREGROUND, "destructive-foreground"),
+            (BORDER, "border"),
+            (INPUT, "input"),
+            (RING, "ring"),
+            (CHART_1, "chart-1"),
+            (CHART_2, "chart-2"),
+            (CHART_3, "chart-3"),
+            (CHART_4, "chart-4"),
+            (CHART_5, "chart-5"),
+            (RADIUS, "radius"),
+            (SIDEBAR, "sidebar"),
+            (SIDEBAR_FOREGROUND, "sidebar-foreground"),
+            (SIDEBAR_PRIMARY, "sidebar-primary"),
+            (SIDEBAR_PRIMARY_FOREGROUND, "sidebar-primary-foreground"),
+            (SIDEBAR_ACCENT, "sidebar-accent"),
+            (SIDEBAR_ACCENT_FOREGROUND, "sidebar-accent-foreground"),
+            (SIDEBAR_BORDER, "sidebar-border"),
+            (SIDEBAR_RING, "sidebar-ring"),
+            (SURFACE, "surface"),
+            (SURFACE_FOREGROUND, "surface-foreground"),
+            (CODE, "code"),
+            (CODE_FOREGROUND, "code-foreground"),
+            (CODE_HIGHLIGHT, "code-highlight"),
+            (CODE_NUMBER, "code-number"),
+            (SELECTION, "selection"),
+            (SELECTION_FOREGROUND, "selection-foreground"),
+        ];
+        assert_eq!(SLOT_NAMES.len(), expected.len());
+        for (index, name) in expected {
+            assert_eq!(SLOT_NAMES[index], name, "slot index {index}");
+        }
+    }
+
+    #[test]
+    fn mode_defaults_cover_globals_css_only_slots() {
+        // Slots the registry never carries must have a mode default each, or
+        // they resolve to the black/white fallbacks. Values are verbatim from
+        // globals.css (code/code-foreground resolve its var() indirections).
+        for (defaults, mode) in [(MODE_DEFAULTS_LIGHT, "light"), (MODE_DEFAULTS_DARK, "dark")] {
+            for index in [
+                slot::DESTRUCTIVE_FOREGROUND,
+                slot::SURFACE,
+                slot::SURFACE_FOREGROUND,
+                slot::CODE,
+                slot::CODE_FOREGROUND,
+                slot::CODE_HIGHLIGHT,
+                slot::CODE_NUMBER,
+                slot::SELECTION,
+                slot::SELECTION_FOREGROUND,
+            ] {
+                assert!(
+                    !defaults[index].is_empty(),
+                    "{mode} default missing for {}",
+                    SLOT_NAMES[index]
+                );
+                assert!(
+                    Oklch::parse(defaults[index]).is_some(),
+                    "{mode} default for {} is not oklch: {}",
+                    SLOT_NAMES[index],
+                    defaults[index]
+                );
+            }
+        }
+        // Code slots mirror the surface slots, per globals.css.
+        assert_eq!(
+            MODE_DEFAULTS_LIGHT[slot::CODE],
+            MODE_DEFAULTS_LIGHT[slot::SURFACE]
+        );
+        assert_eq!(
+            MODE_DEFAULTS_LIGHT[slot::CODE_FOREGROUND],
+            MODE_DEFAULTS_LIGHT[slot::SURFACE_FOREGROUND]
+        );
+        assert_eq!(
+            MODE_DEFAULTS_DARK[slot::CODE],
+            MODE_DEFAULTS_DARK[slot::SURFACE]
+        );
+        assert_eq!(
+            MODE_DEFAULTS_DARK[slot::CODE_FOREGROUND],
+            MODE_DEFAULTS_DARK[slot::SURFACE_FOREGROUND]
+        );
     }
 }
