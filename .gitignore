@@ -9,3 +9,8 @@ Cargo.lock.bak
 # Editor
 .idea/
 .vscode/
+
+# Local only: never push to GitHub
+/examples/
+/docs/
+/PROGRESS.md
