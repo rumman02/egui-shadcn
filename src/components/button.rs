@@ -664,17 +664,18 @@ impl Button {
 
             let painter = ui.painter();
 
-            // `shadow-xs` on the outline variant (base recipe only; the nova
-            // outline has no shadow).
-            if self.variant == ButtonVariant::Outline && !self.disabled && !nova {
-                let sh = crate::utils::shadow::shadow_xs(dark);
-                painter.add(
-                    egui::epaint::RectShape::filled(
-                        rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                        corner,
-                        sh.color,
-                    )
-                    .with_blur_width(2.0),
+            // `shadow-xs` on the outline variant: the base recipe declares it
+            // and no style's `.cn-button-outline` rule overrides it, so it
+            // paints under every style (Phase 1 §5(b) LAYER ruling).
+            if self.variant == ButtonVariant::Outline && !self.disabled {
+                crate::utils::shadow::paint_shadow_resolved(
+                    painter,
+                    rect,
+                    corner,
+                    crate::utils::shadow::ShadowSize::Xs,
+                    style,
+                    crate::utils::shadow::ShadowSlot::ButtonOutline,
+                    dark,
                 );
             }
 

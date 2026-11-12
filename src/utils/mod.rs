@@ -12,4 +12,7 @@ pub use animation::{
 };
 pub use focus::{is_focused, paint_focus_ring, paint_ring, request_focus};
 pub use id::{id_path, unique_id};
-pub use shadow::{shadow_lg, shadow_md, shadow_sm, shadow_xs};
+pub use shadow::{
+    paint_shadow, paint_shadow_layers, paint_shadow_resolved, resolve_shadow, shadow_lg, shadow_md,
+    shadow_sm, shadow_xl, shadow_xs, ShadowLayer, ShadowSize, ShadowSlot,
+};
