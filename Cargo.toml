@@ -2,10 +2,13 @@
 name = "egui-shadcn-ui"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.95"
 description = "A shadcn/ui-flavoured component library for egui, in pure Rust."
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/rumman02/egui-shadcn"
+keywords = ["egui", "shadcn", "gui", "components", "design-system"]
+categories = ["gui"]
 
 [features]
 default = ["fonts"]

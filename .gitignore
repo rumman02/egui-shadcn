@@ -10,7 +10,7 @@ Cargo.lock.bak
 .idea/
 .vscode/
 
-# Local only: never push to GitHub
-/examples/
-/docs/
+# Local only: never push to GitHub.
+# PROGRESS.md is a local working checklist kept on the maintainer's machine;
+# it is not shipped. Shipped status lives in README.md and CHANGELOG.md.
 /PROGRESS.md
