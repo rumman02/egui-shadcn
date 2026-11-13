@@ -12,9 +12,15 @@
 #     its AE metric, and the actual/golden/diff image paths. Diff mode
 #     NEVER writes into tests/golden/.
 #   update mode (SNAPSHOT_UPDATE=1): capture every view and (over)write
-#     tests/golden/. Refused unless explicitly requested. Update mode also
-#     fails if any two goldens within a theme come out identical (that
-#     means navigation failed and a wrong golden would be baked in).
+#     tests/golden/. Refused unless explicitly requested. A golden is
+#     written only after two captures agree byte-identically; on
+#     disagreement the view is re-captured once more and written only
+#     if the third capture matches one of the first two, otherwise the
+#     run fails naming the page as unstable — a one-off transient frame
+#     can never become the reference (plan §8 flake rule, defect D2).
+#     Update mode also fails if any two goldens within a theme come out
+#     identical (that means navigation failed and a wrong golden would
+#     be baked in).
 #
 # Golden set: every gallery demo page reachable from the sidebar, resting
 # state, nova (default) style, light + dark, one fixed viewport
@@ -77,6 +83,8 @@
 #   diff/<name>.png     red-highlight diff images, mismatches only
 #   report.txt          per-capture results + metric values
 #   probe.png           theme-verification probe (overwritten)
+#   confirm.png         update-mode confirmation capture (overwritten)
+#   confirm2.png        update-mode re-capture on disagreement (overwritten)
 #   gallery.log         gallery stdout/stderr (panic diagnostics)
 #
 # Requirements: cargo, Xvfb (via xvfb-run), xdotool, ImageMagick
@@ -311,6 +319,32 @@ run_theme() {
         capture_page "$idx" "$actual" || die "capture failed for $name"
 
         if [ "$UPDATE_MODE" -eq 1 ]; then
+            # Plan §8 flake rule (defect D2): never write a golden from
+            # a single unconfirmed capture. Capture a second time and
+            # require byte-identical agreement; on disagreement,
+            # re-capture once more and write only if the third capture
+            # matches one of the first two; otherwise fail naming the
+            # page as unstable (no golden is written for that page).
+            local confirm="$OUT_DIR/confirm.png"
+            local recaptured=0
+            capture_page "$idx" "$confirm" || die "confirmation capture failed for $name"
+            if ! cmp -s "$actual" "$confirm"; then
+                echo "$name: update captures disagree; re-capturing once..." | tee -a "$REPORT"
+                local confirm2="$OUT_DIR/confirm2.png"
+                capture_page "$idx" "$confirm2" || die "re-capture failed for $name"
+                recaptured=1
+                if cmp -s "$confirm2" "$confirm"; then
+                    # Third capture agrees with the confirmation
+                    # capture: the first capture was the transient
+                    # one; stage the agreed value.
+                    cp "$confirm" "$actual" || die "could not stage agreed capture for $name"
+                elif ! cmp -s "$confirm2" "$actual"; then
+                    echo "$name: UNSTABLE (3 captures disagree; no golden written)" | tee -a "$REPORT"
+                    die "update for $name unstable: 3 captures disagree; no golden written for $name"
+                fi
+                # Otherwise the third capture agrees with the first:
+                # $actual already holds the agreed content.
+            fi
             local metric=0
             if [ -f "$golden" ]; then
                 if cmp -s "$actual" "$golden"; then
@@ -322,7 +356,11 @@ run_theme() {
                 metric="new"
             fi
             cp "$actual" "$golden" || die "could not write golden $golden"
-            echo "$name: UPDATED (metric vs previous: $metric)" | tee -a "$REPORT"
+            if [ "$recaptured" -eq 1 ]; then
+                echo "$name: UPDATED after 1 re-capture (flake noted; metric vs previous: $metric)" | tee -a "$REPORT"
+            else
+                echo "$name: UPDATED (metric vs previous: $metric)" | tee -a "$REPORT"
+            fi
             continue
         fi
 
