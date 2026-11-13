@@ -9,8 +9,8 @@
 #     against tests/golden/. Exit 0 iff every capture matches. On a
 #     mismatch, the view is re-captured ONCE (plan §8 flakiness rule); a
 #     second mismatch fails with a report naming each differing capture,
-#     its AE metric, and the actual/golden/diff image paths. Diff mode
-#     NEVER writes into tests/golden/.
+#     its AE and PAE metrics, and the actual/golden/diff image paths. Diff
+#     mode NEVER writes into tests/golden/.
 #   update mode (SNAPSHOT_UPDATE=1): capture every view and (over)write
 #     tests/golden/. Refused unless explicitly requested. A golden is
 #     written only after two captures agree byte-identically; on
@@ -72,11 +72,28 @@
 # possible. All goldens share this viewport, satisfying plan §8's
 # same-viewport rule.
 #
-# Diff metric: exact byte match (cmp). The metric reported per capture is
-# 0 for byte-identical captures, else the ImageMagick AE (absolute error)
-# count from `compare`. No tolerance: static pages re-capture
-# byte-identically (proven in the report), and any tolerance would hide
-# real regressions.
+# Diff metric: byte-identical (cmp) MATCHES outright (metric 0).
+# Otherwise the judgment is the PEAK absolute per-pixel difference
+# (ImageMagick `compare -metric PAE`): MATCH iff the peak is at most 1
+# level in every channel, MISMATCH iff any pixel differs by more than 1
+# level. Both metrics are reported on every non-identical comparison
+# (AE count + PAE peak). The threshold is EXACTLY 1 and must never be
+# raised silently. Evidence (Golden Snapshots Verifier report, defect
+# D1): after a VM restart + graphics-package reinstall, all 136
+# captures differed from their goldens by 1-69 pixels, and EVERY
+# differing pixel differed by exactly +-1 LSB (rasterization rounding,
+# not content) — byte-exact goldens are environment-coupled, so a
+# byte-exact gate fails on every environment wobble, including the
+# ubuntu-latest CI runner. Real changes produce large deltas: the
+# verifier's 11x11 red-rectangle perturbation (AE=121) and the
+# transient outline frame (AE=228, black-vs-white deltas) both exceed
+# PAE 1 by orders of magnitude. Plan §8 anticipates named tolerances;
+# this 1-level peak rule is the named tolerance for this gate. A
+# 1-level color change is invisible at normal use (plan §8's standard),
+# and token values are guarded exactly by the 640 unit tests, not by
+# this gate. PAE is compared in ImageMagick quantum units against
+# QuantumRange/255 (257 on Q16, 1 on Q8), so the 1-level rule is exact
+# on any QuantumDepth (see PAE_TOLERANCE below).
 #
 # Outputs (all under target/snapshot-diff/, already gitignored):
 #   actual/<name>.png   fresh captures
@@ -288,6 +305,32 @@ ae_of() {
     compare -metric AE "$1" "$2" null: 2>&1 | tr -d '[:space:]'
 }
 
+# Peak-error tolerance: exactly one 8-bit level, in ImageMagick quantum
+# units. 8-bit PNG values scale to quantum by v*(QuantumRange/255), so a
+# 1-level difference is exactly QuantumRange/255 quantum units (257 on
+# Q16 builds, 1 on Q8). PAE reports the peak in quantum units, so this
+# comparison is exact on any QuantumDepth. NEVER raise silently: see the
+# header "Diff metric" note for the evidence grounding the value 1.
+_QRANGE="$(identify -format "%[fx:QuantumRange]" null: 2>/dev/null)" || die "could not query ImageMagick QuantumRange"
+case "$_QRANGE" in ''|*[!0-9]*) die "could not query ImageMagick QuantumRange (got '$_QRANGE')";; esac
+PAE_TOLERANCE=$((_QRANGE / 255))
+unset _QRANGE
+
+# Peak absolute error (integer quantum units) between two images
+# (stdout: integer). Assumes files exist. `compare` exits 0 when the
+# images are identical, 1 when they differ, >=2 on error; an error must
+# die loudly, never be judged as a match or a mismatch.
+pae_of() {
+    local out rc peak
+    out="$(compare -metric PAE "$1" "$2" null: 2>&1)"
+    rc=$?
+    [ "$rc" -le 1 ] || die "compare -metric PAE failed for $1 vs $2 (exit $rc): $out"
+    # Output format: "<peak> (<normalized>)" e.g. "257 (0.00392157)".
+    peak="$(printf '%s' "$out" | awk '{print $1}')"
+    case "$peak" in ''|*[!0-9]*) die "could not parse PAE output for $1 vs $2: [$out]";; esac
+    printf '%s' "$peak"
+}
+
 # Verify the starting theme is light; fail loudly otherwise.
 echo "verifying starting theme is light..."
 MEAN="$(probe_theme)" || die "theme probe capture failed"
@@ -364,7 +407,8 @@ run_theme() {
             continue
         fi
 
-        # Diff mode: byte match, else one re-capture, else failure.
+        # Diff mode: byte match, else peak-error judgment (see the
+        # header "Diff metric" note), else one re-capture, else failure.
         if [ ! -f "$golden" ]; then
             echo "$name: MISSING GOLDEN ($golden)" | tee -a "$REPORT"
             FAILURES=$((FAILURES + 1))
@@ -374,18 +418,32 @@ run_theme() {
             echo "$name: MATCH (metric 0)" | tee -a "$REPORT"
             continue
         fi
+        local pae ae
+        pae="$(pae_of "$actual" "$golden")"
+        if [ "$pae" -le "$PAE_TOLERANCE" ]; then
+            ae="$(ae_of "$actual" "$golden")"
+            echo "$name: MATCH within rounding tolerance (PAE=$pae, AE=$ae)" | tee -a "$REPORT"
+            continue
+        fi
         # Plan §8 flakiness rule: one re-capture before filing.
-        echo "$name: mismatch on first capture; re-capturing once..."
+        echo "$name: mismatch on first capture (PAE=$pae); re-capturing once..."
         capture_page "$idx" "$actual" || die "re-capture failed for $name"
         if cmp -s "$actual" "$golden"; then
             echo "$name: MATCH after 1 re-capture (flake noted; metric 0)" | tee -a "$REPORT"
             FLAKES=$((FLAKES + 1))
             continue
         fi
+        pae="$(pae_of "$actual" "$golden")"
+        if [ "$pae" -le "$PAE_TOLERANCE" ]; then
+            ae="$(ae_of "$actual" "$golden")"
+            echo "$name: MATCH after 1 re-capture within rounding tolerance (flake noted; PAE=$pae, AE=$ae)" | tee -a "$REPORT"
+            FLAKES=$((FLAKES + 1))
+            continue
+        fi
         local metric
         metric="$(ae_of "$actual" "$golden")"
         compare -highlight-color red "$actual" "$golden" "$DIFF_DIR/$name.png" >/dev/null 2>&1 || true
-        echo "$name: MISMATCH (metric AE=$metric) actual=$actual golden=$golden diff=$DIFF_DIR/$name.png" | tee -a "$REPORT"
+        echo "$name: MISMATCH (PAE=$pae, AE=$metric) actual=$actual golden=$golden diff=$DIFF_DIR/$name.png" | tee -a "$REPORT"
         FAILURES=$((FAILURES + 1))
     done
 }
