@@ -26,21 +26,26 @@ verification record).
 
 ## Finding the closure for any component
 
-A component's closure is the set of files its `crate::` paths reach,
-transitively. To find it for component `X`:
+A component's closure is the set of files its code's `crate::` paths
+reach, transitively. To find it for component `X`:
 
 ```sh
-# Direct crate paths used by the component (outside its own tests):
-sed '/mod tests/,$d' src/components/X.rs | grep -o 'crate::[a-z_:]*' | sort -u
+# Direct crate paths used by the component's code (outside its own tests).
+# Comment lines are stripped first: doc comments carry intra-doc links
+# such as [`crate::components::other::Thing`] that look like paths but
+# are not dependencies, and counting them over-approximates the closure.
+sed '/mod tests/,$d' src/components/X.rs | grep -v '^[[:space:]]*//' | grep -o 'crate::[a-z_:]*' | sort -u
 ```
 
 Repeat for every `crate::components::<other>` hit (a sibling component
-file that must come along), and include the whole `theme/`, `utils/`,
-and `icons/` modules whenever any path reaches them — their files
-reference each other, so partial copies do not compile. The component's
-own `#[cfg(test)]` module comes along with the file; its tests only ever
-reference the component itself and `crate::theme`, so no extra files are
-needed for them.
+file the code uses), and include the whole `theme/`, `utils/`, and
+`icons/` modules whenever any path reaches them — their files
+reference each other, so partial copies do not compile. A hit that
+appears only in a trailing comment after code is not a dependency:
+confirm each hit is a code use with `grep -n` before adding a file.
+The component's own `#[cfg(test)]` module comes along with the file;
+its tests only ever reference the component itself and `crate::theme`,
+so no extra files are needed for them.
 
 Two files are *not* part of any runtime closure and are only needed if
 you want to regenerate data:
@@ -52,18 +57,23 @@ you want to regenerate data:
 ## Worked example: Button
 
 Button's closure (verified by the grep above, plus the transitive walk)
-is:
+is everything in the table below except `button_group.rs`, which is an
+optional companion. The worked example copies both files, so the
+`ButtonGroup` container is available too:
 
 | Copy | Contents |
 |---|---|
 | `src/lib.rs` | Verbatim from the repo (5 lines: the `components`, `icons`, `prelude`, `theme`, `utils` modules). |
 | `src/prelude.rs` | Verbatim from the repo. |
 | `src/components/button.rs` | Verbatim. |
-| `src/components/button_group.rs` | Verbatim. Button reads the group-fusing context (`GroupOrientation`, `GroupPosition`, `fuse_radius`) from this file, and it reads Button back — the pair comes together. |
+| `src/components/button_group.rs` | Optional companion, verbatim. ButtonGroup reads the group-fusing context (`GroupOrientation`, `GroupPosition`, `fuse_radius`) from `button.rs` — the dependency runs from ButtonGroup to Button, not the other way. Copying `button.rs` alone is sufficient for Button, including its group-fusing API; copy this file as well only if you want the `ButtonGroup` container. |
 | `src/components/mod.rs` | Minimal wiring (below) — do **not** copy the repo's file, it declares all 64 components. |
 | `src/theme/` | Whole directory: `mod.rs`, `colors.rs`, `fonts.rs`, `presets.rs`, `theme_data.rs`, `tokens.rs`, plus the `fonts/` subdirectory (5 `.ttf` files + 2 licence texts). |
 | `src/utils/` | Whole directory: `mod.rs`, `animation.rs`, `focus.rs`, `id.rs`, `shadow.rs`. |
 | `src/icons/` | `mod.rs`, `icons.rs`, `data.rs`, `LICENSE-Lucide.txt`. (`gen_icons.py` only if you regenerate.) |
+
+To copy Button alone, omit `button_group.rs` and its two lines in the
+minimal `mod.rs` below — `button.rs` compiles without it.
 
 ### 1. Crate manifest
 
