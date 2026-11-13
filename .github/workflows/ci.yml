@@ -1,0 +1,248 @@
+# CI for egui-shadcn-ui — plan §10 gate list. A red CI blocks merge.
+#
+# Jobs (all on ubuntu-latest; Linux-only by design — the gallery build needs
+# Linux system libraries):
+#   fmt, clippy, build, test, gallery, snapshot-diff, publish-dry-run,
+#   clean-checkout, msrv.
+#
+# System dependencies: every job that compiles Rust installs the eframe
+# Linux dependencies documented in the vendored eframe 0.37.0 README
+# (libxcb-render0-dev, libxcb-shape0-dev, libxcb-xfixes0-dev,
+# libxkbcommon-dev, libssl-dev) plus pkg-config. Evidence gathered for the
+# CI report shows the current locked tree links no system GUI library at
+# all (all native deps are dlopen'd or pure Rust), so the apt step is
+# belt-and-braces: it matches the upstream-documented requirement and keeps
+# the build working if a future Cargo.lock update reintroduces a linked
+# system dependency. The fmt job does no compilation and skips it.
+#
+# Actions are pinned to major versions. Toolchain setup uses
+# actions-rust-lang/setup-rust-toolchain@v2 (rather than
+# dtolnay/rust-toolchain, whose documented refs are moving branches) with
+# its caching disabled (cache: false) and its warnings default neutralised
+# (build-warnings: ""), so that caching is controlled explicitly by the
+# Swatinem/rust-cache steps below and warning behaviour is exactly what
+# each job's own command specifies (only clippy denies warnings).
+# No job uses a secret or publishes anything.
+#
+# Snapshot-diff contract (for the Golden Snapshots job — plan §8):
+# - Goldens live in `tests/golden/` (versioned PNGs, NOT gitignored).
+# - The diff harness is `scripts/snapshot-diff.sh`, invoked with no
+#   arguments from the repository root. It must exit non-zero on any
+#   unexplained diff and zero when every capture matches its golden.
+# - The harness must be self-contained: it builds the gallery, handles its
+#   own display (e.g. xvfb-run), captures, and diffs. This job already
+#   provides checkout + stable toolchain + system deps + cargo cache; if
+#   the harness needs further runner packages (e.g. xvfb, imagemagick),
+#   the Golden Snapshots job extends the apt step in the snapshot-diff
+#   job only.
+# - Until both the goldens directory and the harness exist, the
+#   placeholder step passes with an explicit message. If goldens exist
+#   without the harness, the job FAILS (a half-landed setup must not
+#   pass silently). If the harness exists, it is authoritative and runs.
+#
+# Caching: Swatinem/rust-cache with default settings on every compile job
+# EXCEPT clean-checkout. Its default key includes the job id, the OS/arch,
+# a hash of the installed rustc version(s), and a hash of Cargo.toml /
+# Cargo.lock, so the MSRV (1.95.0) cache can never collide with the stable
+# cache and lockfile changes invalidate automatically. The clean-checkout
+# job deliberately uses NO cache of any kind: restoring a cache would
+# defeat its purpose, which is to prove a fresh clone builds from scratch.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: rustfmt
+          cache: false
+          build-warnings: ""
+      - name: Check formatting
+        run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: clippy
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (warnings denied, all targets)
+        run: cargo clippy --all-targets -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (default features)
+        run: cargo build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Full test suite (default features)
+        run: cargo test
+      - name: Full test suite (fonts off)
+        run: cargo test --no-default-features
+
+  gallery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the gallery example
+        run: cargo build --example gallery
+
+  snapshot-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      # PLACEHOLDER — see the snapshot-diff contract at the top of this
+      # file. The setup steps above are intentionally present already so
+      # the harness works the day it lands with no restructuring here.
+      - name: Snapshot diff (placeholder until goldens land)
+        run: |
+          GOLDENS_DIR="tests/golden"
+          HARNESS="scripts/snapshot-diff.sh"
+          if [ ! -d "$GOLDENS_DIR" ] && [ ! -f "$HARNESS" ]; then
+            echo "goldens not yet landed — snapshot-diff placeholder passing"
+            exit 0
+          fi
+          if [ -d "$GOLDENS_DIR" ] && [ ! -f "$HARNESS" ]; then
+            echo "::error::Golden snapshots exist at $GOLDENS_DIR but the diff harness $HARNESS is missing. Land the harness (see the contract at the top of this workflow file) — a half-landed snapshot setup must not pass silently."
+            exit 1
+          fi
+          bash "$HARNESS"
+
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish dry-run (never a real publish)
+        run: cargo publish --dry-run
+
+  clean-checkout:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clean
+    steps:
+      # Fresh clone into a fresh directory. This job deliberately has NO
+      # rust-cache step and the toolchain action runs with cache disabled,
+      # so nothing from any other job (or any previous run) can leak in:
+      # the gate sequence below must succeed from a pristine tree.
+      - uses: actions/checkout@v4
+        with:
+          path: clean
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          cache: false
+          build-warnings: ""
+      - name: Gate sequence from a clean checkout
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo build
+          cargo test
+          cargo test --no-default-features
+          cargo build --example gallery
+          cargo publish --dry-run
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          # Exactly the stated MSRV (Cargo.toml rust-version = "1.95").
+          toolchain: 1.95.0
+          cache: false
+          build-warnings: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Build with the MSRV toolchain
+        run: cargo build
+      - name: Unit tests with the MSRV toolchain
+        run: cargo test --lib
