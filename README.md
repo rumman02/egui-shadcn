@@ -175,7 +175,6 @@ cargo run --example gallery
   [src/theme/fonts/LICENSE-GeistMono.txt](src/theme/fonts/LICENSE-GeistMono.txt).
 - Lucide icons: ISC licence, full text in
   [src/icons/LICENSE-Lucide.txt](src/icons/LICENSE-Lucide.txt).
-- Ported independently to Rust/egui; no code copied from other ports.
 
 ## License
 
