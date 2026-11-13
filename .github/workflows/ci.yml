@@ -153,7 +153,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+          # + xvfb (Xvfb/xvfb-run display), imagemagick (import/compare/identify),
+          # xdotool (window/input control), libxkbcommon-x11-0 + libegl1 (gallery
+          # runtime libs) — required by scripts/snapshot-diff.sh.
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config xvfb imagemagick xdotool libxkbcommon-x11-0 libegl1
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
