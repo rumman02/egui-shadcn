@@ -1037,6 +1037,27 @@ impl Button {
             response.request_focus();
         }
 
+        // Escape is a no-op on a focused button (spec §8, BTN-INT-02):
+        // egui's default (`Focus::begin_pass`) clears focus on unmodified
+        // Escape, so claim Escape via the focus-lock filter while focused
+        // — the pattern `accordion`/`tabs` use for arrows. Tab and arrows
+        // keep the built-in traversal (arrow behaviour is BTN-INT-03's
+        // separate run). Disabled buttons never hold focus, so the gate
+        // is belt-and-braces.
+        if !self.disabled && response.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: false,
+                        vertical_arrows: false,
+                        escape: true,
+                    },
+                );
+            });
+        }
+
         if ui.is_rect_visible(rect) {
             let radius = metrics::radius(size, style, &theme.radius, in_group);
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
@@ -2375,6 +2396,80 @@ mod tests {
         };
         assert!(!disabled_frame(key_event(egui::Key::Space, true)));
         assert!(!disabled_frame(key_event(egui::Key::Space, false)));
+    }
+
+    #[test]
+    fn escape_is_a_noop_on_a_focused_button() {
+        // BTN-INT-02: spec §8 — Escape has no button behaviour; a focused
+        // button keeps focus when Escape is pressed. egui's default
+        // (`Focus::begin_pass`) clears focus on unmodified Escape unless the
+        // focused widget claims it via the focus-lock filter.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("button_escape_noop_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut clicked = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                clicked = Button::new("Escape").show(ui).clicked();
+            });
+            out.textures_delta.clear();
+            clicked
+        };
+
+        // Frame 1: render, record id; then give the button keyboard focus.
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            id = Button::new("Escape").show(ui).id;
+        });
+        out.textures_delta.clear();
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // A settled frame with no events: the button runs with focus, so the
+        // focus-lock filter is set.
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Escape keydown: no fire, focus retained. Escape keyup: same.
+        assert!(!frame(&ctx, key_event(egui::Key::Escape, true)));
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "Escape keydown must not clear focus"
+        );
+        assert!(!frame(&ctx, key_event(egui::Key::Escape, false)));
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "Escape keyup must not clear focus"
+        );
+        // A second Escape press: still a no-op.
+        assert!(!frame(&ctx, key_event(egui::Key::Escape, true)));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+        assert!(!frame(&ctx, key_event(egui::Key::Escape, false)));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Space still fires on keyup after Escape: focus is genuinely held.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
+        assert!(frame(&ctx, key_event(egui::Key::Space, false)));
+        assert!(ctx.memory(|m| m.has_focus(id)));
     }
 
     #[test]
