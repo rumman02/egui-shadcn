@@ -639,6 +639,15 @@ pub(crate) fn active_shift_applies(style: Style, has_popup: bool, disabled: bool
     style == Style::Nova && !has_popup && !disabled
 }
 
+/// Whether the 3px ring is shown: on focus in both recipes (spec §5.4), or —
+/// under nova only — whenever the button is invalid (`aria-invalid:ring-3`,
+/// spec §5.6, which applies whether or not the button is focused). The base
+/// recipe has no non-focus ring-width rule for invalid, so a base invalid
+/// button shows no ring until focused.
+fn ring_shown(focused: bool, invalid: bool, nova: bool) -> bool {
+    focused || (invalid && nova)
+}
+
 /// Shrinks every corner radius by 1px (saturating): the padding-box corners
 /// of a `bg-clip-padding` fill sit 1px inside the border-box corners.
 fn shrink_corner(corner: CornerRadius) -> CornerRadius {
@@ -974,14 +983,23 @@ impl Button {
                 transition_alpha(ctx, id.with("disabled"), 1.0, 0.5, self.disabled, t_spec).alpha;
 
             // Focus ring target: the invalid ring wins over the focus ring
-            // (spec §5.4); the ring itself fades in/out with focus.
+            // (spec §5.4). The ring fades in/out with focus — and, under
+            // nova, an invalid button shows its ring at rest too (spec
+            // §5.6); the base recipe has no such rule.
             let ring_target = if self.invalid {
                 color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
             } else {
                 c.ring
             };
-            let ring_alpha =
-                transition_alpha(ctx, id.with("ring"), 0.0, 1.0, focused, t_spec).alpha;
+            let ring_alpha = transition_alpha(
+                ctx,
+                id.with("ring"),
+                0.0,
+                1.0,
+                ring_shown(focused, self.invalid, nova),
+                t_spec,
+            )
+            .alpha;
             let ring_color = color_alpha(ring_target, ring_alpha * opacity);
 
             // Border color transitions between the resting stroke and the
@@ -2002,6 +2020,21 @@ mod tests {
         assert!(!active_shift_applies(Style::Nova, true, false));
         assert!(!active_shift_applies(Style::Nova, false, true));
         assert!(!active_shift_applies(BASE_STYLE, false, false));
+    }
+
+    #[test]
+    fn ring_visibility_truth_table() {
+        // Spec §5.4: focus shows the ring in both recipes, invalid or not.
+        assert!(ring_shown(true, false, false));
+        assert!(ring_shown(true, false, true));
+        assert!(ring_shown(true, true, false));
+        assert!(ring_shown(true, true, true));
+        // Spec §5.6: invalid at rest shows the ring under nova only.
+        assert!(ring_shown(false, true, true));
+        assert!(!ring_shown(false, true, false));
+        // Resting valid buttons show no ring.
+        assert!(!ring_shown(false, false, false));
+        assert!(!ring_shown(false, false, true));
     }
 
     #[test]
