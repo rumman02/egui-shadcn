@@ -383,6 +383,136 @@ pub fn transition_alpha(
     }
 }
 
+/// Per-slot state for [`transition_color_to`], kept in the context's temp
+/// data under the caller's `id`.
+///
+/// One record per animated colour slot: callers must pass a distinct
+/// sub-`id` (e.g. `id.with("fill")`) per slot, following the same
+/// discipline as the other transition helpers.
+#[derive(Clone, Copy, Debug)]
+struct EndpointColorState {
+    /// Colour the current leg started from: the displayed colour at the
+    /// moment the target last changed.
+    from: egui::Color32,
+    /// Current target colour.
+    to: egui::Color32,
+    /// Animator direction for the current leg: the drive target is `1.0`
+    /// when `flip` is true, `0.0` when false. Toggles on every target
+    /// change so the animator re-targets and runs a fresh leg.
+    flip: bool,
+    /// Raw animator value when the current leg began. The leg's linear
+    /// progress is `(raw - start) / (target - start)`.
+    start: f32,
+}
+
+/// Linear progress of one animation leg: `0.0` at the leg's start value,
+/// `1.0` at its target. A zero-length leg (zero duration, or a first call
+/// with no travel) counts as complete.
+fn leg_progress(raw: f32, start: f32, target: f32) -> f32 {
+    let span = target - start;
+    if span.abs() < f32::EPSILON {
+        1.0
+    } else {
+        ((raw - start) / span).clamp(0.0, 1.0)
+    }
+}
+
+/// Animates a colour toward a *changing* target, e.g. a theme switch
+/// recolouring a widget.
+///
+/// Unlike [`transition_color`], whose endpoints are the two states of a
+/// boolean, this helper remembers the previous target: the first call for
+/// an `id` returns `target` settled (no fade-in from a wrong state), and
+/// when `target` changes, the returned colour eases from the currently
+/// displayed colour to the new target over `spec`, landing exactly on the
+/// new target. A target change mid-flight restarts the leg from the
+/// displayed colour — never a snap — mirroring egui's scalar re-target
+/// rule, and takes the full `spec` duration from that colour.
+///
+/// This is the `transition-all` behaviour for endpoint changes: in the
+/// browser, a theme switch recolouring a button animates over the same
+/// duration as any other colour change, because CSS transitions each
+/// property from its current computed value toward the new one. Call it
+/// once per widget per frame with a stable `id`, wrapping the *final*
+/// painted colour (after state mixing and opacity fades), with one
+/// sub-`id` per colour slot:
+///
+/// ```ignore
+/// let fill = transition_color_to(
+///     ui.ctx(),
+///     id.with("theme_fill"),
+///     mixed_fill,
+///     TransitionSpec::default(),
+/// );
+/// painter.rect_filled(rect, radius, fill.color);
+/// ```
+///
+/// The `id` is owned by this helper: do not share it with a
+/// [`transition_progress`] drive or another slot, and keep `spec` stable
+/// per `id` across frames (changing it mid-flight re-times the running
+/// leg). Repaints are requested only while the transition runs (inherited
+/// from egui's animator, exactly as for [`transition_progress`]).
+///
+/// Colours are mixed in OKLab (see [`mix_oklab`]), so the same caveat
+/// applies: a fully transparent endpoint contributes black. Only animate
+/// slots whose target never crosses the transparent boundary (opaque in
+/// both themes, or transparent in both); opacity fades should use
+/// [`transition_alpha`] instead. This helper is for painted colours only:
+/// shadow layers stay cache-keyed and are intentionally out of scope.
+pub fn transition_color_to(
+    ctx: &Context,
+    id: Id,
+    target: egui::Color32,
+    spec: TransitionSpec,
+) -> ColorTransition {
+    let duration = spec.duration_secs.max(0.0);
+    let mut state = ctx
+        .data_mut(|data| data.get_temp::<EndpointColorState>(id))
+        .unwrap_or(EndpointColorState {
+            from: target,
+            to: target,
+            flip: false,
+            start: 0.0,
+        });
+    // A changed target starts a new leg in the opposite animator
+    // direction. The animator re-targets from its current value and
+    // returns that value on the flip frame, so a single call serves both
+    // the old leg's displayed colour and the new leg's start value.
+    let changed = target != state.to;
+    let flip = if changed { !state.flip } else { state.flip };
+    let drive_target = if flip { 1.0 } else { 0.0 };
+    let raw = ctx.animate_value_with_time(id, drive_target, duration);
+    if changed {
+        let old_target = if state.flip { 1.0 } else { 0.0 };
+        let displayed = mix_oklab(
+            state.from,
+            state.to,
+            spec.easing
+                .apply(leg_progress(raw, state.start, old_target)),
+        );
+        state = EndpointColorState {
+            from: displayed,
+            to: target,
+            flip,
+            start: raw,
+        };
+    }
+    // The leg's progress is the animator's linear traversal from its
+    // start value to its target, with the spec's easing applied fresh —
+    // the same curve a settled-start leg runs, including mid-flight
+    // re-targets. (Deriving progress from the eased [`transition_progress`]
+    // output instead would jump on mid-flight re-targets: the eased value
+    // does not reset when the drive flips, so the mix would start partway
+    // toward the new target.)
+    let progress = leg_progress(raw, state.start, drive_target);
+    let color = mix_oklab(state.from, state.to, spec.easing.apply(progress));
+    ctx.data_mut(|data| data.insert_temp(id, state));
+    ColorTransition {
+        color,
+        animating: raw != drive_target,
+    }
+}
+
 /// Mixes two [`egui::Color32`] values at `t` (0.0..1.0, clamped) in the
 /// OKLab perceptual color space, with alpha interpolated linearly.
 ///
@@ -821,5 +951,162 @@ mod tests {
                 animating: false
             }
         );
+    }
+
+    #[test]
+    fn transition_color_to_first_call_is_settled() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::default();
+        let id = Id::unique("color_to_first");
+        let target = egui::Color32::from_rgb(10, 20, 30);
+        let first = run_at(&ctx, 0.0, || transition_color_to(&ctx, id, target, spec));
+        assert_eq!(first.color, target);
+        assert!(!first.animating);
+        // Repeated calls with the same target stay settled, at later
+        // times too.
+        let again = run_at(&ctx, 5.0, || transition_color_to(&ctx, id, target, spec));
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn transition_color_to_target_change_animates_and_lands_exactly() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::new(Duration::Default, Easing::Linear);
+        let id = Id::unique("color_to_land");
+        let from = egui::Color32::BLACK;
+        let to = egui::Color32::WHITE;
+        let settled = run_at(&ctx, 0.0, || transition_color_to(&ctx, id, from, spec));
+        assert_eq!(settled.color, from);
+        assert!(!settled.animating);
+        // Target change: the flip frame still shows the old colour,
+        // animating.
+        let flip = run_at(&ctx, 0.0, || transition_color_to(&ctx, id, to, spec));
+        assert_eq!(flip.color, from);
+        assert!(flip.animating);
+        // Halfway through the 150ms fade: a neutral intermediate gray.
+        let mid = run_at(&ctx, 0.075, || transition_color_to(&ctx, id, to, spec));
+        assert!(mid.animating);
+        let [r, g, b, _] = mid.color.to_srgba_unmultiplied();
+        assert_eq!((r, g), (r, b), "mid-fade gray must be neutral");
+        assert!(r > 0 && r < 255, "mid-fade value = {r}");
+        // Past the duration: lands exactly on the new target and settles.
+        let done = run_at(&ctx, 0.30, || transition_color_to(&ctx, id, to, spec));
+        assert_eq!(done.color, to);
+        assert!(!done.animating);
+    }
+
+    #[test]
+    fn transition_color_to_midflight_retarget_continues_from_displayed() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::new(Duration::Default, Easing::Linear);
+        let id = Id::unique("color_to_retarget");
+        let black = egui::Color32::BLACK;
+        let white = egui::Color32::WHITE;
+        let red = egui::Color32::RED;
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, id, black, spec));
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, id, white, spec));
+        // Mid-flight toward white.
+        let mid = run_at(&ctx, 0.075, || transition_color_to(&ctx, id, white, spec));
+        assert!(mid.animating);
+        assert_ne!(mid.color, black);
+        assert_ne!(mid.color, white);
+        // Re-target to red at the same instant: the returned colour is
+        // the displayed colour, unchanged — no snap toward white or red.
+        // This pins the re-target rule: restarting from the old target
+        // (white) instead of the displayed colour fails this assertion.
+        let retarget = run_at(&ctx, 0.075, || transition_color_to(&ctx, id, red, spec));
+        assert_eq!(retarget.color, mid.color);
+        assert!(retarget.animating);
+        // The new leg runs from the displayed colour: halfway through it
+        // the colour is strictly between the displayed colour and red.
+        let leg_mid = run_at(&ctx, 0.15, || transition_color_to(&ctx, id, red, spec));
+        assert!(leg_mid.animating);
+        assert_ne!(leg_mid.color, mid.color);
+        assert_ne!(leg_mid.color, red);
+        // Lands exactly on red.
+        let done = run_at(&ctx, 0.30, || transition_color_to(&ctx, id, red, spec));
+        assert_eq!(done.color, red);
+        assert!(!done.animating);
+    }
+
+    #[test]
+    fn transition_color_to_unchanged_target_stays_settled() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::default();
+        let id = Id::unique("color_to_stable");
+        let target = egui::Color32::from_rgb(200, 100, 50);
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, id, target, spec));
+        for t in [0.05, 0.2, 1.0, 10.0] {
+            let out = run_at(&ctx, t, || transition_color_to(&ctx, id, target, spec));
+            assert_eq!(out.color, target);
+            assert!(!out.animating);
+        }
+    }
+
+    #[test]
+    fn transition_color_to_zero_duration_snaps() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::secs(0.0, Easing::Linear);
+        let id = Id::unique("color_to_zero");
+        run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, id, egui::Color32::BLACK, spec)
+        });
+        let snapped = run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, id, egui::Color32::WHITE, spec)
+        });
+        assert_eq!(snapped.color, egui::Color32::WHITE);
+        assert!(!snapped.animating);
+    }
+
+    #[test]
+    fn transition_color_to_easing_shapes_progress() {
+        let ctx = egui::Context::default();
+        let linear = TransitionSpec::new(Duration::Default, Easing::Linear);
+        let eased = TransitionSpec::new(Duration::Default, Easing::EaseOut);
+        let lin_id = Id::unique("color_to_ease_lin");
+        let out_id = Id::unique("color_to_ease_out");
+        let from = egui::Color32::BLACK;
+        let to = egui::Color32::WHITE;
+        run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, lin_id, from, linear)
+        });
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, out_id, from, eased));
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, lin_id, to, linear));
+        run_at(&ctx, 0.0, || transition_color_to(&ctx, out_id, to, eased));
+        // Mid-flight, ease-out must be ahead of linear on the same
+        // timeline: the easing curve applies to the normalized leg
+        // progress, not just to settled-start legs.
+        let lin = run_at(&ctx, 0.075, || {
+            transition_color_to(&ctx, lin_id, to, linear)
+        });
+        let out = run_at(&ctx, 0.075, || transition_color_to(&ctx, out_id, to, eased));
+        let [lr, _, _, _] = lin.color.to_srgba_unmultiplied();
+        let [orr, _, _, _] = out.color.to_srgba_unmultiplied();
+        assert!(orr > lr, "ease-out {orr} should lead linear {lr}");
+        assert!(lin.animating && out.animating);
+    }
+
+    #[test]
+    fn transition_color_to_slots_are_independent() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::new(Duration::Default, Easing::Linear);
+        let a = Id::unique("color_to_slot_a");
+        let b = Id::unique("color_to_slot_b");
+        run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, a, egui::Color32::BLACK, spec)
+        });
+        run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, b, egui::Color32::RED, spec)
+        });
+        // Changing only slot A leaves slot B settled on its own target.
+        let moved = run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, a, egui::Color32::WHITE, spec)
+        });
+        assert!(moved.animating);
+        let still = run_at(&ctx, 0.0, || {
+            transition_color_to(&ctx, b, egui::Color32::RED, spec)
+        });
+        assert_eq!(still.color, egui::Color32::RED);
+        assert!(!still.animating);
     }
 }
