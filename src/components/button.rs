@@ -1239,11 +1239,13 @@ impl Button {
             // focus-visible:ring-ring/50` — 3px ring just outside the
             // widget, following the fused group corners (spec §5.4).
             // Painted while the fade has any alpha, so losing focus fades
-            // the ring out instead of popping it.
+            // the ring out instead of popping it. The stroke is drawn
+            // outside the border box itself (no expansion): a CSS
+            // box-shadow ring is adjacent to the border box, with no gap
+            // row between ring and border (BTN-VIS-02).
             if ring_color.a() > 0 {
-                let ring_rect = render_rect.expand2(egui::vec2(1.0, 1.0));
                 painter.rect_stroke(
-                    ring_rect,
+                    render_rect,
                     corner,
                     Stroke::new(3.0, ring_color),
                     egui::epaint::StrokeKind::Outside,
