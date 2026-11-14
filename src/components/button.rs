@@ -1037,21 +1037,23 @@ impl Button {
             response.request_focus();
         }
 
-        // Escape is a no-op on a focused button (spec §8, BTN-INT-02):
-        // egui's default (`Focus::begin_pass`) clears focus on unmodified
-        // Escape, so claim Escape via the focus-lock filter while focused
-        // — the pattern `accordion`/`tabs` use for arrows. Tab and arrows
-        // keep the built-in traversal (arrow behaviour is BTN-INT-03's
-        // separate run). Disabled buttons never hold focus, so the gate
-        // is belt-and-braces.
+        // Escape and arrow keys are no-ops on a focused button (spec §8,
+        // BTN-INT-02/03): egui's default (`Focus::begin_pass`) clears focus
+        // on unmodified Escape and moves focus spatially on unmodified
+        // arrows, so claim both via the focus-lock filter while focused —
+        // the pattern `accordion`/`tabs` use for arrows. Tab keeps the
+        // built-in traversal. The claim is unconditional: the original
+        // `button-group` is a presentational div with no roving tabindex,
+        // so arrows are no-ops for group members too. Disabled buttons
+        // never hold focus, so the gate is belt-and-braces.
         if !self.disabled && response.has_focus() {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(
                     response.id,
                     egui::EventFilter {
                         tab: false,
-                        horizontal_arrows: false,
-                        vertical_arrows: false,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
                         escape: true,
                     },
                 );
@@ -2470,6 +2472,120 @@ mod tests {
         assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
         assert!(frame(&ctx, key_event(egui::Key::Space, false)));
         assert!(ctx.memory(|m| m.has_focus(id)));
+    }
+
+    #[test]
+    fn arrow_keys_are_noops_on_a_focused_button() {
+        // BTN-INT-03: spec §8 — arrow keys have no button behaviour; a
+        // focused button keeps focus when an arrow key is pressed. egui's
+        // default (`Focus::begin_pass` + `end_pass`) moves focus spatially
+        // on unmodified arrows unless the focused widget claims them via
+        // the focus-lock filter. The 2x2 grid gives every direction a
+        // spatial neighbour, so each arrow would move focus without the
+        // fix; Tab must still move focus (`tab: false` preserved).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("button_arrow_noop_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut clicked = false;
+            let mut ids = [egui::Id::NULL; 4];
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                ui.horizontal(|ui| {
+                    let r = Button::new("A").id_salt("arrow_a").show(ui);
+                    ids[0] = r.id;
+                    clicked |= r.clicked();
+                    let r = Button::new("B").id_salt("arrow_b").show(ui);
+                    ids[1] = r.id;
+                    clicked |= r.clicked();
+                });
+                ui.horizontal(|ui| {
+                    let r = Button::new("C").id_salt("arrow_c").show(ui);
+                    ids[2] = r.id;
+                    clicked |= r.clicked();
+                    let r = Button::new("D").id_salt("arrow_d").show(ui);
+                    ids[3] = r.id;
+                    clicked |= r.clicked();
+                });
+            });
+            out.textures_delta.clear();
+            (ids, clicked)
+        };
+
+        // Frame 1: render, record ids; then give button A keyboard focus.
+        let (ids, _) = frame(&ctx, egui::RawInput::default());
+        let (a, b) = (ids[0], ids[1]);
+        ctx.memory_mut(|m| m.request_focus(a));
+        assert!(ctx.memory(|m| m.has_focus(a)));
+
+        // A settled frame with no events: A runs with focus, so the
+        // focus-lock filter is set.
+        assert!(!frame(&ctx, egui::RawInput::default()).1);
+        assert!(ctx.memory(|m| m.has_focus(a)));
+
+        // ArrowRight / ArrowDown from A: no fire, focus stays on A (each
+        // has a spatial neighbour — B right, C below — so without the
+        // filter fix focus would move).
+        for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
+            assert!(!frame(&ctx, key_event(key, true)).1);
+            assert!(
+                ctx.memory(|m| m.has_focus(a)),
+                "{key:?} keydown must not move focus"
+            );
+            assert!(!frame(&ctx, key_event(key, false)).1);
+            assert!(ctx.memory(|m| m.has_focus(a)));
+        }
+        // ArrowLeft / ArrowUp from A: no neighbour in that direction, but
+        // still no-ops.
+        for key in [egui::Key::ArrowLeft, egui::Key::ArrowUp] {
+            assert!(!frame(&ctx, key_event(key, true)).1);
+            assert!(ctx.memory(|m| m.has_focus(a)));
+            assert!(!frame(&ctx, key_event(key, false)).1);
+            assert!(ctx.memory(|m| m.has_focus(a)));
+        }
+
+        // Tab still moves focus to the next widget (B), then a settled
+        // frame so B's filter is set before arrows are pressed.
+        assert!(!frame(&ctx, key_event(egui::Key::Tab, true)).1);
+        assert!(
+            ctx.memory(|m| m.has_focus(b)),
+            "Tab must still move focus to the next widget"
+        );
+        assert!(!frame(&ctx, egui::RawInput::default()).1);
+        assert!(ctx.memory(|m| m.has_focus(b)));
+
+        // ArrowLeft / ArrowDown from B: neighbours A and D; focus stays.
+        for key in [egui::Key::ArrowLeft, egui::Key::ArrowDown] {
+            assert!(!frame(&ctx, key_event(key, true)).1);
+            assert!(
+                ctx.memory(|m| m.has_focus(b)),
+                "{key:?} keydown must not move focus"
+            );
+            assert!(!frame(&ctx, key_event(key, false)).1);
+            assert!(ctx.memory(|m| m.has_focus(b)));
+        }
+
+        // Space still fires on keyup after arrows: focus is genuinely held.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)).1);
+        assert!(frame(&ctx, key_event(egui::Key::Space, false)).1);
+        assert!(ctx.memory(|m| m.has_focus(b)));
     }
 
     #[test]
