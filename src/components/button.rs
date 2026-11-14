@@ -648,6 +648,82 @@ fn ring_shown(focused: bool, invalid: bool, nova: bool) -> bool {
     focused || (invalid && nova)
 }
 
+/// Space-keyup activation (spec §8, BTN-INT-04).
+///
+/// Native `<button>` fires on Space KEYUP; egui's `interact` reports a
+/// fake click whenever the focused widget sees `key_pressed(Space)`, so
+/// without intervention Space fires on keydown (and re-fires on every
+/// autorepeat). This helper, called before `interact` while the button
+/// holds focus, hides this frame's Space keydown events from `interact`,
+/// remembers that Space was pressed here ("armed"), and re-creates the
+/// keydown on the keyup frame so `interact` reports the click then.
+///
+/// Only the event list `interact` reads is touched: `keys_down` is
+/// computed in `begin_pass`, before widgets run, so `key_down(Space)` —
+/// and therefore the `:active`-while-held rendering — is unaffected.
+/// Enter events are never touched (Enter fires on keydown, per spec).
+/// The synthetic keydown on the keyup frame can only fake-click the
+/// focused widget, and copies the release event's physical key and
+/// modifiers. A Space released without a preceding keydown on this
+/// button (focus arrived mid-hold) does not fire; a stale armed flag
+/// is cleared on the first frame the button is shown with Space up.
+fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
+    let armed_id = id.with("space_armed");
+    let mut armed = ctx
+        .data_mut(|data| data.get_temp::<bool>(armed_id))
+        .unwrap_or(false);
+    ctx.input_mut(|input| {
+        let space_pressed = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+        let release = input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: false,
+                physical_key,
+                modifiers,
+                ..
+            } => Some((*physical_key, *modifiers)),
+            _ => None,
+        });
+        if space_pressed {
+            input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+            armed = true;
+        }
+        if let Some((physical_key, modifiers)) = release {
+            if armed {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Space,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            armed = false;
+        } else if !input.key_down(egui::Key::Space) {
+            armed = false;
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(armed_id, armed));
+}
+
 /// Shrinks every corner radius by 1px (saturating): the padding-box corners
 /// of a `bg-clip-padding` fill sit 1px inside the border-box corners.
 fn shrink_corner(corner: CornerRadius) -> CornerRadius {
@@ -939,6 +1015,13 @@ impl Button {
             let child = ui.new_child(egui::UiBuilder::new().disabled());
             child.interact(rect, id, Sense::click())
         } else {
+            // Space fires on keyup, not keydown (spec §8, BTN-INT-04):
+            // hide this frame's Space keydown from `interact` and
+            // re-create it on the keyup frame. Only while focused — an
+            // unfocused button must not consume another widget's Space.
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                space_keyup_fire(ui.ctx(), id);
+            }
             ui.interact(rect, id, Sense::click())
         };
 
@@ -2208,6 +2291,88 @@ mod tests {
             !ctx.memory(|m| m.has_focus(id)),
             "disabled buttons must never take focus on click"
         );
+    }
+
+    #[test]
+    fn space_fires_on_keyup_not_keydown() {
+        // BTN-INT-04: native `<button>` behaviour (spec §8) — Space shows
+        // `:active` while held and fires on keyup; Enter fires on keydown.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("button_space_keyup_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut clicked = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                clicked = Button::new("Space").show(ui).clicked();
+            });
+            out.textures_delta.clear();
+            clicked
+        };
+
+        // Frame 1: render, record id; then give the button keyboard focus.
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            id = Button::new("Space").show(ui).id;
+        });
+        out.textures_delta.clear();
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Space keydown: no fire. Repeat keydown (autorepeat): no fire.
+        // Hold frame with no events: no fire.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        // Space keyup: exactly one fire. The frame after: no fire.
+        assert!(frame(&ctx, key_event(egui::Key::Space, false)));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        // A second press/release cycle fires exactly once, on keyup.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
+        assert!(frame(&ctx, key_event(egui::Key::Space, false)));
+        // Enter still fires on keydown, and does not fire on keyup.
+        assert!(frame(&ctx, key_event(egui::Key::Enter, true)));
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, false)));
+        // Focus is retained after keyboard activation.
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // A disabled button never fires from Space, on either edge.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = Button::new("Off").disabled(true).show(ui);
+        });
+        out.textures_delta.clear();
+        let disabled_frame = |input: egui::RawInput| {
+            let mut clicked = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                clicked = Button::new("Off").disabled(true).show(ui).clicked();
+            });
+            out.textures_delta.clear();
+            clicked
+        };
+        assert!(!disabled_frame(key_event(egui::Key::Space, true)));
+        assert!(!disabled_frame(key_event(egui::Key::Space, false)));
     }
 
     #[test]
