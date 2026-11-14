@@ -19,6 +19,38 @@ pub mod tooltip_demo;
 
 use egui_shadcn_ui::prelude::*;
 
+/// Demo-local state for the button activation probe and live toggles.
+/// Held in egui temp data (the gallery's established demo-state pattern),
+/// so the stateless `button_demo` function can keep counters across frames.
+#[derive(Clone)]
+struct ButtonProbeState {
+    /// Firings classified as pointer clicks.
+    clicks: u32,
+    /// Firings on a frame where Enter was pressed (keydown fire).
+    enter_activations: u32,
+    /// Firings on a frame where Space was pressed or released.
+    space_activations: u32,
+    /// Human-readable path of the most recent firing.
+    last_activation: String,
+    /// Live state of the disabled-toggle target.
+    target_disabled: bool,
+    /// Live state of the expanded-toggle target.
+    target_expanded: bool,
+}
+
+impl Default for ButtonProbeState {
+    fn default() -> Self {
+        Self {
+            clicks: 0,
+            enter_activations: 0,
+            space_activations: 0,
+            last_activation: "none yet".to_owned(),
+            target_disabled: false,
+            target_expanded: false,
+        }
+    }
+}
+
 pub fn button_demo(ui: &mut egui::Ui) {
     ui.label("Variants");
     ui.add_space(4.0);
@@ -343,6 +375,69 @@ pub fn button_demo(ui: &mut egui::Ui) {
                 Button::new("Xs right").size(ButtonSize::Xs).show(ui);
             });
     });
+
+    ui.add_space(12.0);
+    ui.label("Activation probe (counters show which path fired the probe button; watch them while holding a key to see firing timing)");
+    ui.add_space(4.0);
+    let probe_store = egui::Id::unique("button_demo_probe");
+    let mut probe: ButtonProbeState = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(probe_store).unwrap_or_default());
+    // Snapshot this frame's activation events BEFORE showing the button, so
+    // classification sees the raw input for the frame the click fires on.
+    let (enter_pressed, space_pressed, space_released) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Space),
+            i.key_released(egui::Key::Space),
+        )
+    });
+    ui.horizontal(|ui| {
+        let response = Button::new("Probe button").show(ui);
+        if response.clicked() {
+            // Priority matches the only ways egui reports a click: a key
+            // press/release on the focused button, else a pointer release.
+            // Space is classified by WHICH event coincided with the firing
+            // frame, so a keydown fire and a keyup fire read differently.
+            if enter_pressed {
+                probe.enter_activations += 1;
+                probe.last_activation = "Enter (keydown)".to_owned();
+            } else if space_pressed {
+                probe.space_activations += 1;
+                probe.last_activation = "Space (keydown)".to_owned();
+            } else if space_released {
+                probe.space_activations += 1;
+                probe.last_activation = "Space (keyup)".to_owned();
+            } else {
+                probe.clicks += 1;
+                probe.last_activation = "Pointer click".to_owned();
+            }
+        }
+        ui.label(format!(
+            "clicks: {}  Enter: {}  Space: {}",
+            probe.clicks, probe.enter_activations, probe.space_activations
+        ));
+    });
+    ui.label(format!("Last activation: {}", probe.last_activation));
+
+    ui.add_space(12.0);
+    ui.label("Live toggles (flip a toggle while recording to drive the disabled / expanded transition; the expanded fill shows under nova)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut probe.target_disabled, "Disabled");
+        Button::new("Disabled target")
+            .disabled(probe.target_disabled)
+            .show(ui);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut probe.target_expanded, "Expanded");
+        Button::new("Expanded target")
+            .variant(ButtonVariant::Outline)
+            .expanded(probe.target_expanded)
+            .show(ui);
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(probe_store, probe));
 
     ui.add_space(12.0);
     ui.label("Keyboard: Tab to a button, press Enter or Space to activate. Disabled buttons are skipped. Space held shows the pressed shift (except has_popup triggers). Hover a link button to see its underline.");
