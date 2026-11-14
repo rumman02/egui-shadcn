@@ -1457,9 +1457,11 @@ pub(crate) fn handle_menu_keys(
 /// accumulate in a ~1 s buffer; the highlight moves to the first entry of
 /// the current level whose label starts with the buffer (searching after
 /// the current highlight, wrapping once). A focused text field elsewhere
-/// (`wants_keyboard_input`) suppresses the search.
+/// (`text_edit_focused`) suppresses the search — a plain
+/// `egui_wants_keyboard_input` check would swallow every keystroke whenever
+/// any widget (e.g. the trigger itself) holds focus.
 fn handle_menu_typeahead(ctx: &Context, entries: &[MenuEntry<'_>], state: &mut MenuState) {
-    if ctx.egui_wants_keyboard_input() {
+    if ctx.text_edit_focused() {
         return;
     }
     let mut chars: Vec<char> = Vec::new();
@@ -2634,6 +2636,33 @@ mod tests {
             h.state("ta2").highlight,
             vec![2],
             "typeahead starts after the current highlight"
+        );
+    }
+
+    #[test]
+    fn typeahead_works_when_trigger_holds_focus() {
+        // DM-TYPEAHEAD-01: the typeahead guard must suppress the search only
+        // when a TEXT FIELD holds focus. A non-text widget holding focus
+        // (here the trigger itself, focused via Tab) must not suppress it.
+        let mut h = Harness::new();
+        let _ = layout(&mut h, "ta_focus");
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open").id_salt("ta_focus").show(ui, |m| {
+                m.item(MenuItem::new("Alpha"));
+                m.item(MenuItem::new("Beta"));
+                m.item(MenuItem::new("Gamma"));
+            });
+        };
+        // Tab focuses the trigger; Enter opens the menu with it focused.
+        h.key(Key::Tab, show);
+        h.key(Key::Enter, show);
+        assert!(h.state("ta_focus").open);
+
+        h.text("b", show);
+        assert_eq!(
+            h.state("ta_focus").highlight,
+            vec![1],
+            "typing 'b' highlights Beta even with the trigger focused"
         );
     }
 

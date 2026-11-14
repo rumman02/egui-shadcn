@@ -19,6 +19,38 @@ pub mod tooltip_demo;
 
 use egui_shadcn_ui::prelude::*;
 
+/// Demo-local state for the button activation probe and live toggles.
+/// Held in egui temp data (the gallery's established demo-state pattern),
+/// so the stateless `button_demo` function can keep counters across frames.
+#[derive(Clone)]
+struct ButtonProbeState {
+    /// Firings classified as pointer clicks.
+    clicks: u32,
+    /// Firings on a frame where Enter was pressed (keydown fire).
+    enter_activations: u32,
+    /// Firings on a frame where Space was pressed or released.
+    space_activations: u32,
+    /// Human-readable path of the most recent firing.
+    last_activation: String,
+    /// Live state of the disabled-toggle target.
+    target_disabled: bool,
+    /// Live state of the expanded-toggle target.
+    target_expanded: bool,
+}
+
+impl Default for ButtonProbeState {
+    fn default() -> Self {
+        Self {
+            clicks: 0,
+            enter_activations: 0,
+            space_activations: 0,
+            last_activation: "none yet".to_owned(),
+            target_disabled: false,
+            target_expanded: false,
+        }
+    }
+}
+
 pub fn button_demo(ui: &mut egui::Ui) {
     ui.label("Variants");
     ui.add_space(4.0);
@@ -48,6 +80,55 @@ pub fn button_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("All variants × all sizes");
+    ui.add_space(4.0);
+    egui::Grid::new("button_demo_matrix")
+        .spacing([8.0, 8.0])
+        .show(ui, |ui| {
+            ui.label("");
+            ui.small("Xs");
+            ui.small("Sm");
+            ui.small("Default");
+            ui.small("Lg");
+            ui.small("Icon-xs");
+            ui.small("Icon-sm");
+            ui.small("Icon");
+            ui.small("Icon-lg");
+            ui.end_row();
+            for (variant, name) in [
+                (ButtonVariant::Default, "Default"),
+                (ButtonVariant::Destructive, "Destructive"),
+                (ButtonVariant::Outline, "Outline"),
+                (ButtonVariant::Secondary, "Secondary"),
+                (ButtonVariant::Ghost, "Ghost"),
+                (ButtonVariant::Link, "Link"),
+            ] {
+                ui.label(name);
+                for size in [
+                    ButtonSize::Xs,
+                    ButtonSize::Sm,
+                    ButtonSize::Default,
+                    ButtonSize::Lg,
+                ] {
+                    Button::new("Button").variant(variant).size(size).show(ui);
+                }
+                for size in [
+                    ButtonSize::IconXs,
+                    ButtonSize::IconSm,
+                    ButtonSize::Icon,
+                    ButtonSize::IconLg,
+                ] {
+                    Button::new("")
+                        .variant(variant)
+                        .size(size)
+                        .icon_start(Icon::Plus)
+                        .show(ui);
+                }
+                ui.end_row();
+            }
+        });
+
+    ui.add_space(12.0);
     ui.label("With icons");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -57,6 +138,59 @@ pub fn button_demo(ui: &mut egui::Ui) {
         Button::new("Loading")
             .icon_start(Icon::LoaderCircle)
             .disabled(true)
+            .show(ui);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        Button::new("Both sides")
+            .icon_start(Icon::Plus)
+            .icon_end(Icon::ArrowRight)
+            .show(ui);
+        Button::new("")
+            .icon_start(Icon::ChevronLeft)
+            .icon_end(Icon::ChevronRight)
+            .show(ui);
+        Button::new("Send")
+            .icon_start(Icon::Send)
+            .icon_end(Icon::Check)
+            .show(ui);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        Button::new("Two icons")
+            .size(ButtonSize::Xs)
+            .icon_start(Icon::Plus)
+            .icon_end(Icon::ArrowRight)
+            .show(ui);
+        Button::new("Two icons")
+            .size(ButtonSize::Sm)
+            .icon_start(Icon::Plus)
+            .icon_end(Icon::ArrowRight)
+            .show(ui);
+        Button::new("Two icons")
+            .size(ButtonSize::Lg)
+            .icon_start(Icon::Plus)
+            .icon_end(Icon::ArrowRight)
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Explicit icon sizes (explicit size wins over the size default)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Button::new("Large icon")
+            .icon_start_sized(Icon::Search, 20.0)
+            .show(ui);
+        Button::new("Small icon")
+            .icon_end_sized(Icon::ArrowRight, 12.0)
+            .show(ui);
+        Button::new("Both sized")
+            .icon_start_sized(Icon::Plus, 20.0)
+            .icon_end_sized(Icon::Check, 12.0)
+            .show(ui);
+        Button::new("")
+            .size(ButtonSize::Icon)
+            .icon_start_sized(Icon::Search, 24.0)
             .show(ui);
     });
 
@@ -93,7 +227,26 @@ pub fn button_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("States");
+    ui.label("Icon-only with text sizes (icon + padding, no label)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Button::new("")
+            .size(ButtonSize::Xs)
+            .icon_start(Icon::Plus)
+            .show(ui);
+        Button::new("")
+            .size(ButtonSize::Sm)
+            .icon_start(Icon::Plus)
+            .show(ui);
+        Button::new("").icon_start(Icon::Plus).show(ui);
+        Button::new("")
+            .size(ButtonSize::Lg)
+            .icon_start(Icon::Plus)
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled (all variants, 50% opacity, no hover / focus / press)");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         Button::new("Disabled").disabled(true).show(ui);
@@ -105,14 +258,189 @@ pub fn button_demo(ui: &mut egui::Ui) {
             .variant(ButtonVariant::Secondary)
             .disabled(true)
             .show(ui);
+        Button::new("Disabled destructive")
+            .variant(ButtonVariant::Destructive)
+            .disabled(true)
+            .show(ui);
+        Button::new("Disabled ghost")
+            .variant(ButtonVariant::Ghost)
+            .disabled(true)
+            .show(ui);
+        Button::new("Disabled link")
+            .variant(ButtonVariant::Link)
+            .disabled(true)
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Invalid, and disabled + invalid (both apply)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
         Button::new("Invalid")
             .variant(ButtonVariant::Outline)
+            .invalid(true)
+            .show(ui);
+        Button::new("Invalid default").invalid(true).show(ui);
+        Button::new("Invalid ghost")
+            .variant(ButtonVariant::Ghost)
+            .invalid(true)
+            .show(ui);
+        Button::new("Disabled + invalid")
+            .variant(ButtonVariant::Outline)
+            .disabled(true)
+            .invalid(true)
+            .show(ui);
+        Button::new("Disabled + invalid")
+            .disabled(true)
             .invalid(true)
             .show(ui);
     });
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab to a button, press Enter or Space to activate.");
+    ui.label("Expanded (nova aria-expanded fills: outline / secondary / ghost)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Button::new("Expanded outline")
+            .variant(ButtonVariant::Outline)
+            .expanded(true)
+            .show(ui);
+        Button::new("Expanded secondary")
+            .variant(ButtonVariant::Secondary)
+            .expanded(true)
+            .show(ui);
+        Button::new("Expanded ghost")
+            .variant(ButtonVariant::Ghost)
+            .expanded(true)
+            .show(ui);
+        Button::new("Expanded default").expanded(true).show(ui);
+        Button::new("Expanded destructive")
+            .variant(ButtonVariant::Destructive)
+            .expanded(true)
+            .show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Popup triggers (has_popup: pressing shows no 1px shift)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Button::new("Popup trigger").has_popup(true).show(ui);
+        Button::new("Menu trigger")
+            .variant(ButtonVariant::Outline)
+            .has_popup(true)
+            .show(ui);
+        Button::new("Plain trigger (shifts on press)").show(ui);
+    });
+
+    ui.add_space(12.0);
+    ui.label("Long text (never wraps, grows to fit) and link long text");
+    ui.add_space(4.0);
+    Button::new("This is a very long button label that must not wrap or clip").show(ui);
+    ui.add_space(8.0);
+    Button::new("A very long link button label, underline spans the full width on hover")
+        .variant(ButtonVariant::Link)
+        .show(ui);
+
+    ui.add_space(12.0);
+    ui.label("Empty label (padding only, no text, no icon)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Button::new("").show(ui);
+        ui.label("← empty-label button (20px wide under nova)");
+    });
+
+    ui.add_space(12.0);
+    ui.label("Inside a button group (fused corners; Tab to a member for the ring)");
+    ui.add_space(4.0);
+    ButtonGroup::new()
+        .id_salt("button_demo_group")
+        .show(ui, |ui| {
+            Button::new("Day").variant(ButtonVariant::Outline).show(ui);
+            Button::new("Month")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+            Button::new("Year").variant(ButtonVariant::Outline).show(ui);
+        });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ButtonGroup::new()
+            .id_salt("button_demo_group_sm")
+            .show(ui, |ui| {
+                Button::new("Sm left").size(ButtonSize::Sm).show(ui);
+                Button::new("Sm right").size(ButtonSize::Sm).show(ui);
+            });
+        ButtonGroup::new()
+            .id_salt("button_demo_group_xs")
+            .show(ui, |ui| {
+                Button::new("Xs left").size(ButtonSize::Xs).show(ui);
+                Button::new("Xs right").size(ButtonSize::Xs).show(ui);
+            });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Activation probe (counters show which path fired the probe button; watch them while holding a key to see firing timing)");
+    ui.add_space(4.0);
+    let probe_store = egui::Id::unique("button_demo_probe");
+    let mut probe: ButtonProbeState = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(probe_store).unwrap_or_default());
+    // Snapshot this frame's activation events BEFORE showing the button, so
+    // classification sees the raw input for the frame the click fires on.
+    let (enter_pressed, space_pressed, space_released) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Space),
+            i.key_released(egui::Key::Space),
+        )
+    });
+    ui.horizontal(|ui| {
+        let response = Button::new("Probe button").show(ui);
+        if response.clicked() {
+            // Priority matches the only ways egui reports a click: a key
+            // press/release on the focused button, else a pointer release.
+            // Space is classified by WHICH event coincided with the firing
+            // frame, so a keydown fire and a keyup fire read differently.
+            if enter_pressed {
+                probe.enter_activations += 1;
+                probe.last_activation = "Enter (keydown)".to_owned();
+            } else if space_pressed {
+                probe.space_activations += 1;
+                probe.last_activation = "Space (keydown)".to_owned();
+            } else if space_released {
+                probe.space_activations += 1;
+                probe.last_activation = "Space (keyup)".to_owned();
+            } else {
+                probe.clicks += 1;
+                probe.last_activation = "Pointer click".to_owned();
+            }
+        }
+        ui.label(format!(
+            "clicks: {}  Enter: {}  Space: {}",
+            probe.clicks, probe.enter_activations, probe.space_activations
+        ));
+    });
+    ui.label(format!("Last activation: {}", probe.last_activation));
+
+    ui.add_space(12.0);
+    ui.label("Live toggles (flip a toggle while recording to drive the disabled / expanded transition; the expanded fill shows under nova)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut probe.target_disabled, "Disabled");
+        Button::new("Disabled target")
+            .disabled(probe.target_disabled)
+            .show(ui);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut probe.target_expanded, "Expanded");
+        Button::new("Expanded target")
+            .variant(ButtonVariant::Outline)
+            .expanded(probe.target_expanded)
+            .show(ui);
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(probe_store, probe));
+
+    ui.add_space(12.0);
+    ui.label("Keyboard: Tab to a button, press Enter or Space to activate. Disabled buttons are skipped. Space held shows the pressed shift (except has_popup triggers). Hover a link button to see its underline.");
 }
 
 pub fn badge_demo(ui: &mut egui::Ui) {
