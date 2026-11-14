@@ -568,6 +568,41 @@ pub(crate) fn mix_colors(a: Colors, b: Colors, t: f32) -> Colors {
     }
 }
 
+/// Wraps one resolved endpoint set's fill/foreground in the endpoint-change
+/// animator ([`transition_color_to`]), for `transition-all` over theme/style
+/// switches (spec §7 scope note, BTN-FLK-01).
+///
+/// Only fill and foreground are wrapped: the stroke field is discarded by
+/// the border computation below (which wraps its own rest/focus endpoints),
+/// and the ring field feeds the ring target (wrapped once, below) — wrapping
+/// either here too would run two legs on the same colour. Callers pass a
+/// distinct sub-`id` per endpoint set; the helper takes `fill`/`fg` sub-ids
+/// under it.
+///
+/// The legs run on the resolved endpoints — whose targets never cross the
+/// transparent boundary between themes (opaque in both, transparent in
+/// both, or translucent-but-defined in both; pinned by the test
+/// `endpoint_slots_never_cross_the_transparent_boundary`) — so the helper's
+/// documented caveat holds, and state mixing below blends leg values with
+/// the boundary-safe [`mix_color`]. Wrapping the final mixed colour instead
+/// (the original FLK-01 shape) ran OKLab legs across the boundary on every
+/// state fade: a ghost hover leg from a transparent `from` dips through
+/// black (BTN-FLK-02).
+fn theme_animate_endpoint(
+    ctx: &egui::Context,
+    id: egui::Id,
+    c: Colors,
+    spec: TransitionSpec,
+) -> Colors {
+    Colors {
+        fill: transition_color_to(ctx, id.with("fill"), c.fill, spec).color,
+        fg: transition_color_to(ctx, id.with("fg"), c.fg, spec).color,
+        stroke: c.stroke,
+        ring: c.ring,
+        underline: c.underline,
+    }
+}
+
 /// Fades every channel of a resolved color set by `opacity`
 /// (`disabled:opacity-50` composites the whole element, spec §5.5).
 pub(crate) fn fade_colors(c: Colors, opacity: f32) -> Colors {
@@ -1085,10 +1120,36 @@ impl Button {
             let t_spec = TransitionSpec::default();
             let t_hover = transition_progress(ctx, id.with("hover"), hovered, t_spec).t;
             let t_expanded = transition_progress(ctx, id.with("expanded"), self.expanded, t_spec).t;
-            let rest = resolve_colors(self.variant, &p, dark, false, false, style);
-            let hov = resolve_colors(self.variant, &p, dark, true, false, style);
-            let exp = resolve_colors(self.variant, &p, dark, false, true, style);
-            let hov_exp = resolve_colors(self.variant, &p, dark, true, true, style);
+            // Endpoint-change animation (BTN-FLK-01, repaired BTN-FLK-02):
+            // theme/style switches re-resolve the endpoint colours, so the
+            // legs run on the endpoints (see `theme_animate_endpoint`) and
+            // state mixing below blends leg values with the boundary-safe
+            // `mix_color`. Hover/expanded fades therefore keep their
+            // pre-FLK-01 shape — no OKLab leg ever chases a state fade.
+            let rest = theme_animate_endpoint(
+                ctx,
+                id.with("ep_rest"),
+                resolve_colors(self.variant, &p, dark, false, false, style),
+                t_spec,
+            );
+            let hov = theme_animate_endpoint(
+                ctx,
+                id.with("ep_hov"),
+                resolve_colors(self.variant, &p, dark, true, false, style),
+                t_spec,
+            );
+            let exp = theme_animate_endpoint(
+                ctx,
+                id.with("ep_exp"),
+                resolve_colors(self.variant, &p, dark, false, true, style),
+                t_spec,
+            );
+            let hov_exp = theme_animate_endpoint(
+                ctx,
+                id.with("ep_hov_exp"),
+                resolve_colors(self.variant, &p, dark, true, true, style),
+                t_spec,
+            );
             let mut c = mix_colors(
                 mix_colors(rest, hov, t_hover),
                 mix_colors(exp, hov_exp, t_hover),
@@ -1111,6 +1172,14 @@ impl Button {
             } else {
                 c.ring
             };
+            // Endpoint-change animation for the ring target (BTN-FLK-01/02):
+            // wrap the TARGET, before the alpha ramp below. The target only
+            // changes on theme/style switches (the mixed ring colour is
+            // hover/expanded independent), so the leg runs only then, and
+            // the focus fade stays a pure alpha ramp instead of chasing
+            // through OKLab from transparent.
+            let ring_target =
+                transition_color_to(ctx, id.with("theme_ring_target"), ring_target, t_spec).color;
             let ring_alpha = transition_alpha(
                 ctx,
                 id.with("ring"),
@@ -1123,41 +1192,37 @@ impl Button {
             let ring_color = color_alpha(ring_target, ring_alpha * opacity);
 
             // Border color transitions between the resting stroke and the
-            // focus/invalid stroke (widths never differ between the two).
+            // focus/invalid stroke (widths never differ between the two:
+            // `stroke_for` only recolors across focus/invalid). Both
+            // endpoints are wrapped in the endpoint-change animator so a
+            // theme switch animates the border in either state; the
+            // endpoints are focus-independent values (the focus endpoint is
+            // the colour the border WOULD have when focused, with the same
+            // invalid-wins precedence), so the legs run only on theme/style
+            // changes and the `t_border` mix below — boundary-safe
+            // `mix_color` — owns the focus fade. Wrapping the
+            // focus-dependent target instead would leg the border from
+            // transparent on every focus change (BTN-FLK-02's mechanism).
             let rest_stroke = stroke_for(self.variant, &p, dark, style, false, false);
-            let target_stroke = stroke_for(self.variant, &p, dark, style, focused, self.invalid);
+            let focus_stroke = stroke_for(self.variant, &p, dark, style, true, self.invalid);
+            let rest_stroke_color =
+                transition_color_to(ctx, id.with("theme_border_rest"), rest_stroke.color, t_spec)
+                    .color;
+            let focus_stroke_color = transition_color_to(
+                ctx,
+                id.with("theme_border_focus"),
+                focus_stroke.color,
+                t_spec,
+            )
+            .color;
             let t_border =
                 transition_progress(ctx, id.with("border"), focused || self.invalid, t_spec).t;
             c.stroke = Stroke::new(
-                target_stroke.width,
-                mix_color(rest_stroke.color, target_stroke.color, t_border),
+                focus_stroke.width,
+                mix_color(rest_stroke_color, focus_stroke_color, t_border),
             );
             // `disabled:opacity-50` — fade everything against the backdrop.
             c = fade_colors(c, opacity);
-
-            // `transition-all` over endpoint changes (spec §7 scope note,
-            // BTN-FLK-01): a theme switch re-resolves every colour while
-            // hover/focus/press stay settled, so the boolean drives above
-            // never re-run and the button would snap. Wrap the final
-            // painted colours — after state mixing and the disabled fade,
-            // so settled frames stay pixel-identical — in the
-            // endpoint-change animator, one stable sub-id per slot, same
-            // 150ms spec as the state drives. Shadow layers are excluded:
-            // they stay cache-keyed. Slots whose target never crosses the
-            // transparent boundary on a theme switch (opaque fills stay
-            // opaque, ghost/link fills stay transparent, the nova
-            // transparent border stays transparent, ring colours carry
-            // alpha in both themes) satisfy the helper's documented
-            // caveat; state-driven alpha ramps (hover/focus fades) chase
-            // through the same legs and still land exactly.
-            c.fill = transition_color_to(ctx, id.with("theme_fill"), c.fill, t_spec).color;
-            c.fg = transition_color_to(ctx, id.with("theme_fg"), c.fg, t_spec).color;
-            c.stroke = Stroke::new(
-                c.stroke.width,
-                transition_color_to(ctx, id.with("theme_stroke"), c.stroke.color, t_spec).color,
-            );
-            let ring_color =
-                transition_color_to(ctx, id.with("theme_ring"), ring_color, t_spec).color;
 
             // `active:translate-y-px` (nova): the whole button — shadow,
             // body, ring — shifts 1px down while pressed, animated over the
@@ -2209,6 +2274,67 @@ mod tests {
         assert_eq!(hi.fill, b.fill);
         assert_eq!(hi.fg, b.fg);
         assert_eq!(hi.stroke.width, a.stroke.width);
+    }
+
+    #[test]
+    fn endpoint_slots_never_cross_the_transparent_boundary() {
+        // BTN-FLK-02: every slot wrapped in `transition_color_to` must
+        // satisfy the helper's documented caveat — its target never crosses
+        // the transparent boundary between themes. A slot transparent in
+        // one theme and opaque in the other would dip through black in the
+        // OKLab leg. Checks every wrapped slot across both styles: the
+        // endpoint-set fill/fg (all four state combinations), both border
+        // endpoints (rest + focus, valid + invalid), and the ring target
+        // (valid mixed ring + invalid destructive target).
+        fn compatible(a: Color32, b: Color32) -> bool {
+            (a.a() == 0) == (b.a() == 0)
+        }
+        let light = palette(Mode::Light);
+        let dark = palette(Mode::Dark);
+        let variants = [
+            ButtonVariant::Default,
+            ButtonVariant::Destructive,
+            ButtonVariant::Outline,
+            ButtonVariant::Secondary,
+            ButtonVariant::Ghost,
+            ButtonVariant::Link,
+        ];
+        for style in [Style::Nova, BASE_STYLE] {
+            for variant in variants {
+                for (hovered, expanded) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let a = resolve_colors(variant, &light, false, hovered, expanded, style);
+                    let b = resolve_colors(variant, &dark, true, hovered, expanded, style);
+                    assert!(
+                        compatible(a.fill, b.fill),
+                        "{variant:?}/{style:?} hovered={hovered} expanded={expanded}: fill crosses the boundary (light={a:?}, dark={b:?})"
+                    );
+                    assert!(
+                        compatible(a.fg, b.fg),
+                        "{variant:?}/{style:?} hovered={hovered} expanded={expanded}: fg crosses the boundary (light={a:?}, dark={b:?})"
+                    );
+                    assert!(
+                        compatible(a.ring, b.ring),
+                        "{variant:?}/{style:?} hovered={hovered} expanded={expanded}: ring crosses the boundary (light={a:?}, dark={b:?})"
+                    );
+                }
+                for (focused, invalid) in [(false, false), (true, false), (true, true)] {
+                    let a = stroke_for(variant, &light, false, style, focused, invalid);
+                    let b = stroke_for(variant, &dark, true, style, focused, invalid);
+                    assert!(
+                        compatible(a.color, b.color),
+                        "{variant:?}/{style:?} focused={focused} invalid={invalid}: border crosses the boundary (light={a:?}, dark={b:?})"
+                    );
+                }
+                let inv_ring_light = color_alpha(light.destructive, 0.2);
+                let inv_ring_dark = color_alpha(dark.destructive, 0.4);
+                assert!(
+                    compatible(inv_ring_light, inv_ring_dark),
+                    "{variant:?}/{style:?}: invalid ring target crosses the boundary"
+                );
+            }
+        }
     }
 
     #[test]
