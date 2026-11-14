@@ -942,6 +942,18 @@ impl Button {
             ui.interact(rect, id, Sense::click())
         };
 
+        // Native `<button>` behaviour (spec §8): a clicked button holds
+        // keyboard focus afterwards, so Space/Enter then activate it.
+        // egui's `interact` does not move focus on pointer press, so request
+        // it explicitly on click — the pattern `DragValue`/`TextEdit` use.
+        // The ring then shows per deviation D3 (any focus, regardless of how
+        // it arrived). Requesting before painting lets `has_focus()` below
+        // see the focus on the click frame itself. Disabled buttons never
+        // take focus.
+        if !self.disabled && response.clicked() {
+            response.request_focus();
+        }
+
         if ui.is_rect_visible(rect) {
             let radius = metrics::radius(size, style, &theme.radius, in_group);
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
@@ -2109,6 +2121,93 @@ mod tests {
             assert_ne!(enabled.id, disabled.id);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn click_moves_keyboard_focus_to_the_button() {
+        // BTN-INT-01: native `<button>` behaviour (spec §8) — a clicked button
+        // holds keyboard focus afterwards. Disabled buttons never take focus.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("button_click_focus_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let click_event = |pos: Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+
+        // Frame 1: render, record rect + id; nothing focused yet.
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Button::new("Click").show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+
+        // Frames 2-3: press + release on the button = a click.
+        let center = rect.center();
+        let mut out = ctx.run_ui(click_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = Button::new("Click").show(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = false;
+        let mut out = ctx.run_ui(click_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = Button::new("Click").show(ui).clicked();
+        });
+        out.textures_delta.clear();
+        assert!(clicked, "press + release must register a click");
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "click must move keyboard focus to the button"
+        );
+
+        // A disabled button takes no focus when clicked: fresh context so no
+        // stale focus state leaks in.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Button::new("Off").disabled(true).show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        let center = rect.center();
+        let mut out = ctx.run_ui(click_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = Button::new("Off").disabled(true).show(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = false;
+        let mut out = ctx.run_ui(click_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = Button::new("Off").disabled(true).show(ui).clicked();
+        });
+        out.textures_delta.clear();
+        assert!(!clicked, "disabled buttons never report clicks");
+        assert!(
+            !ctx.memory(|m| m.has_focus(id)),
+            "disabled buttons must never take focus on click"
+        );
     }
 
     #[test]
