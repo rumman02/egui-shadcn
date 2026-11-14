@@ -46,7 +46,9 @@
 
 use crate::icons::Icon;
 use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
-use crate::utils::animation::{mix_oklab, transition_alpha, transition_progress, TransitionSpec};
+use crate::utils::animation::{
+    mix_oklab, transition_alpha, transition_color_to, transition_progress, TransitionSpec,
+};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
@@ -1132,6 +1134,30 @@ impl Button {
             );
             // `disabled:opacity-50` — fade everything against the backdrop.
             c = fade_colors(c, opacity);
+
+            // `transition-all` over endpoint changes (spec §7 scope note,
+            // BTN-FLK-01): a theme switch re-resolves every colour while
+            // hover/focus/press stay settled, so the boolean drives above
+            // never re-run and the button would snap. Wrap the final
+            // painted colours — after state mixing and the disabled fade,
+            // so settled frames stay pixel-identical — in the
+            // endpoint-change animator, one stable sub-id per slot, same
+            // 150ms spec as the state drives. Shadow layers are excluded:
+            // they stay cache-keyed. Slots whose target never crosses the
+            // transparent boundary on a theme switch (opaque fills stay
+            // opaque, ghost/link fills stay transparent, the nova
+            // transparent border stays transparent, ring colours carry
+            // alpha in both themes) satisfy the helper's documented
+            // caveat; state-driven alpha ramps (hover/focus fades) chase
+            // through the same legs and still land exactly.
+            c.fill = transition_color_to(ctx, id.with("theme_fill"), c.fill, t_spec).color;
+            c.fg = transition_color_to(ctx, id.with("theme_fg"), c.fg, t_spec).color;
+            c.stroke = Stroke::new(
+                c.stroke.width,
+                transition_color_to(ctx, id.with("theme_stroke"), c.stroke.color, t_spec).color,
+            );
+            let ring_color =
+                transition_color_to(ctx, id.with("theme_ring"), ring_color, t_spec).color;
 
             // `active:translate-y-px` (nova): the whole button — shadow,
             // body, ring — shifts 1px down while pressed, animated over the
