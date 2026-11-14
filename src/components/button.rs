@@ -535,7 +535,13 @@ pub(crate) fn resolve_colors(
 /// Opaque endpoints mix in OKLab; an endpoint with zero alpha fades by
 /// ramping the other endpoint's alpha at a constant hue, because mixing
 /// toward transparent in OKLab dips through black (a fully transparent
-/// endpoint has no defined hue).
+/// endpoint has no defined hue). An endpoint with partial alpha mixes in
+/// premultiplied sRGB space instead: unmultiplied OKLab would sweep the
+/// endpoint's full lightness while alpha rises, so a translucent white
+/// fading toward an opaque dark colour bulges brighter than both
+/// endpoints when composited (BTN-FLK-03). Lerping the stored
+/// premultiplied channels keeps the composited value linear in `t`, hence
+/// monotonic and within the endpoint range for any backdrop.
 pub(crate) fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     if t == 0.0 {
@@ -549,6 +555,18 @@ pub(crate) fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
     }
     if b.a() == 0 {
         return color_alpha(a, 1.0 - t);
+    }
+    if a.a() < 255 || b.a() < 255 {
+        // Premultiplied lerp: egui stores premultiplied sRGBA, so the
+        // stored channels and alpha lerp together and the composited
+        // result is exactly linear in `t`.
+        let lerp = |x: u8, y: u8| -> u8 { ((x as f32 + (y as f32 - x as f32) * t) + 0.5) as u8 };
+        return Color32::from_rgba_premultiplied(
+            lerp(a.r(), b.r()),
+            lerp(a.g(), b.g()),
+            lerp(a.b(), b.b()),
+            lerp(a.a(), b.a()),
+        );
     }
     mix_oklab(a, b, t)
 }
@@ -2260,6 +2278,90 @@ mod tests {
         // Opaque endpoints mix in OKLab with exact endpoints.
         assert_eq!(mix_color(accent, Color32::BLACK, 0.0), accent);
         assert_eq!(mix_color(accent, Color32::BLACK, 1.0), Color32::BLACK);
+    }
+
+    #[test]
+    fn mix_color_never_overshoots_with_translucent_endpoints() {
+        // BTN-FLK-03: the dark outline expanded fade mixes translucent
+        // white (`input/30`, white at ~4.5% alpha) toward opaque muted.
+        // In unmultiplied OKLab the composited value bulged to ~77,
+        // brighter than both endpoints (20/38). The premultiplied mix
+        // keeps every composited channel within the endpoint range and
+        // monotonic in `t` (up to ±1 rounding noise), in both directions.
+        fn assert_no_overshoot(a: Color32, b: Color32, backdrop: Color32) {
+            let lo = blend(backdrop, a);
+            let hi = blend(backdrop, b);
+            let channels = |c: Color32| [c.r(), c.g(), c.b()];
+            let mut prev: Option<[u8; 3]> = None;
+            for i in 0..=20 {
+                let t = i as f32 / 20.0;
+                let mid = channels(blend(backdrop, mix_color(a, b, t)));
+                let (l, h) = (channels(lo), channels(hi));
+                for ch in 0..3 {
+                    let (mn, mx) = (l[ch].min(h[ch]), l[ch].max(h[ch]));
+                    assert!(
+                        mid[ch].saturating_add(1) >= mn && mid[ch] <= mx.saturating_add(1),
+                        "overshoot at t={t}: channel {ch} value {} outside [{mn}, {mx}]",
+                        mid[ch]
+                    );
+                    if let Some(p) = prev {
+                        if h[ch] >= l[ch] {
+                            assert!(mid[ch].saturating_add(1) >= p[ch], "non-monotonic at t={t}");
+                        } else {
+                            assert!(mid[ch] <= p[ch].saturating_add(1), "non-monotonic at t={t}");
+                        }
+                    }
+                }
+                prev = Some(mid);
+            }
+        }
+        let dark = palette(Mode::Dark);
+        let rest = resolve_colors(
+            ButtonVariant::Outline,
+            &dark,
+            true,
+            false,
+            false,
+            Style::Nova,
+        );
+        let exp = resolve_colors(
+            ButtonVariant::Outline,
+            &dark,
+            true,
+            false,
+            true,
+            Style::Nova,
+        );
+        assert!(rest.fill.a() > 0 && rest.fill.a() < 255);
+        assert_eq!(exp.fill.a(), 255);
+        assert_no_overshoot(rest.fill, exp.fill, dark.background);
+        assert_no_overshoot(exp.fill, rest.fill, dark.background);
+        // A second translucent pair (opaque primary toward primary/80):
+        // same guarantee, both directions.
+        let d_rest = resolve_colors(
+            ButtonVariant::Default,
+            &dark,
+            true,
+            false,
+            false,
+            Style::Nova,
+        );
+        let d_hov = resolve_colors(
+            ButtonVariant::Default,
+            &dark,
+            true,
+            true,
+            false,
+            Style::Nova,
+        );
+        assert_no_overshoot(d_rest.fill, d_hov.fill, dark.background);
+        assert_no_overshoot(d_hov.fill, d_rest.fill, dark.background);
+        // Opaque pairs still mix in OKLab (perceptual midpoint, not the
+        // premultiplied-sRGB midpoint).
+        assert_eq!(
+            mix_color(Color32::BLACK, Color32::WHITE, 0.5),
+            mix_oklab(Color32::BLACK, Color32::WHITE, 0.5)
+        );
     }
 
     #[test]
