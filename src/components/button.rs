@@ -20,6 +20,14 @@
 //! through the shared transition system (`transition-all`, 150ms with the
 //! Tailwind default easing, frozen spec §7): fills, text, borders and the
 //! focus ring fade, and the nova pressed shift animates instead of snapping.
+//!
+//! Keyboard behaviour follows the native `<button>` (frozen spec §8):
+//! clicking a button moves focus to it, Enter activates on keydown, Space
+//! activates on keyup while showing the pressed state, and Escape and
+//! arrow keys are no-ops. The focus ring shows whenever the button holds
+//! focus (deviation D3: egui cannot reproduce the browser's
+//! `:focus-visible` heuristic). See [`Button::show`] for the full
+//! interaction contract.
 //! Popup triggers should set `.has_popup(true)` (suppresses the pressed
 //! shift, the `haspopup` exclusion) and `.expanded(true)` while open (the
 //! nova `aria-expanded` fills). Icons accept an explicit size via the
@@ -57,6 +65,11 @@ use egui::{
 };
 
 /// Visual style variants, mirroring the source `buttonVariants`.
+///
+/// The class strings quoted on each variant are the base recipe; the nova
+/// style (the default) overrides several fills and hovers — tinted
+/// destructive, `hover:bg-primary/80`, muted outline/ghost hovers — as
+/// described in the [module docs](self).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ButtonVariant {
     /// `bg-primary text-primary-foreground hover:bg-primary/90`
@@ -75,6 +88,11 @@ pub enum ButtonVariant {
 }
 
 /// Size presets, mirroring the source `buttonVariants.size`.
+///
+/// The quoted class strings are the base recipe; the nova style overrides
+/// heights, paddings, gaps, text and icon sizes at render time (frozen
+/// spec §3). Use [`Button::content_size`] for the size a button actually
+/// renders at under the active theme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ButtonSize {
     /// `h-9 px-4 py-2 gap-2` (36px tall).
@@ -96,8 +114,15 @@ pub enum ButtonSize {
     IconLg,
 }
 
+/// Base-recipe size metrics.
+///
+/// These methods return the base-recipe (`buttonVariants`) values; the
+/// nova style overrides them at render time (see the [`ButtonSize`] docs).
+/// For the rendered size under the active theme, use
+/// [`Button::content_size`].
 impl ButtonSize {
-    /// Outer height in points (`h-9` etc.; for icon sizes the square side).
+    /// Outer height in points for the base recipe (`h-9` etc.; for icon
+    /// sizes the square side). The nova style renders different heights.
     pub fn height(self) -> f32 {
         match self {
             ButtonSize::Default | ButtonSize::Icon => crate::theme::tokens::spacing::CONTROL,
@@ -359,9 +384,9 @@ pub(crate) struct Colors {
 /// hovers, ...), plus the nova `aria-expanded:*` fills for
 /// outline/secondary/ghost (frozen spec §5.7; the base recipe declares no
 /// expanded rule). When a button is both hovered and expanded, the hover
-/// fill wins: the cascade precedence is spec OPEN item O6, to be settled by
-/// the S5 reference captures, and the choice is recorded here so the
-/// comparator knows what to check.
+/// fill wins: the cascade precedence is spec OPEN item O6b, still
+/// unresolved after S5/S10 with hover-wins standing, and the choice is
+/// recorded here.
 pub(crate) fn resolve_colors(
     variant: ButtonVariant,
     p: &Palette,
@@ -641,7 +666,8 @@ pub(crate) fn fade_colors(c: Colors, opacity: f32) -> Colors {
 /// base recipe non-outline variants have no border at all. Focus recolors
 /// the border to `ring` (nova destructive: `destructive/40`); invalid
 /// recolors it to `destructive` (nova dark: `destructive/50`). Invalid wins
-/// over focus when both apply (spec §5.4; cascade precedence is OPEN O6).
+/// over focus when both apply (spec §5.4; spec OPEN item O6a, closed
+/// conformant by S5).
 pub(crate) fn stroke_for(
     variant: ButtonVariant,
     p: &Palette,
@@ -934,7 +960,10 @@ impl Button {
     }
 
     /// Marks the button aria-invalid (`aria-invalid:border-destructive
-    /// aria-invalid:ring-destructive/20`).
+    /// aria-invalid:ring-destructive/20`). Under the nova style the
+    /// invalid ring shows at rest as well as on focus (frozen spec §5.6);
+    /// under other styles it shows on focus only. When a button is both
+    /// invalid and focused, the invalid ring wins over the focus ring.
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
         self
@@ -956,8 +985,11 @@ impl Button {
         self
     }
 
-    /// Sets a stable id salt (Button keeps no state, but a stable id helps
-    /// focus order and tooling).
+    /// Sets a stable id salt. The button keys its per-widget animation and
+    /// keyboard state (transition legs, the Space keyup arm, the
+    /// focus-lock filter) to its widget id, so a stable id keeps
+    /// transitions continuous when the button moves in the layout; it also
+    /// helps focus order and tooling.
     pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
         self.id_salt = Some(salt.into());
         self
@@ -1034,7 +1066,26 @@ impl Button {
         )
     }
 
-    /// Renders the button.
+    /// Renders the button and returns its [`Response`].
+    ///
+    /// Activation: [`Response::clicked`] is true on a pointer click, on
+    /// Enter keydown, and on Space keyup — the native `<button>` timings
+    /// (frozen spec §8). While Space is held the button shows the pressed
+    /// state without firing; autorepeat never re-fires.
+    ///
+    /// Focus: clicking a button moves keyboard focus to it, so Space and
+    /// Enter then activate it. The 3px focus ring shows whenever the
+    /// button holds focus, regardless of how focus arrived (deviation D3
+    /// from the browser's `:focus-visible` heuristic, which egui cannot
+    /// reproduce). Escape and arrow keys are no-ops while a button holds
+    /// focus; Tab and Shift+Tab move focus in layout order, skipping
+    /// disabled buttons.
+    ///
+    /// Disabled buttons never take focus and never activate. Known
+    /// limitation: clicking a disabled button clears focus held by
+    /// another widget — an egui framework default (`SurrenderFocusOn`)
+    /// that the library cannot scope per widget, so it differs from the
+    /// native `pointer-events: none` behaviour.
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let dark = theme.mode.is_dark();
