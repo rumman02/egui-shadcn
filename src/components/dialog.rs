@@ -139,13 +139,16 @@ fn current_scope(ui: &Ui) -> Option<Id> {
 }
 
 /// Per-instance state: the open flag, the previous frame's open flag (for
-/// open/close transition handling), and the widget that had focus before
-/// the dialog opened (for focus return on close, §10).
+/// open/close transition handling), the widget that had focus before the
+/// dialog opened (for focus return on close, §10), and whether the modal
+/// rendered on the previous frame (so the focus return can wait until the
+/// modal layer is gone, DLG-INT-01).
 #[derive(Clone, Copy, Debug, Default)]
 struct DialogState {
     open: bool,
     was_open: bool,
     return_focus: Option<Id>,
+    was_rendered: bool,
 }
 
 fn read_state(ctx: &Context, state_id: Id) -> DialogState {
@@ -154,6 +157,49 @@ fn read_state(ctx: &Context, state_id: Id) -> DialogState {
 
 fn write_state(ctx: &Context, state_id: Id, state: DialogState) {
     ctx.data_mut(|d| d.insert_temp(state_id, state));
+}
+
+/// Settles a pending focus return after the dialog closes (§10, OPEN-3).
+///
+/// The restore must NOT run while the modal still renders, nor on the
+/// closing frame alone: egui clears focus on any widget created behind the
+/// previous frame's top modal layer (`Context::create_widget` calls
+/// `Memory::ignore_focus`, which drops focus when it matches the widget),
+/// and the modal layer stays topmost for one frame after the modal's last
+/// render (`Focus::end_pass` copies `top_modal_layer_current_frame` into
+/// `top_modal_layer`). A restore issued on the closing frame is therefore
+/// wiped by the trigger's own `interact` on the next frame — the DLG-INT-01
+/// mechanism. So the restore is (re-)issued on every fully-closed frame
+/// until it sticks across a full frame boundary (which also covers callers
+/// that show the content before the trigger, where the first restore is
+/// wiped later in the same frame), and abandoned if focus demonstrably
+/// moved elsewhere after the dialog fully closed — never fight the user's
+/// Tab. Nested/stacked dialogs are out of scope (OPEN-11).
+fn settle_focus_return(ctx: &Context, state_id: Id, rendered: bool) {
+    let mut state = read_state(ctx, state_id);
+    let was_rendered = state.was_rendered;
+    state.was_rendered = rendered;
+    if rendered {
+        // Modal still up (open or fading): wait until it is gone.
+        write_state(ctx, state_id, state);
+        return;
+    }
+    let Some(id) = state.return_focus else {
+        write_state(ctx, state_id, state);
+        return;
+    };
+    let current = ctx.memory(|m| m.focused());
+    if current == Some(id) {
+        // The restore survived a full frame boundary: it stuck.
+        state.return_focus = None;
+    } else if !was_rendered && current.is_some() {
+        // Focus moved elsewhere after the dialog fully closed: the user
+        // (or another widget) owns it now; don't yank it back.
+        state.return_focus = None;
+    } else {
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+    write_state(ctx, state_id, state);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,20 +521,16 @@ impl DialogContent {
         };
         let ctx = ui.ctx().clone();
 
-        // Focus transitions (§10). Handled before the early return so the
-        // close transition fires even after the closing animation finished.
+        // Focus transitions (§10). The pre-open focus snapshot is taken
+        // before the early return so it fires on the opening frame; the
+        // restore itself settles below, once the modal-render decision is
+        // known (see `settle_focus_return`).
         let mut state = read_state(&ctx, state_id);
         let open = state.open;
         let opening = open && !state.was_open;
-        let closing = !open && state.was_open;
         if opening {
             // Remember who had focus so it can be restored on close.
             state.return_focus = ctx.memory(|m| m.focused());
-        }
-        if closing {
-            if let Some(id) = state.return_focus.take() {
-                ctx.memory_mut(|m| m.request_focus(id));
-            }
         }
         state.was_open = open;
         write_state(&ctx, state_id, state);
@@ -507,7 +549,12 @@ impl DialogContent {
         // progress value, so they animate together (§9).
         let duration = if nova { ANIM_NOVA_SECS } else { ANIM_BASE_SECS };
         let alpha = overlay_alpha(&ctx, anim_id, open, duration);
-        if !(open || alpha > 0.002) {
+        let rendered = open || alpha > 0.002;
+        // Settle the pending focus return now that the modal-render
+        // decision is known (DLG-INT-01): the restore runs only on
+        // fully-closed frames, after the modal layer is gone.
+        settle_focus_return(&ctx, state_id, rendered);
+        if !rendered {
             return None;
         }
 
@@ -1695,13 +1742,73 @@ mod tests {
 
         h.press_key(egui::Key::Escape, &mut show);
         assert!(!h.state("foc2").open);
-        // One settle frame so the close transition's focus return lands.
+        // The restore lands on the first fully-closed frame (after the
+        // fade-out), not on the closing frame: while the modal renders,
+        // the modal layer would wipe it (DLG-INT-01). Three settle frames
+        // cover the closing frame, the first fully-closed frame, and one
+        // frame past it.
+        h.run(&mut show);
+        h.run(&mut show);
         h.run(&mut show);
         let trigger_id = test_ui_id().with("trig");
         assert_eq!(
             h.focused(),
             Some(trigger_id),
             "focus returns to the trigger on close"
+        );
+        // DLG-INT-01: the return must SURVIVE later frames. The modal layer
+        // from the closing frame makes egui wipe focus when the trigger is
+        // next created (`ignore_focus` for widgets behind the previous
+        // frame's top modal layer), so a single-frame assertion masks the
+        // bug. Two more settle frames expose it.
+        h.run(&mut show);
+        h.run(&mut show);
+        assert_eq!(
+            h.focused(),
+            Some(trigger_id),
+            "focus return survives later frames (DLG-INT-01)"
+        );
+    }
+
+    #[test]
+    fn focus_returns_to_trigger_on_close_content_first() {
+        // The restore must also work when the caller shows the content
+        // BEFORE the trigger: the restore issued on the first fully-closed
+        // frame is wiped by the trigger's own `interact` later in that same
+        // frame (the modal layer is still top), so the restore must retry
+        // until it sticks (DLG-INT-01).
+        let mut h = Harness::new();
+        let trigger_rect = std::cell::Cell::new(Rect::ZERO);
+        let mut show = |ui: &mut Ui| {
+            Dialog::new().id_salt("foc2b").show(ui, |ui| {
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+                trigger_rect.set(DialogTrigger::new("Open").id_salt("trig").show(ui).rect);
+            });
+        };
+        h.run(&mut show);
+        let pos = trigger_rect.get().center();
+        h.click(pos, &mut show);
+        assert!(h.state("foc2b").open);
+
+        // Warm up: in content-first order the modal first renders on the
+        // frame AFTER the click toggles `open`, so the modal layer needs a
+        // frame to become topmost before Escape can dismiss it (same
+        // warm-up as `trigger_click_opens_and_closes`).
+        h.run(&mut show);
+        h.run(&mut show);
+
+        h.press_key(egui::Key::Escape, &mut show);
+        assert!(!h.state("foc2b").open);
+        for _ in 0..4 {
+            h.run(&mut show);
+        }
+        let trigger_id = test_ui_id().with("trig");
+        assert_eq!(
+            h.focused(),
+            Some(trigger_id),
+            "focus returns to the trigger on close (content-first order)"
         );
     }
 
