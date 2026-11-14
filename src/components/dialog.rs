@@ -940,11 +940,16 @@ fn dialog_footer<R>(ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
             content(ui)
         });
     } else {
-        // Stack height is direction-independent; measure top-down.
-        measure.with_layout(Layout::top_down(Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = gap;
-            content(ui)
-        });
+        // Stack height is direction-independent; measure top-down, with the
+        // same cross-axis justify as the real pass so wrapping children
+        // measure at their real (stretched) width.
+        measure.with_layout(
+            Layout::top_down(Align::Min).with_cross_justify(true),
+            |ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                content(ui)
+            },
+        );
     }
     let measured = measure.min_rect();
     let content_w = measured.width();
@@ -991,6 +996,10 @@ fn dialog_footer<R>(ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
 
 /// Lays out footer content in the measured rect: a right-aligned row in DOM
 /// order at/above `sm`, a bottom-up stack (reverse DOM order) below `sm`.
+/// The stack justifies its cross axis: `flex-col-reverse` carries the CSS
+/// `align-items: stretch` default, so every child spans the content width
+/// (DLG-VIS-01). The row does not justify: cross-axis stretch there is
+/// vertical and all children share the row height.
 fn layout_footer_content<R>(
     ui: &mut Ui,
     inner: Rect,
@@ -1015,12 +1024,22 @@ fn layout_footer_content<R>(
             .inner
     } else {
         // Column-reverse: the first DOM child lands at the bottom.
+        // `with_cross_justify(true)` is the egui form of the flex
+        // `align-items: stretch` default: the placer expands each child to
+        // the frame width, so buttons (which paint their whole allocated
+        // rect, content centred) span the content width. Children that
+        // bypass the placer with absolute rects, or constrain their own
+        // width inside a nested layout, keep their own size — the same
+        // boundary as a CSS `align-self` override.
         let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
         child
-            .with_layout(Layout::bottom_up(Align::Min), |ui| {
-                ui.spacing_mut().item_spacing.y = gap;
-                content(ui)
-            })
+            .with_layout(
+                Layout::bottom_up(Align::Min).with_cross_justify(true),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = gap;
+                    content(ui)
+                },
+            )
             .inner
     }
 }
@@ -1661,6 +1680,66 @@ mod tests {
         );
         // The appended Close button renders at the TOP of the stack, above B.
         assert!(b.min.y > 50.0, "Close button sits above B: {a:?} {b:?}");
+    }
+
+    #[test]
+    fn footer_stack_stretches_children_full_width() {
+        // DLG-VIS-01: `flex-col-reverse` + `align-items: stretch` — every
+        // stacked child spans the footer's content width.
+        let mut h = Harness::new();
+        h.set_screen(400.0, 600.0);
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        let mut avail = 0.0;
+        for _ in 0..2 {
+            h.run(|ui| {
+                DialogFooter::new().show_close_button(true).show(ui, |ui| {
+                    avail = ui.available_width();
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("B").show(ui).rect;
+                });
+            });
+        }
+        assert!(avail > 100.0, "footer has content width: {avail}");
+        assert!(
+            (a.width() - avail).abs() < 0.01,
+            "A spans content width {avail}: {a:?}"
+        );
+        assert!(
+            (b.width() - avail).abs() < 0.01,
+            "B spans content width {avail}: {b:?}"
+        );
+        assert!(
+            (a.left() - b.left()).abs() < 0.01,
+            "both start at the content left edge: {a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn footer_row_keeps_content_sized_buttons() {
+        // The wide row must NOT stretch: buttons stay content-sized.
+        let mut h = Harness::new();
+        h.set_screen(800.0, 600.0);
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        let mut flow_w = 0.0;
+        for _ in 0..2 {
+            h.run(|ui| {
+                flow_w = ui.available_width();
+                DialogFooter::new().show(ui, |ui| {
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("Longer label B").show(ui).rect;
+                });
+            });
+        }
+        assert!(
+            (a.width() - b.width()).abs() > 20.0,
+            "row buttons keep distinct content widths: {a:?} {b:?}"
+        );
+        assert!(
+            a.width() + b.width() < flow_w,
+            "row buttons do not stretch: {a:?} {b:?} flow {flow_w}"
+        );
     }
 
     #[test]
