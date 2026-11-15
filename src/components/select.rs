@@ -1621,10 +1621,19 @@ fn render_popup(
     }
 }
 
-/// Renders the scrollable row list: a bare `ScrollArea` (not the themed
-/// wrapper — the viewport has no visible scrollbar, §2.8), `AlwaysHidden`
-/// scrollbar, no shrinking. The scroll offset is overridden only on
-/// scroll-button frames, so wheel scrolling keeps working between them.
+/// Renders the scrollable row list: a bare vertical `ScrollArea` (not the
+/// themed wrapper — the viewport has no visible scrollbar, §2.8),
+/// `AlwaysHidden` scrollbar, no shrinking. The scroll offset is overridden
+/// only on scroll-button frames, so wheel scrolling keeps working between
+/// them.
+///
+/// The direction flags are load-bearing (SEL-INT-02/SEL-FLK-01): the area
+/// MUST be vertical-only (`[false, true]`). With `[true, false]` the
+/// vertical axis is disabled, so egui expands the inner rect to the full
+/// content height, `max_offset.y` is 0, and the clamped offset is stuck at
+/// 0 — the auto-repeat override re-applies the same single step every
+/// frame and never accumulates, the up button never appears, and wheel
+/// deltas are consumed by the horizontal axis instead of scrolling.
 #[allow(clippy::too_many_arguments)]
 fn render_rows(
     ui: &mut Ui,
@@ -1640,7 +1649,7 @@ fn render_rows(
     scroll_to_highlight: bool,
     activated: &mut Option<String>,
 ) -> egui::containers::scroll_area::ScrollAreaOutput<()> {
-    let mut area = egui::ScrollArea::new([true, false])
+    let mut area = egui::ScrollArea::new([false, true])
         .auto_shrink([false, false])
         .max_height(max_height)
         .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -2180,6 +2189,199 @@ mod tests {
     }
 
     #[test]
+    fn scroll_offset_override_accumulates_across_frames() {
+        // SEL-INT-02 / SEL-FLK-01: the scroll-button auto-repeat drive
+        // applies `previous clamped offset + one step` as an override
+        // every frame. The clamped offset must therefore advance by one
+        // step per frame and the viewport must stay clamped to its max
+        // height. With a horizontal-only ScrollArea the inner rect
+        // expands to the full content height, `max_offset.y` is 0, and
+        // the clamped offset is stuck at 0 — the single-step symptom.
+        for (style, nova) in [(Style::Nova, true), (Style::Vega, false)] {
+            let theme = Preset::default().with_style(style).build(Mode::Light);
+            let flat: Vec<SelectEntry> = (0..40)
+                .map(|i| SelectEntry::Item(SelectItem::new(format!("Option {i}"))))
+                .collect();
+            let rows_h = rows_height(&flat, nova);
+            let max_height = 200.0;
+            assert!(rows_h > max_height, "list must overflow the viewport");
+            let mut harness = Harness::new();
+            let popup_id = Id::unique("int02_accumulate");
+            let mut prev = 0.0f32;
+            for step in 1..=6 {
+                let mut clamped = f32::NAN;
+                let mut inner_h = f32::NAN;
+                let override_offset = prev + 12.0;
+                harness.run(|ui| {
+                    let mut activated = None;
+                    let output = render_rows(
+                        ui,
+                        &flat,
+                        popup_id,
+                        max_height,
+                        Some(override_offset),
+                        &theme.palette,
+                        &theme,
+                        None,
+                        None,
+                        true,
+                        false,
+                        &mut activated,
+                    );
+                    clamped = output.state.clamped_offset().y;
+                    inner_h = output.inner_rect.height();
+                });
+                assert!(
+                    inner_h <= max_height + 1.0,
+                    "viewport must stay clamped to max_height ({style:?}): inner {inner_h}"
+                );
+                assert_eq!(
+                    clamped, override_offset,
+                    "clamped offset must track the override on frame {step} ({style:?})"
+                );
+                prev = clamped;
+            }
+            assert_eq!(prev, 72.0, "offset must accumulate over frames");
+        }
+    }
+
+    #[test]
+    fn wheel_scrolls_the_viewport() {
+        // SEL-INT-02 (M8): a wheel event over the viewport must move the
+        // vertical offset — down increases it, up decreases it. With a
+        // horizontal-only ScrollArea the wheel delta is consumed by the
+        // horizontal axis and the vertical offset never moves.
+        for (style, _nova) in [(Style::Nova, true), (Style::Vega, false)] {
+            let theme = Preset::default().with_style(style).build(Mode::Light);
+            let flat: Vec<SelectEntry> = (0..40)
+                .map(|i| SelectEntry::Item(SelectItem::new(format!("Option {i}"))))
+                .collect();
+            let mut harness = Harness::new();
+            let popup_id = Id::unique("int02_wheel");
+            let render = |harness: &mut Harness, offset: &mut f32| {
+                harness.run(|ui| {
+                    let mut activated = None;
+                    let output = render_rows(
+                        ui,
+                        &flat,
+                        popup_id,
+                        200.0,
+                        None,
+                        &theme.palette,
+                        &theme,
+                        None,
+                        None,
+                        true,
+                        false,
+                        &mut activated,
+                    );
+                    *offset = output.state.clamped_offset().y;
+                });
+            };
+            // Settle at a mid offset via the override, so both wheel
+            // directions have room to move.
+            let mut offset = f32::NAN;
+            harness.run(|ui| {
+                let mut activated = None;
+                let output = render_rows(
+                    ui,
+                    &flat,
+                    popup_id,
+                    200.0,
+                    Some(100.0),
+                    &theme.palette,
+                    &theme,
+                    None,
+                    None,
+                    true,
+                    false,
+                    &mut activated,
+                );
+                offset = output.state.clamped_offset().y;
+            });
+            assert_eq!(offset, 100.0, "override must set the offset ({style:?})");
+            // Wheel down (negative point delta) over the viewport.
+            harness.events(
+                vec![
+                    egui::Event::PointerMoved(Pos2::new(100.0, 100.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, -120.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                |ui| {
+                    let mut activated = None;
+                    let output = render_rows(
+                        ui,
+                        &flat,
+                        popup_id,
+                        200.0,
+                        None,
+                        &theme.palette,
+                        &theme,
+                        None,
+                        None,
+                        true,
+                        false,
+                        &mut activated,
+                    );
+                    offset = output.state.clamped_offset().y;
+                },
+            );
+            // Let kinetic scrolling settle over a few frames.
+            for _ in 0..3 {
+                render(&mut harness, &mut offset);
+            }
+            assert!(
+                offset > 100.0,
+                "wheel down must increase the offset ({style:?}): {offset}"
+            );
+            let after_down = offset;
+            // Wheel up over the viewport.
+            harness.events(
+                vec![
+                    egui::Event::PointerMoved(Pos2::new(100.0, 100.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, 120.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                |ui| {
+                    let mut activated = None;
+                    let output = render_rows(
+                        ui,
+                        &flat,
+                        popup_id,
+                        200.0,
+                        None,
+                        &theme.palette,
+                        &theme,
+                        None,
+                        None,
+                        true,
+                        false,
+                        &mut activated,
+                    );
+                    offset = output.state.clamped_offset().y;
+                },
+            );
+            for _ in 0..3 {
+                render(&mut harness, &mut offset);
+            }
+            assert!(
+                offset < after_down,
+                "wheel up must decrease the offset ({style:?}): {offset} after {after_down}"
+            );
+        }
+    }
+
+    #[test]
     fn popup_layout_is_content_sized_without_a_ceiling() {
         // One nova option: 28px row + 8px padding, no buttons.
         let one = popup_layout(28.0, 554.0, 0.0);
@@ -2374,6 +2576,28 @@ mod tests {
                 time: Some(self.time),
                 screen_rect: Some(SCREEN),
                 events: vec![egui::Event::Text(text.to_owned())],
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("select_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 600.0))),
+                );
+                f(ui);
+            });
+            out.textures_delta.clear();
+        }
+
+        /// Runs one frame with the given raw events (pointer moves, wheel,
+        /// …), for input-driven tests such as wheel scrolling.
+        fn events(&mut self, events: Vec<egui::Event>, mut f: impl FnMut(&mut Ui)) {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                screen_rect: Some(SCREEN),
+                events,
                 ..Default::default()
             };
             let mut out = self.ctx.run_ui(input, |ctx| {
