@@ -1017,53 +1017,217 @@ pub fn typography_demo(ui: &mut egui::Ui) {
     );
 }
 
+/// Demo chrome for a ratio box: fills the whole box the child `Ui` was
+/// given and centers a label in it. The component paints nothing itself;
+/// this fill + label exist only so S5/S6 can see the allocated box.
+/// Returns the box rect (the child `Ui`'s max rect). Paints without
+/// allocating, so nested boxes still start at the top of the outer box.
+fn paint_ratio_box(
+    ui: &mut egui::Ui,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    label: &str,
+) -> egui::Rect {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 8, fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(14.0),
+        text_color,
+    );
+    rect
+}
+
+/// Readout line comparing the rect the component actually allocated
+/// against the expected width-driven geometry.
+fn ratio_readout(
+    ui: &mut egui::Ui,
+    what: &str,
+    rect: egui::Rect,
+    expected_w: f32,
+    expected_h: f32,
+) {
+    ui.label(format!(
+        "{what}: measured {w:.1} × {h:.1} px, expected {ew:.1} × {eh:.1} px",
+        w = rect.width(),
+        h = rect.height(),
+        ew = expected_w,
+        eh = expected_h,
+    ));
+}
+
 pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
-    ui.label("16 / 9 (full width)");
+    let theme = ShadcnTheme::of_ui(ui);
+    ui.label("AspectRatio paints nothing itself: every fill, outline, and label inside a box below is demo chrome. The readouts report the rect the component allocated. Renders identically under both recipes and both themes (spec §5) — switch with the gallery chrome.");
+    ui.add_space(12.0);
+
+    ui.label("Ratios — fixed width 320px (spec §4.1: height = width / ratio)");
     ui.add_space(4.0);
-    AspectRatio::new(16.0 / 9.0).show(ui, |ui| {
-        let theme = ShadcnTheme::of_ui(ui);
-        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 8, theme.palette.muted);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "16:9 content",
-            egui::FontId::proportional(14.0),
+    for (ratio, name, fill, fg) in [
+        (
+            16.0 / 9.0,
+            "16:9",
+            theme.palette.muted,
             theme.palette.muted_foreground,
-        );
-    });
-
-    ui.add_space(12.0);
-    ui.label("1 / 1, max width 240");
-    ui.add_space(4.0);
-    AspectRatio::new(1.0).max_width(240.0).show(ui, |ui| {
-        let theme = ShadcnTheme::of_ui(ui);
-        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 8, theme.palette.accent);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
+        ),
+        (
+            1.0,
             "1:1",
-            egui::FontId::proportional(14.0),
+            theme.palette.accent,
             theme.palette.accent_foreground,
-        );
-    });
-
-    ui.add_space(12.0);
-    ui.label("4 / 3, max width 320");
-    ui.add_space(4.0);
-    AspectRatio::new(4.0 / 3.0).max_width(320.0).show(ui, |ui| {
-        let theme = ShadcnTheme::of_ui(ui);
-        let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 8, theme.palette.secondary);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "4:3",
-            egui::FontId::proportional(14.0),
+        ),
+        (
+            9.0 / 16.0,
+            "9:16",
+            theme.palette.secondary,
             theme.palette.secondary_foreground,
+        ),
+        (
+            4.0 / 3.0,
+            "4:3",
+            theme.palette.primary,
+            theme.palette.primary_foreground,
+        ),
+    ] {
+        ui.label(format!("ratio {name}"));
+        let resp = AspectRatio::new(ratio).max_width(320.0).show(ui, |ui| {
+            paint_ratio_box(ui, fill, fg, name);
+        });
+        ratio_readout(ui, "box", resp.response.rect, 320.0, 320.0 / ratio);
+        ui.add_space(12.0);
+    }
+
+    ui.label("Default ratio — AspectRatio::default() renders square (ratio 1; spec §3.2, coordinator decision D1-a)");
+    ui.add_space(4.0);
+    let resp = AspectRatio::default().max_width(240.0).show(ui, |ui| {
+        paint_ratio_box(
+            ui,
+            theme.palette.accent,
+            theme.palette.accent_foreground,
+            "default",
         );
     });
+    ratio_readout(ui, "default box", resp.response.rect, 240.0, 240.0);
+    ui.add_space(12.0);
+
+    ui.label("Nested ratios — each level sizes independently (spec §8)");
+    ui.add_space(4.0);
+    let outer = AspectRatio::new(16.0 / 9.0)
+        .max_width(320.0)
+        .show(ui, |ui| {
+            let outer_rect =
+                paint_ratio_box(ui, theme.palette.muted, theme.palette.muted_foreground, "");
+            let inner = AspectRatio::new(1.0).max_width(180.0).show(ui, |ui| {
+                paint_ratio_box(
+                    ui,
+                    theme.palette.primary,
+                    theme.palette.primary_foreground,
+                    "inner 1:1",
+                );
+            });
+            // Label the outer box in the strip the inner box does not cover.
+            ui.painter().text(
+                egui::pos2(outer_rect.max.x - 8.0, outer_rect.min.y + 8.0),
+                egui::Align2::RIGHT_TOP,
+                "outer 16:9",
+                egui::FontId::proportional(14.0),
+                theme.palette.muted_foreground,
+            );
+            inner.response.rect
+        });
+    ui.label(format!(
+        "outer: measured {ow:.1} × {oh:.1} px (expected 320.0 × 180.0); inner: measured {iw:.1} × {ih:.1} px (expected 180.0 × 180.0)",
+        ow = outer.response.rect.width(),
+        oh = outer.response.rect.height(),
+        iw = outer.inner.width(),
+        ih = outer.inner.height(),
+    ));
+    ui.add_space(12.0);
+
+    ui.label("max_width() — Rust-only convenience, no original counterpart (spec §9 D4)");
+    ui.add_space(4.0);
+    let available = ui.available_width();
+    let resp = AspectRatio::new(16.0 / 9.0)
+        .max_width(200.0)
+        .show(ui, |ui| {
+            paint_ratio_box(
+                ui,
+                theme.palette.secondary,
+                theme.palette.secondary_foreground,
+                "capped at 200px",
+            );
+        });
+    ui.label(format!(
+        "available width {available:.1} px; measured {w:.1} × {h:.1} px — the 200px cap applies, height follows 200 / (16/9) = 112.5",
+        w = resp.response.rect.width(),
+        h = resp.response.rect.height(),
+    ));
+    ui.add_space(12.0);
+
+    ui.label("Overflow — child content taller than the ratio box (O2 CLOSED; spec §4.3)");
+    ui.label("The Radix primitive sets no overflow control on either element, so overflowing content paints outside the box under the CSS `visible` default — lines below the box edge are the original behaviour.");
+    ui.add_space(4.0);
+    let overflow = AspectRatio::new(16.0 / 9.0)
+        .max_width(320.0)
+        .show(ui, |ui| {
+            paint_ratio_box(ui, theme.palette.muted, theme.palette.muted_foreground, "");
+            for i in 1..=14 {
+                ui.label(format!("overflow line {i}"));
+            }
+            ui.min_rect().height()
+        });
+    // Room for the overflowing lines to stay visible below the box:
+    // content is ~342px tall in a 180px box, so ~162px overflows.
+    ui.add_space(180.0);
+    ui.label(format!(
+        "box: measured {w:.1} × {h:.1} px (expected 320.0 × 180.0); child content height {ch:.1} px — content is taller than the box",
+        w = overflow.response.rect.width(),
+        h = overflow.response.rect.height(),
+        ch = overflow.inner,
+    ));
+    ui.add_space(12.0);
+
+    ui.label("Degenerate ratios — 0-height box, matching the derived original behaviour (O4 CLOSED as derived; S8 gate E1; D3 SUPERSEDED)");
+    ui.label("Radix enforces the ratio via paddingBottom: `${100 / ratio}%`; for 0, negative, NaN, or infinite ratios the declaration is invalid CSS and is dropped, leaving padding 0 — the box collapses and content overflows visibly. The rect must stay finite and non-negative.");
+    ui.add_space(4.0);
+    for (ratio, name) in [(0.0f32, "ratio 0"), (-1.0f32, "ratio -1")] {
+        ui.label(name);
+        let resp = AspectRatio::new(ratio).max_width(2.0).show(ui, |ui| {
+            paint_ratio_box(
+                ui,
+                theme.palette.destructive,
+                theme.palette.destructive_foreground,
+                "",
+            );
+        });
+        let rect = resp.response.rect;
+        ui.label(format!(
+            "{name}: measured {w:.1} × {h:.1} px, finite: {finite}, non-negative: {non_neg} (expected 2.0 × 0.0 — collapsed box)",
+            w = rect.width(),
+            h = rect.height(),
+            finite = rect.width().is_finite() && rect.height().is_finite(),
+            non_neg = rect.width() >= 0.0 && rect.height() >= 0.0,
+        ));
+        ui.add_space(12.0);
+    }
+
+    ui.label("Empty child — the sized box is still allocated (spec §8)");
+    ui.add_space(4.0);
+    let resp = AspectRatio::new(16.0 / 9.0)
+        .max_width(320.0)
+        .show(ui, |_ui| {});
+    let rect = resp.response.rect;
+    // Demo-only chrome: outline the invisible box so S5 can see it.
+    ui.painter().rect_stroke(
+        rect,
+        8,
+        egui::Stroke::new(1.0, theme.palette.border),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.label("The outline above is demo-only chrome around the empty box.");
+    ratio_readout(ui, "empty box", rect, 320.0, 180.0);
 }
 
 pub fn marker_demo(ui: &mut egui::Ui) {
