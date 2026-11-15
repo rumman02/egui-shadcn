@@ -39,7 +39,10 @@
 //!
 //! No interactive states exist (spec §5): no hover, focus, pressed, or
 //! disabled styling. The chip renders with a hover-only sense and takes no
-//! tab stop (limitation D2, spec §11). Nothing animates (spec §7).
+//! tab stop (limitation D2, spec §11). The `<kbd>` element's keyboard-input
+//! semantics have no egui runtime meaning, and no ARIA role is set by the
+//! component in any case (limitation D3, spec §11). Nothing animates
+//! (spec §7).
 //!
 //! OPEN items (spec §12) are left open: O1 (flag API shape — D1 decision),
 //! O2 (concrete `font-sans` family; Inter is used per Phase 1, D4), O3
@@ -293,6 +296,14 @@ impl Widget for Kbd {
 /// spacing container whose height is its tallest child (spec §3.3). The
 /// original's div-props/`kbd`-element mismatch (spec §11 D5) is not
 /// reproduced; it has no visual consequence.
+///
+/// Mixed-height children: a child taller than all previous children
+/// expands the row downward (egui's expand-down rule for horizontal
+/// layouts) rather than re-centring the earlier children. All standard
+/// `Kbd` children are 20px tall, so the spec case is exact; true
+/// re-centring of mixed heights would need a second layout pass, which
+/// immediate mode cannot do. Recorded, not a defect against the spec
+/// (S9 limitation).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KbdGroup;
 

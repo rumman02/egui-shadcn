@@ -763,12 +763,12 @@ pub fn kbd_demo(ui: &mut egui::Ui) {
         let second = Kbd::new("K").show(ui).rect;
         (first, second)
     });
-    // NOTE: the group row rect is 36px tall because `ui.horizontal`
-    // sizes its row to `interact_size.y` (the egui layout artifact the
-    // separator demo documents); the group's painted content is the
-    // 20px-tall chips. The readout prints both so S5 can judge the
-    // spec §3.3 "height = tallest child" claim against the content
-    // rect, not the row rect.
+    // NOTE: the group row rect is the tallest child (20px for standard
+    // chips, spec §3.3). It used to read 36px: plain `ui.horizontal`
+    // seeds its row to `interact_size.y` (defect KBD-VIS-01, fixed by
+    // the S9 content-sized allocation in `KbdGroup::show`). The readout
+    // prints both the row rect and the chip union so the §3.3 claim can
+    // be judged against either.
     let (first, second) = group.inner;
     let content = first.union(second);
     ui.label(format!(
