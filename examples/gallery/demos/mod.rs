@@ -628,37 +628,128 @@ pub fn kbd_demo(ui: &mut egui::Ui) {
 }
 
 pub fn spinner_demo(ui: &mut egui::Ui) {
-    ui.label("Sizes (default size-4 = 16px)");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Spinner::new().size(12.0).show(ui);
-        Spinner::new().show(ui);
-        Spinner::new().size(24.0).show(ui);
-        Spinner::new().size(32.0).show(ui);
-    });
-
+    // Intro (brief §7): nova = base, colour inherited, gallery chrome owns
+    // recipe/theme switching. No demo-side theme switching.
+    ui.label("Spinner — one 16px icon, rotating 1 rev/s (size-4 animate-spin).");
+    ui.label("No .cn-spinner* rule exists, so nova renders identically to base (LAYER).");
+    ui.label("Colour is inherited currentColor in every config — switch style/theme with the gallery chrome.");
     ui.add_space(12.0);
-    ui.label("With colors and inside a button");
+
+    // 1. Default spinner (spec §§3.1, 6).
+    ui.label("1. Default — size-4 (16px), animate-spin: 1s linear infinite clockwise");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let resp = Spinner::new().show(ui);
+        ui.label(format!(
+            "allocated: {:.0} x {:.0} px; stroke 2s/24 = 1.333px at 16px (spec §3.2)",
+            resp.rect.width(),
+            resp.rect.height()
+        ));
+    });
+
+    // 2. Custom sizes (spec §§3.2–3.3; OPEN-3). Period is S7's job, judged
+    // from frame sequences; the demo only exposes the sizes.
+    ui.add_space(12.0);
+    ui.label("2. Custom sizes — .size() override replaces the 16px default; glyph + stroke scale, period stays 1s");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        for size in [24.0, 32.0] {
+            let resp = Spinner::new().size(size).show(ui);
+            ui.label(format!(
+                "{:.0}px: allocated {:.0} x {:.0}, stroke {:.3}px",
+                size,
+                resp.rect.width(),
+                resp.rect.height(),
+                2.0 * size / 24.0
+            ));
+            ui.add_space(16.0);
+        }
+    });
+
+    // 3. Relational colour (spec §5) — the key S5 check. No explicit
+    // spinner colour is set anywhere in this section: the spinner must
+    // match the adjacent label, which shares its style context.
+    ui.add_space(12.0);
+    ui.label("3. Inherited colour — spinner stroke must equal the adjacent text colour in the same context (spec §5)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Spinner::new().show(ui);
+        ui.label("Default context: spinner inherits the surrounding text colour.");
+    });
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        ui.style_mut().visuals.override_text_color = Some(theme.palette.muted_foreground);
+        ui.horizontal(|ui| {
+            Spinner::new().show(ui);
+            ui.label("Muted-foreground context: spinner inherits the muted text colour.");
+        });
+    });
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        let theme = ShadcnTheme::of_ui(ui);
+        ui.style_mut().visuals.override_text_color = Some(theme.palette.primary);
+        ui.horizontal(|ui| {
+            Spinner::new().show(ui);
+            ui.label("Primary context: spinner inherits the primary text colour.");
+        });
+    });
+
+    // 4. Custom colour (spec §§5, 8): .color() is the Rust equivalent of
+    // a caller text-* class. The label is painted the same explicit
+    // colour so S5 can compare spinner stroke vs text directly.
+    ui.add_space(12.0);
+    ui.label("4. Custom colour — .color() override, the equivalent of a caller text-* class");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let theme = ShadcnTheme::of_ui(ui);
-        Spinner::new().color(theme.palette.primary).show(ui);
         Spinner::new().color(theme.palette.destructive).show(ui);
-        Spinner::new()
-            .color(theme.palette.muted_foreground)
-            .show(ui);
+        ui.label(
+            egui::RichText::new("Destructive text — spinner uses the same explicit colour.")
+                .color(theme.palette.destructive),
+        );
     });
 
-    ui.add_space(8.0);
+    // 5. Button context (spec §9.1). The Button API takes no spinner
+    // child, so the spinner's inheritance in the button's label context
+    // is shown in a demo-chrome frame replicating that context, next to
+    // a real default button for direct pixel comparison.
+    ui.add_space(12.0);
+    ui.label("5. Button context — spinner inherits the button's label colour and aligns with button text");
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let theme = ShadcnTheme::of_ui(ui);
-        Button::new("Loading")
-            .icon_start(Icon::LoaderCircle)
-            .disabled(true)
-            .show(ui);
-        Spinner::new()
-            .color(theme.palette.primary_foreground)
-            .show(ui);
+        Button::new("Loading").show(ui);
+        ui.label("Real default button, for reference.");
+    });
+    ui.add_space(4.0);
+    let theme = ShadcnTheme::of_ui(ui);
+    ui.scope(|ui| {
+        ui.style_mut().visuals.override_text_color = Some(theme.palette.primary_foreground);
+        egui::Frame::new()
+            .fill(theme.palette.primary)
+            .inner_margin(egui::Margin::symmetric(12, 6))
+            .corner_radius(egui::CornerRadius::same(6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    Spinner::new().show(ui);
+                    ui.label("Loading");
+                });
+            });
+    });
+    ui.label("Demo chrome: the filled frame replicates the default button's label context (fill primary, text primary_foreground). The spinner inside inherits that colour — compare its stroke with the real button's label above.");
+
+    // 6. Multiple spinners (spec §9.7). Phase alignment between spinners
+    // is unspecified in the original and must not be judged; all three
+    // rotate from the shared absolute input-time clock (S1), which S7
+    // observes from sequences.
+    ui.add_space(12.0);
+    ui.label("6. Multiple spinners — three defaults in a row (spec §9.7: phase alignment unspecified, observed not judged)");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Spinner::new().show(ui);
+        Spinner::new().show(ui);
+        Spinner::new().show(ui);
+        ui.label("All three spin from the same absolute clock.");
     });
 }
 
