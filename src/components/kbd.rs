@@ -62,7 +62,10 @@
 
 use crate::icons::Icon;
 use crate::theme::{Mode, Palette, ShadcnTheme};
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Ui, Vec2, Widget};
+use egui::{
+    Align, Align2, Color32, CornerRadius, FontId, Layout, Pos2, Rect, Response, Sense, Ui, Vec2,
+    Widget,
+};
 
 /// Fixed chip height: `h-5` = 20px (spec §3.1).
 const CHIP_HEIGHT: f32 = 20.0;
@@ -305,9 +308,23 @@ impl KbdGroup {
         ui: &mut Ui,
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
-        // `ui.horizontal` centres children vertically (`Align::Center` =
-        // `items-center`); the group height is the tallest child.
-        ui.horizontal(|ui| {
+        // Do NOT use `ui.horizontal` here: it seeds the row height to
+        // `spacing().interact_size.y` (36px under the crate theme), and
+        // the Center cross-align then makes every child's *frame* rect
+        // that tall, so the group allocates 36px whatever its children
+        // are (defect KBD-VIS-01). Seed the row with zero height
+        // instead: each child's frame is then exactly the child's own
+        // height, the row's `min_rect` — and hence the response rect —
+        // is the tallest child (spec §3.3), and `Align::Center` still
+        // centres children within the row. Direction handling mirrors
+        // `Ui::horizontal`.
+        let layout = if ui.layout().prefer_right_to_left() {
+            Layout::right_to_left(Align::Center)
+        } else {
+            Layout::left_to_right(Align::Center)
+        };
+        let initial_size = Vec2::new(ui.available_size_before_wrap().x, 0.0);
+        ui.allocate_ui_with_layout(initial_size, layout, |ui| {
             // `gap-1`
             ui.spacing_mut().item_spacing.x = GAP;
             content(ui)
@@ -490,5 +507,50 @@ mod tests {
     #[test]
     fn group_is_a_unit_struct() {
         let _ = KbdGroup::new();
+    }
+
+    #[test]
+    fn group_height_is_tallest_child_not_interact_size() {
+        // Spec §3.3 + defect KBD-VIS-01: the group allocates its tallest
+        // child's height (20px), not `spacing().interact_size.y`. The
+        // installed preset is essential to the test: it applies the
+        // gallery theme spacing (`interact_size.y` = 36px), so the old
+        // `ui.horizontal` implementation fails this test with 36px while
+        // the fix returns 20px. Default egui spacing would prove less
+        // (the typography S1 lesson: a test passing only because the test
+        // context uses default spacing proves nothing).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("kbd_group_height_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            );
+            assert_eq!(
+                ui.spacing().interact_size.y,
+                crate::theme::tokens::spacing::CONTROL,
+                "the gallery theme spacing must be in effect for this test to discriminate"
+            );
+            let group = KbdGroup::new().show(ui, |ui| {
+                let first = Kbd::new("⌘").show(ui).rect;
+                let second = Kbd::new("K").show(ui).rect;
+                (first, second)
+            });
+            let (first, second) = group.inner;
+            assert_eq!(first.height(), CHIP_HEIGHT);
+            assert_eq!(second.height(), CHIP_HEIGHT);
+            assert_eq!(group.response.rect.height(), CHIP_HEIGHT);
+            assert!((second.min.x - first.max.x - GAP).abs() < 0.001);
+            assert!(
+                (group.response.rect.width() - (first.width() + GAP + second.width())).abs()
+                    < 0.001
+            );
+            // Chips are vertically centred in the group: same top edge.
+            assert_eq!(group.response.rect.min.y, first.min.y);
+            assert_eq!(group.response.rect.min.y, second.min.y);
+        });
+        out.textures_delta.clear();
     }
 }
