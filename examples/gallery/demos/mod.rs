@@ -550,30 +550,184 @@ pub fn label_demo(ui: &mut egui::Ui) {
 }
 
 pub fn separator_demo(ui: &mut egui::Ui) {
-    ui.label("Horizontal");
+    // Every section prints the rect the separator actually allocated, so
+    // S5/S6 can verify geometry from screenshots. Outlines and fills drawn
+    // by this demo are labelled demo chrome, not component rendering.
+
+    ui.label("1. Horizontal — full width, 1px (spec §2.3)");
     ui.add_space(4.0);
-    Separator::new().show(ui);
-    ui.add_space(8.0);
-    ui.label("Content below the separator.");
-    ui.add_space(4.0);
-    Separator::new().show(ui);
+    ui.label("Text above the separator.");
+    let rect = ui
+        .allocate_ui(egui::Vec2::new(320.0, 1.0), |ui| {
+            Separator::new().show(ui).rect
+        })
+        .inner;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (container 320px wide)",
+        rect.width(),
+        rect.height()
+    ));
+    ui.label("Text below the separator.");
 
     ui.add_space(12.0);
-    ui.label("Vertical (in a row)");
+    ui.label("2. Vertical — 1px, full height of a 48px row (spec §2.3)");
     ui.add_space(4.0);
+    // NOTE: a plain `ui.horizontal` sizes its child Ui to
+    // `interact_size.y` (36px), so the row height must be set explicitly
+    // via `allocate_ui_with_layout` for the separator to claim 48px.
+    let row = ui.allocate_ui_with_layout(
+        egui::Vec2::new(360.0, 48.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label("Left");
+            let sep = Separator::new()
+                .orientation(SeparatorOrientation::Vertical)
+                .show(ui)
+                .rect;
+            ui.label("Right");
+            sep
+        },
+    );
+    ui.painter().rect_stroke(
+        row.response.rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(136, 136, 136)),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (row 360 x 48 px; grey outline is demo chrome)",
+        row.inner.width(),
+        row.inner.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("3. Decorative true/false — identical rendering (spec §3)");
+    ui.add_space(4.0);
+    ui.label("Two identical 200px containers; only `decorative` differs.");
+    let mut rects = [egui::Rect::NOTHING; 2];
     ui.horizontal(|ui| {
-        ui.set_min_height(36.0);
-        ui.label("Left");
-        Separator::new().vertical(true).length(36.0).show(ui);
-        ui.label("Middle");
-        Separator::new().vertical(true).length(36.0).show(ui);
-        ui.label("Right");
+        for (i, decorative) in [true, false].into_iter().enumerate() {
+            rects[i] = ui
+                .allocate_ui(egui::Vec2::new(200.0, 1.0), |ui| {
+                    Separator::new().decorative(decorative).show(ui).rect
+                })
+                .inner;
+            if i == 0 {
+                ui.add_space(16.0);
+            }
+        }
     });
+    ui.label(format!(
+        "decorative=true: {:.0} x {:.0} px; decorative=false: {:.0} x {:.0} px; sizes identical: {}",
+        rects[0].width(),
+        rects[0].height(),
+        rects[1].width(),
+        rects[1].height(),
+        rects[0].size() == rects[1].size()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Fixed length");
+    ui.label("4. Flex row — separator is never compressed (spec §9.1, shrink-0)");
     ui.add_space(4.0);
-    Separator::new().length(160.0).show(ui);
+    let spacing = ui.spacing().item_spacing.x;
+    let sep_rect = ui
+        .allocate_ui(egui::Vec2::new(400.0, 20.0), |ui| {
+            ui.horizontal(|ui| {
+                // Fixed 80px sibling (blue fill is demo chrome).
+                let (sib_rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::new(80.0, 20.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(sib_rect, 0.0, egui::Color32::from_rgb(59, 130, 246));
+                Separator::new().show(ui).rect
+            })
+            .inner
+        })
+        .inner;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (container 400px - 80px sibling - {:.0}px spacing = {:.0}px)",
+        sep_rect.width(),
+        sep_rect.height(),
+        spacing,
+        400.0 - 80.0 - spacing
+    ));
+
+    ui.add_space(12.0);
+    ui.label("5. Flex column — vertical separator claims the full parent height (spec §9.2)");
+    ui.add_space(4.0);
+    let column = ui.allocate_ui(egui::Vec2::new(120.0, 64.0), |ui| {
+        Separator::new().vertical(true).show(ui).rect
+    });
+    ui.painter().rect_stroke(
+        column.response.rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(136, 136, 136)),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (parent 120 x 64 px; grey outline is demo chrome)",
+        column.inner.width(),
+        column.inner.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("6. Length override — Rust-side extension, not spec behaviour (spec §8.2)");
+    ui.add_space(4.0);
+    let rect = ui
+        .allocate_ui(egui::Vec2::new(320.0, 1.0), |ui| {
+            Separator::new().length(160.0).show(ui).rect
+        })
+        .inner;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (override 160px in a 320px container)",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("7. Color override — Rust-side extension, caller-className analogue (spec §9.4)");
+    ui.add_space(4.0);
+    ui.label("Default fill (border token):");
+    let default_rect = ui
+        .allocate_ui(egui::Vec2::new(320.0, 1.0), |ui| {
+            Separator::new().show(ui).rect
+        })
+        .inner;
+    ui.add_space(8.0);
+    ui.label("Override fill (red):");
+    let override_rect = ui
+        .allocate_ui(egui::Vec2::new(320.0, 1.0), |ui| {
+            Separator::new()
+                .color(egui::Color32::from_rgb(239, 68, 68))
+                .show(ui)
+                .rect
+        })
+        .inner;
+    ui.label(format!(
+        "default {:.0} x {:.0} px; override {:.0} x {:.0} px — same geometry, only the fill differs",
+        default_rect.width(),
+        default_rect.height(),
+        override_rect.width(),
+        override_rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("8. Adjacent separators — each renders independently (spec §9.7)");
+    ui.add_space(4.0);
+    let (first, second) = ui
+        .allocate_ui(egui::Vec2::new(320.0, 8.0), |ui| {
+            let a = Separator::new().show(ui).rect;
+            let b = Separator::new().show(ui).rect;
+            (a, b)
+        })
+        .inner;
+    ui.label(format!(
+        "first y={:.0} h={:.0}; second y={:.0} h={:.0}; gap {:.0}px is parent-layout spacing, not the component",
+        first.min.y,
+        first.height(),
+        second.min.y,
+        second.height(),
+        second.min.y - first.max.y
+    ));
 }
 
 pub fn kbd_demo(ui: &mut egui::Ui) {
