@@ -2,15 +2,40 @@
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/separator.tsx`, following the
 //! frozen Batch A S0 spec (`~/workspace/batches-a-h/specs/separator-spec.md`).
-//! One constant class string, no variants, no sizes:
-//! `shrink-0 bg-border`, horizontal `h-px w-full`, vertical `h-full w-px`.
-//! The nova `.cn-separator*` rules restate the base values exactly, so under
-//! the settled LAYER ruling both recipes render identically.
+//! One constant class string, no variants, no sizes (spec §2.1, quoted
+//! verbatim):
+//!
+//! ```text
+//! shrink-0 bg-border data-[orientation=horizontal]:h-px
+//! data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full
+//! data-[orientation=vertical]:w-px
+//! ```
+//!
+//! The nova `.cn-separator*` rules (`style-nova.css:1068-1078`) restate the
+//! base values exactly, so under the settled LAYER ruling both recipes render
+//! identically (spec §2.3).
 //!
 //! The separator has no states, no animation, and no keyboard behaviour: it
 //! is a non-focusable 1px filled rect whose long axis fills its container.
 //! `decorative` (default `true`) is semantics-only — it has no visual effect
 //! (spec §3, deviation D1); egui has no ARIA tree in which to express it.
+//!
+//! Deviations (spec §10, approval pending with the Expert Reviewer): D1, the
+//! semantic separator role is not expressed (see `Separator::decorative`);
+//! D2, the `data-orientation` / `data-slot` attributes have no egui
+//! equivalent — the orientation value drives geometry directly and
+//! `data-slot` is dropped, with no rendered difference.
+//!
+//! OPEN items (spec §11): how `data-orientation` is emitted (OPEN-1), what
+//! `decorative` changes semantically (OPEN-2), whether a non-decorative
+//! separator is Tab-reachable (OPEN-3), the nova `.cn-*` attach mechanism
+//! (OPEN-4), `cn()` merge semantics (OPEN-5), and the full Radix `Root` prop
+//! surface (OPEN-6). All six stay open: no Radix or `cn()` mechanism is
+//! asserted as snapshot truth anywhere in this module. Substitute evidence
+//! from current public Radix / `cn` sources, retrieved during S6 with
+//! explicit version caveats, is recorded in
+//! `~/workspace/batches-a-h/reports/separator-s6-report.md` §4 (OPEN-4 was
+//! out of scope for that retrieval and is untouched).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -34,8 +59,10 @@ pub enum SeparatorOrientation {
 }
 
 /// Resolves the separator fill (`bg-border`, spec §5): exactly one token,
-/// `--border`. The value is used as resolved by the token layer, alpha
-/// included — the dark value is white at 10% alpha and must not be
+/// `--border` (`--color-border` alias, `globals.css:73`; light
+/// `oklch(0.922 0 0)`, `globals.css:117`; dark `oklch(1 0 0 / 10%)`,
+/// `globals.css:160`). The value is used as resolved by the token layer,
+/// alpha included — the dark value is white at 10% alpha and must not be
 /// pre-composited against an assumed background.
 pub(crate) fn fill_color(palette: &crate::theme::Palette) -> Color32 {
     palette.border
@@ -74,7 +101,9 @@ impl Separator {
 
     /// Sets the orientation (`"horizontal"` | `"vertical"`), replacing the
     /// CSS `data-[orientation]` mechanism: the geometry of spec §2.3 is
-    /// selected directly from this value.
+    /// selected directly from this value. The `data-orientation` attribute
+    /// itself has no egui equivalent (deviation D2, spec §10); how the
+    /// original emits it is Radix-internal and OPEN (spec OPEN-1).
     pub fn orientation(mut self, orientation: SeparatorOrientation) -> Self {
         self.orientation = orientation;
         self
@@ -95,7 +124,9 @@ impl Separator {
     /// height, like `w-full` / `h-full`.
     ///
     /// Rust-side extension: the original has no length prop. The default
-    /// (no override) is the spec behaviour (full extent).
+    /// (no override) is the spec behaviour (full extent). Negative or NaN
+    /// lengths are unspecified by the spec and are passed through
+    /// unhandled; only finite, non-negative lengths are supported.
     pub fn length(mut self, length: f32) -> Self {
         self.length = Some(length);
         self
@@ -118,10 +149,10 @@ impl Separator {
     /// Semantics-only: the class string does not depend on `decorative`, so a
     /// decorative and a non-decorative separator render identically in every
     /// state, orientation, style, and theme (spec §3). What `decorative`
-    /// changes in the rendered HTML output (ARIA role / `aria-hidden`
-    /// treatment) is Radix-internal and OPEN (spec OPEN-2); egui has no ARIA
-    /// tree, so the value is stored and exposed via [`Self::is_decorative`]
-    /// with no visual effect (deviation D1).
+    /// changes in the rendered HTML output (ARIA `role`, `aria-orientation`,
+    /// `aria-hidden`, or other attributes) is Radix-internal and OPEN (spec
+    /// OPEN-2); egui has no ARIA tree, so the value is stored and exposed
+    /// via [`Self::is_decorative`] with no visual effect (deviation D1).
     pub fn decorative(mut self, decorative: bool) -> Self {
         self.decorative = decorative;
         self
@@ -163,6 +194,8 @@ impl Separator {
     /// Renders the separator: a 1px filled rect, no border, no radius, no
     /// shadow, no padding, no margin (spec §2.3). The 1px thickness is one
     /// logical pixel on egui's pixel grid (spec §9.8, implementation note).
+    /// The rect is allocated with `allocate_exact_size`, so it is never
+    /// compressed by siblings — the `shrink-0` equivalent (spec §9.1).
     ///
     /// Non-interactive: the widget takes no focus sense and paints no focus
     /// ring (spec §7). Whether a non-decorative separator is Tab-reachable
