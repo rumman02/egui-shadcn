@@ -1,34 +1,52 @@
 //! shadcn `select.tsx` — a fully keyboard-navigable single-value select.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/select.tsx` (Radix Select)
-//! with the nova recipe (`style-nova.css .cn-select-*`): an `h-8 rounded-lg
-//! border border-input bg-transparent pl-2.5 pr-2 text-sm shadow-xs`
-//! trigger (`data-[size=sm]:h-7` with `rounded-[min(var(--radius-md),10px)]`)
-//! with a full-opacity `size-4 text-muted-foreground` chevron-down,
-//! `data-[placeholder]:text-muted-foreground`,
-//! `dark:bg-input/30 dark:hover:bg-input/50` and
-//! `dark:aria-invalid:border-destructive/50`, and a `min-w-36 rounded-lg
-//! ring-1 ring-foreground/10 shadow-md bg-popover p-1` content popup whose
-//! items follow `rounded-md py-1 pr-8 pl-1.5 text-sm focus:bg-accent
-//! focus:text-accent-foreground data-[disabled]:opacity-50` (28 px rows)
-//! with the check indicator at `right-2`. Labels are `px-1.5 py-1 text-xs
-//! text-muted-foreground`, separators are `-mx-1 my-1 h-px bg-border`.
+//! to the frozen Pilot Wave S0 spec, in both recipes (base + nova, LAYER
+//! composition — a property the nova rule does not mention keeps its base
+//! value):
+//!
+//! - **Trigger:** base `h-9 rounded-md border border-input bg-transparent
+//!   px-3 text-sm shadow-xs` (sm: `h-8`); nova `h-8 rounded-lg pl-2.5 pr-2`
+//!   (sm: `h-7`, `rounded-[min(var(--radius-md),10px)]` = 8px). No hover
+//!   fill in light mode; dark `bg-input/30` resting, `bg-input/50` hovered.
+//!   Focus: 1px `border-ring` + 3px `ring-ring/50`; invalid: destructive
+//!   border + ring (under nova the invalid ring shows at rest). The chevron
+//!   is `size-4 text-muted-foreground`, at 50% opacity under base
+//!   (`opacity-50`); under nova its opacity is OPEN-1 and the pre-existing
+//!   full-opacity render is kept pending the S4 reference capture. The
+//!   value clamps to one line with an ellipsis (`line-clamp-1`).
+//! - **Content:** base `min-w-[8rem] rounded-md border shadow-md bg-popover`;
+//!   nova `min-w-36 rounded-lg` + 1px `ring-foreground/10`. The popup is
+//!   content-sized — it grows and shrinks with the row set, clamped only by
+//!   the available height; no fixed ceiling, no reserved empty area below
+//!   the last item. Scroll buttons (24px rows, 16px chevrons) show per
+//!   scroll direction and auto-repeat while hovered (mechanics OPEN-5).
+//! - **Items:** base 32px rows (`py-1.5 pl-2 rounded-sm`), nova 28px rows
+//!   (`py-1 pl-1.5 rounded-md`); highlight fill follows focus only
+//!   (`focus:bg-accent`) — hover alone never fills a row. The check
+//!   indicator sits at `right-2` on the selected item. Labels and
+//!   separators follow their recipes; groups render with 4px padding under
+//!   nova (`.cn-select-group`).
+//! - **Keyboard (Radix docs + spec §11):** click/Enter/Space/ArrowUp/Down
+//!   open the focused trigger — Space highlights the selected item, Enter
+//!   highlights the first item (the K1/K2 asymmetry is preserved);
+//!   ArrowUp/Down move the highlight (skipping disabled items, wrapping),
+//!   Home/End jump, Enter/Space select and close, Tab and Escape dismiss,
+//!   and typing performs typeahead. Highlight scroll-follow keeps the
+//!   highlighted row in view (OPEN-7, pending S6 confirmation).
 //!
 //! The value is controlled through `&mut Option<String>` or `&mut String`;
 //! pass neither and use [`Select::uncontrolled`] to keep the selection inside
-//! the egui state (read it from [`SelectResponse::value`]). The popup
-//! supports labels/separators/disabled options, a scrolling list, and
-//! Radix-style keyboard behavior: the trigger opens on click, Enter, Space
-//! or ArrowUp/Down while focused; ArrowUp/Down move the highlight (skipping
-//! disabled options, wrapping), Home/End jump, Enter/Space select and close,
-//! Tab and Escape dismiss, and typing performs the Radix typeahead —
-//! jumping the highlight to matching options while open and selecting them
-//! directly on the focused trigger while closed. Opening highlights the
-//! current selection.
+//! the egui state (read it from [`SelectResponse::value`]).
 //!
-//! Known gaps vs the source (no egui equivalent yet): the
-//! `SelectScrollUp/DownButton` hover auto-repeat rows (the list relies on
-//! the scroll area) and Radix's `position="item-aligned"` popup alignment.
+//! Platform limits / proposed deviations (spec §15, Expert Reviewer
+//! approval pending): **D1** no ARIA tree (keyboard/focus behaviour fully
+//! implemented, semantics omitted); **D2** popper-only positioning — the
+//! default `position="item-aligned"` geometry is Radix-internal (OPEN-2)
+//! and cannot be built faithfully from the snapshot, so the popup renders
+//! popper-style below/above the trigger; **D3** the enter/exit scale
+//! (0.95) is omitted (fade + slide retained); **D4** `name`/`required`
+//! form integration has no egui equivalent and is absent from the Rust API.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -40,10 +58,12 @@
 //!     .id_salt("framework")
 //!     .size(SelectSize::Default)
 //!     .show(ui, |s| {
-//!         s.label("Frameworks");
-//!         s.item(SelectItem::new("Next.js"));
-//!         s.item(SelectItem::new("SvelteKit"));
-//!         s.item(SelectItem::new("Astro").disabled(true));
+//!         s.group(|g| {
+//!             g.label("Frameworks");
+//!             g.item(SelectItem::new("Next.js"));
+//!             g.item(SelectItem::new("SvelteKit"));
+//!             g.item(SelectItem::new("Astro").disabled(true));
+//!         });
 //!         s.separator();
 //!         s.item(SelectItem::new("Other").value("other"));
 //!     });
@@ -55,53 +75,186 @@
 //! Select::uncontrolled().id_salt("solo").option("A").show_seeded(ui);
 //! ```
 
+use crate::components::button::mix_color;
 use crate::components::direction;
 use crate::components::dropdown_menu::{TypeaheadState, MENU_TYPEAHEAD_TIMEOUT_SECS};
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
-use crate::utils::animation::nova_overlay_progress;
-use crate::utils::shadow;
+use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
+use crate::utils::animation::{
+    nova_overlay_progress, transition_alpha, transition_color_to, transition_progress,
+    TransitionSpec,
+};
+use crate::utils::focus::paint_ring;
+use crate::utils::shadow::{
+    paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
+};
 use egui::emath::RectAlign;
 use egui::{
-    Align2, Color32, Context, CornerRadius, FontId, Id, Key, LayerId, Margin, Pos2, Rect, Response,
-    Sense, Stroke, Ui, Vec2,
+    Align, Align2, Color32, Context, CornerRadius, FontId, Id, Key, LayerId, Layout, Pos2, Rect,
+    Response, Sense, Stroke, Ui, UiBuilder, Vec2,
 };
+use std::borrow::Cow;
 
 // ---------------------------------------------------------------------------
 // Geometry constants
 // ---------------------------------------------------------------------------
 
-/// Content min width: nova `min-w-36` (144 px).
+/// Content min width: nova `min-w-36` (144 px). The base recipe uses
+/// `min-w-[8rem]` (128 px); see [`content_min_width`].
 pub const SELECT_MIN_WIDTH: f32 = 144.0;
-/// Trigger height: nova `data-[size=default]:h-8` (32 px).
-pub const SELECT_TRIGGER_HEIGHT_DEFAULT: f32 = 32.0;
-/// Small trigger height: nova `data-[size=sm]:h-7` (28 px).
-pub const SELECT_TRIGGER_HEIGHT_SM: f32 = 28.0;
-/// Trigger text padding: nova `pl-2.5` (10 px).
-const TRIGGER_PAD_X: f32 = 10.0;
-/// Trigger right padding: nova `pr-2` (8 px).
-const TRIGGER_PAD_RIGHT: f32 = 8.0;
-/// Gap between the value and the chevron: nova `gap-1.5` (6 px).
-const TRIGGER_ICON_GAP: f32 = 6.0;
-/// Content padding: `p-1` (4 px).
+/// Content min width: base `min-w-[8rem]` (128 px).
+const CONTENT_MIN_WIDTH_BASE: f32 = 128.0;
+/// Trigger height: base `data-[size=default]:h-9` (36 px).
+pub const SELECT_TRIGGER_HEIGHT_DEFAULT: f32 = 36.0;
+/// Small trigger height: base `data-[size=sm]:h-8` (32 px).
+pub const SELECT_TRIGGER_HEIGHT_SM: f32 = 32.0;
+/// Nova trigger height: `data-[size=default]:h-8` (32 px).
+const TRIGGER_HEIGHT_NOVA_DEFAULT: f32 = 32.0;
+/// Nova small trigger height: `data-[size=sm]:h-7` (28 px).
+const TRIGGER_HEIGHT_NOVA_SM: f32 = 28.0;
+/// Content padding: `p-1` (4 px), on the viewport in both recipes.
 const CONTENT_PADDING: f32 = 4.0;
-/// Item row height: nova `py-1` + one `text-sm` line (28 px).
-const ITEM_HEIGHT: f32 = 28.0;
-/// Item horizontal padding: nova `pl-1.5` (6 px).
-const ITEM_PAD_X: f32 = 6.0;
 /// Check/chevron icon size: `size-4` (16 px).
 const ICON_SIZE: f32 = 16.0;
-/// Label row height: nova `py-1` + one `text-xs` line (20 px).
-const LABEL_HEIGHT: f32 = 20.0;
-/// Separator total height: `my-1` top and bottom + 1 px line.
+/// Separator total height: `my-1` top and bottom + 1 px line (both recipes).
 const SEPARATOR_HEIGHT: f32 = 9.0;
-/// Popup max viewport height (clamped further to the screen space around
-/// the trigger; the source clamps to
-/// `--radix-select-content-available-height`).
-const MAX_CONTENT_HEIGHT: f32 = 300.0;
-/// Margin kept between the popup and the window edge when deriving the
-/// available height.
-const AVAILABLE_SLACK: f32 = 16.0;
+/// Scroll-button row height: 16 px chevron + `py-1` (24 px, §6.1).
+const SCROLL_BUTTON_HEIGHT: f32 = 24.0;
+/// Group padding under nova: `.cn-select-group` `p-1` (4 px, top + bottom).
+const GROUP_PAD: f32 = 4.0;
+/// Popper gap: `sideOffset` 0 + the 4 px popper translate (`S:65-66`).
+const POPUP_GAP: f32 = 4.0;
+/// Enter slide distance: `slide-in-from-*-2` (8 px, §4.5).
+const SLIDE_DISTANCE: f32 = 8.0;
+/// Collision padding: the Radix default `collisionPadding = 10` (§4.4).
+const COLLISION_PADDING: f32 = 10.0;
+/// Scroll margin for highlight scroll-follow: popper `scroll-my-1` (4 px).
+const SCROLL_MARGIN: f32 = 4.0;
+/// Scroll-button auto-repeat speed in points per second. The step/speed is
+/// OPEN-5 (Radix-internal); this value is a working default for S6 to
+/// verify, kept in one place so it can be re-tuned without a rework.
+const SCROLL_BUTTON_SPEED: f32 = 240.0;
+
+// ---------------------------------------------------------------------------
+// Recipe-resolved geometry (pure, unit-tested)
+// ---------------------------------------------------------------------------
+
+/// Trigger height for the size under the active recipe.
+fn trigger_height(size: SelectSize, nova: bool) -> f32 {
+    match (size, nova) {
+        (SelectSize::Default, false) => SELECT_TRIGGER_HEIGHT_DEFAULT,
+        (SelectSize::Sm, false) => SELECT_TRIGGER_HEIGHT_SM,
+        (SelectSize::Default, true) => TRIGGER_HEIGHT_NOVA_DEFAULT,
+        (SelectSize::Sm, true) => TRIGGER_HEIGHT_NOVA_SM,
+    }
+}
+
+/// Trigger corner radius: base `rounded-md` both sizes; nova `rounded-lg`
+/// default and `rounded-[min(var(--radius-md),10px)]` sm — the two nova
+/// sizes MUST differ (§3.4). The token is resolved, not hardcoded, so a
+/// raised `--radius` still caps the sm radius at 10 px.
+fn trigger_radius(size: SelectSize, nova: bool, radius: &RadiusTokens) -> u8 {
+    match (size, nova) {
+        (_, false) => radius.md_u8(),
+        (SelectSize::Default, true) => radius.lg_u8(),
+        (SelectSize::Sm, true) => radius.md_u8().min(10),
+    }
+}
+
+/// Trigger horizontal padding (left, right): base `px-3`, nova `pl-2.5 pr-2`.
+fn trigger_padding(nova: bool) -> (f32, f32) {
+    if nova {
+        (10.0, 8.0)
+    } else {
+        (12.0, 12.0)
+    }
+}
+
+/// Value–chevron gap: base `gap-2`, nova `gap-1.5`.
+fn trigger_gap(nova: bool) -> f32 {
+    if nova {
+        6.0
+    } else {
+        8.0
+    }
+}
+
+/// Item row height: base 32 px (`py-1.5` + one `text-sm` line), nova 28 px
+/// (`py-1`).
+fn item_height(nova: bool) -> f32 {
+    if nova {
+        28.0
+    } else {
+        32.0
+    }
+}
+
+/// Item left padding: base `pl-2`, nova `pl-1.5`. Right padding is `pr-8`
+/// (32 px) in both recipes.
+fn item_pad_x(nova: bool) -> f32 {
+    if nova {
+        6.0
+    } else {
+        8.0
+    }
+}
+
+/// Item corner radius: base `rounded-sm`, nova `rounded-md`.
+fn item_radius(nova: bool, radius: &RadiusTokens) -> u8 {
+    if nova {
+        radius.md_u8()
+    } else {
+        radius.sm_u8()
+    }
+}
+
+/// Label row height: base 24 px (`py-1.5` + one `text-xs` line), nova 20 px
+/// (`py-1`).
+fn label_height(nova: bool) -> f32 {
+    if nova {
+        20.0
+    } else {
+        24.0
+    }
+}
+
+/// Label left padding: base `px-2`, nova `px-1.5`.
+fn label_pad_x(nova: bool) -> f32 {
+    if nova {
+        6.0
+    } else {
+        8.0
+    }
+}
+
+/// Content min width: base 128 px, nova 144 px.
+fn content_min_width(nova: bool) -> f32 {
+    if nova {
+        SELECT_MIN_WIDTH
+    } else {
+        CONTENT_MIN_WIDTH_BASE
+    }
+}
+
+/// Content corner radius: base `rounded-md`, nova `rounded-lg`.
+fn content_radius(nova: bool, radius: &RadiusTokens) -> u8 {
+    if nova {
+        radius.lg_u8()
+    } else {
+        radius.md_u8()
+    }
+}
+
+/// Check-indicator centre offset from the `right-2` edge: the base
+/// indicator box is 14 px (`size-3.5`) with the 16 px check centred inside
+/// it, so its centre sits 7 px in; the nova box is 16 px, centre 8 px in.
+fn indicator_offset(nova: bool) -> f32 {
+    if nova {
+        8.0
+    } else {
+        7.0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Items and entries
@@ -142,12 +295,19 @@ impl SelectItem {
     }
 }
 
-/// One row of the select content (item, label or separator).
+/// One row of the select content (item, label, separator, group or group
+/// padding). Groups are flattened before rendering (see
+/// [`flatten_entries`]); the flat list is what indices and heights run over.
 #[derive(Clone, Debug)]
 pub(crate) enum SelectEntry {
     Item(SelectItem),
     Label(String),
     Separator,
+    /// A `SelectGroup` wrapper: its rows render inline, with 4 px padding
+    /// top and bottom under nova (`.cn-select-group` `p-1`).
+    Group(Vec<SelectEntry>),
+    /// 4 px group padding (nova only; inserted by flattening).
+    GroupPad,
 }
 
 /// Collects the content rows inside the [`Select::show`] closure.
@@ -196,13 +356,51 @@ impl SelectBuilder {
     pub fn separator(&mut self) {
         self.entries.push(SelectEntry::Separator);
     }
+
+    /// Appends a `SelectGroup`: the closure adds the group's label and
+    /// items. Under nova the group renders with 4 px padding top and bottom;
+    /// the base recipe has no group rule, so groups render flat there.
+    pub fn group(&mut self, content: impl FnOnce(&mut SelectBuilder)) {
+        let mut sub = SelectBuilder::new();
+        content(&mut sub);
+        self.entries.push(SelectEntry::Group(sub.entries));
+    }
+}
+
+/// Flattens groups into the render list, inserting [`SelectEntry::GroupPad`]
+/// around each group under nova. Returns the input borrowed when it holds
+/// no groups, so the common case allocates nothing.
+fn flatten_entries<'a>(entries: &'a [SelectEntry], nova: bool) -> Cow<'a, [SelectEntry]> {
+    if !entries.iter().any(|e| matches!(e, SelectEntry::Group(_))) {
+        return Cow::Borrowed(entries);
+    }
+    let mut flat = Vec::new();
+    flatten_into(entries, nova, &mut flat);
+    Cow::Owned(flat)
+}
+
+fn flatten_into(entries: &[SelectEntry], nova: bool, out: &mut Vec<SelectEntry>) {
+    for entry in entries {
+        if let SelectEntry::Group(inner) = entry {
+            if nova {
+                out.push(SelectEntry::GroupPad);
+            }
+            flatten_into(inner, nova, out);
+            if nova {
+                out.push(SelectEntry::GroupPad);
+            }
+        } else {
+            out.push(entry.clone());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested)
 // ---------------------------------------------------------------------------
 
-/// Number of keyboard-navigable entries (items; labels/separators skipped).
+/// Number of keyboard-navigable entries (items; labels/separators/group
+/// padding skipped).
 pub(crate) fn count_actionable(entries: &[SelectEntry]) -> usize {
     entries
         .iter()
@@ -344,75 +542,180 @@ pub(crate) fn typeahead_chars(ctx: &Context) -> Vec<char> {
     chars
 }
 
+/// Height of one entry row under the active recipe. Groups are flattened
+/// before measuring, so a group contributes nothing here.
+fn entry_height(entry: &SelectEntry, nova: bool) -> f32 {
+    match entry {
+        SelectEntry::Item(_) => item_height(nova),
+        SelectEntry::Label(_) => label_height(nova),
+        SelectEntry::Separator => SEPARATOR_HEIGHT,
+        SelectEntry::GroupPad => GROUP_PAD,
+        SelectEntry::Group(_) => 0.0,
+    }
+}
+
+/// Total height of the row list (the viewport content height).
+fn rows_height(entries: &[SelectEntry], nova: bool) -> f32 {
+    entries.iter().map(|e| entry_height(e, nova)).sum()
+}
+
+/// Resolved popup layout: which scroll buttons show and how tall the
+/// viewport is. Content-sized: the popup grows and shrinks with the row set
+/// and is clamped only by the available height (§5) — no fixed ceiling, no
+/// reserved empty area below the last item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PopupLayout {
+    show_up: bool,
+    show_down: bool,
+    viewport_height: f32,
+    total_height: f32,
+}
+
+fn popup_layout(rows_h: f32, available: f32, offset_y: f32) -> PopupLayout {
+    let pad = 2.0 * CONTENT_PADDING;
+    let scrollable = rows_h > available - pad;
+    // Worst-case viewport (both buttons) for the max-offset estimate; the
+    // per-direction visibility below is stable against the one-button
+    // viewport (a button appearing only shrinks the viewport, which keeps
+    // the list scrollable — see the layout tests).
+    let viewport_both = (available - 2.0 * SCROLL_BUTTON_HEIGHT - pad).max(0.0);
+    let max_offset = (rows_h - viewport_both).max(0.0);
+    let show_up = scrollable && offset_y > 0.5;
+    let show_down = scrollable && offset_y < max_offset - 0.5;
+    let buttons_h = (show_up as u8 + show_down as u8) as f32 * SCROLL_BUTTON_HEIGHT;
+    let viewport_height = rows_h.min(available - buttons_h - pad).max(0.0);
+    PopupLayout {
+        show_up,
+        show_down,
+        viewport_height,
+        total_height: viewport_height + pad + buttons_h,
+    }
+}
+
+/// Last frame's scroll-viewport snapshot, for scroll-button visibility and
+/// the auto-repeat drive. Persisted in temp data under the select's id.
+#[derive(Clone, Copy, Debug, Default)]
+struct ScrollSnapshot {
+    offset_y: f32,
+    content_h: f32,
+    viewport_h: f32,
+}
+
+/// Truncates `text` with an ellipsis to fit `max_width` (the trigger value's
+/// `line-clamp-1`), via binary search over char count. Returns the text
+/// unchanged when it already fits.
+fn truncate_with_ellipsis(
+    text: &str,
+    max_width: f32,
+    painter: &egui::Painter,
+    font: &FontId,
+    color: Color32,
+) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if painter
+        .layout_no_wrap(text.to_owned(), font.clone(), color)
+        .size()
+        .x
+        <= max_width
+    {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        if painter
+            .layout_no_wrap(candidate, font.clone(), color)
+            .size()
+            .x
+            <= max_width
+        {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut out: String = chars[..lo].iter().collect();
+    out.push('…');
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Trigger colors (pure, unit-tested)
 // ---------------------------------------------------------------------------
 
-/// Resolved trigger colors for one state.
+/// Resolved trigger colours for one state, before animation. The fill is an
+/// alpha over `p.input` (light: transparent; dark: `/30` resting, `/50`
+/// hovered); the stroke has rest/active endpoints so the focus/invalid
+/// change animates; the ring target is wrapped once and faded by an alpha
+/// ramp (the button ring pattern).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TriggerColors {
-    pub fill: Color32,
-    pub stroke: Stroke,
-    /// Focus ring color (alpha already applied).
-    pub ring: Color32,
+pub(crate) struct TriggerEndpoints {
+    /// Fill alpha over `p.input` at rest.
+    pub fill_rest_alpha: f32,
+    /// Fill alpha over `p.input` hovered.
+    pub fill_hover_alpha: f32,
+    /// Border colour at rest (unfocused, valid): `border-input`.
+    pub rest_stroke: Color32,
+    /// Border colour when focused or invalid (invalid wins).
+    pub active_stroke: Color32,
+    /// Focus/invalid ring colour (alpha already applied).
+    pub ring_target: Color32,
+    /// Value/placeholder text colour.
     pub text: Color32,
+    /// Chevron colour.
     pub chevron: Color32,
 }
 
-/// Mirrors the nova trigger recipe: `border-input bg-transparent pl-2.5
-/// pr-2 text-sm`, `dark:bg-input/30 dark:hover:bg-input/50`,
-/// `dark:aria-invalid:border-destructive/50`, the focus/invalid ring styles,
-/// `data-[placeholder]:text-muted-foreground` and the full-opacity
-/// `text-muted-foreground` chevron (`opacity-50` only when disabled).
-pub(crate) fn resolve_trigger_colors(
+/// Mirrors the trigger recipes (§3.3): `border-input`, the dark fills,
+/// `dark:aria-invalid:border-destructive/50` (nova only), the focus/invalid
+/// ring styles, and `data-[placeholder]:text-muted-foreground`. The base
+/// chevron is `opacity-50`; under nova its opacity is OPEN-1, so the
+/// pre-existing full-opacity render is kept pending the S4 capture.
+pub(crate) fn resolve_trigger_endpoints(
     p: &Palette,
     dark: bool,
-    focused: bool,
+    nova: bool,
     invalid: bool,
-    hovered: bool,
-    disabled: bool,
     has_selection: bool,
-) -> TriggerColors {
-    let fill = if dark {
-        if hovered && !disabled {
-            color_alpha(p.input, 0.5)
-        } else {
-            color_alpha(p.input, 0.3)
-        }
-    } else {
-        Color32::TRANSPARENT
-    };
-    let stroke_color = if invalid {
-        if dark {
+) -> TriggerEndpoints {
+    let (fill_rest_alpha, fill_hover_alpha) = if dark { (0.3, 0.5) } else { (0.0, 0.0) };
+    let active_stroke = if invalid {
+        if dark && nova {
             color_alpha(p.destructive, 0.5)
         } else {
             p.destructive
         }
-    } else if focused {
-        p.ring
     } else {
-        p.input
+        p.ring
     };
-    let ring = if invalid {
+    let ring_target = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
     } else {
         color_alpha(p.ring, 0.5)
     };
-    let text = if disabled || !has_selection {
-        color_alpha(p.muted_foreground, if disabled { 0.5 } else { 1.0 })
-    } else {
+    let text = if has_selection {
         p.foreground
+    } else {
+        p.muted_foreground
     };
-    TriggerColors {
-        fill,
-        stroke: Stroke::new(1.0, stroke_color),
-        ring,
+    let chevron = if nova {
+        p.muted_foreground
+    } else {
+        color_alpha(p.muted_foreground, 0.5)
+    };
+    TriggerEndpoints {
+        fill_rest_alpha,
+        fill_hover_alpha,
+        rest_stroke: p.input,
+        active_stroke,
+        ring_target,
         text,
-        chevron: if disabled {
-            color_alpha(p.muted_foreground, 0.5)
-        } else {
-            p.muted_foreground
-        },
+        chevron,
     }
 }
 
@@ -423,20 +726,26 @@ pub(crate) fn resolve_trigger_colors(
 /// Trigger size (`data-size`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectSize {
-    /// `data-[size=default]:h-8` (32 px).
+    /// `data-[size=default]:h-9` base (36 px), `h-8` nova (32 px).
     #[default]
     Default,
-    /// `data-[size=sm]:h-7` (28 px).
+    /// `data-[size=sm]:h-8` base (32 px), `h-7` nova (28 px).
     Sm,
 }
 
 impl SelectSize {
-    /// Trigger height in points.
+    /// Trigger height in points under the base recipe.
     pub fn height(self) -> f32 {
         match self {
             SelectSize::Default => SELECT_TRIGGER_HEIGHT_DEFAULT,
             SelectSize::Sm => SELECT_TRIGGER_HEIGHT_SM,
         }
+    }
+
+    /// Trigger height in points under the given style (nova renders shorter
+    /// triggers).
+    pub fn height_for(self, style: Style) -> f32 {
+        trigger_height(self, style == Style::Nova)
     }
 }
 
@@ -522,7 +831,12 @@ pub struct SelectResponse {
 // Select (root)
 // ---------------------------------------------------------------------------
 
-/// A shadcn select. See the [module docs](self) for an example.
+/// A shadcn select (`SelectTrigger` + `SelectContent`). See the [module
+/// docs](self) for an example.
+///
+/// The trigger is `w-fit` — sized to the widest option (or the placeholder)
+/// — with no minimum-width floor (§3.2); the content enforces its own min
+/// width.
 #[derive(Debug)]
 pub struct Select<'a> {
     binding: Option<Binding<'a>>,
@@ -605,7 +919,7 @@ impl<'a> Select<'a> {
     }
 
     /// Sets an explicit trigger width. The default fits the widest option
-    /// (`w-fit`), at least [`SELECT_MIN_WIDTH`].
+    /// (`w-fit`), with no minimum-width floor (§3.2).
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
         self
@@ -648,11 +962,17 @@ impl<'a> Select<'a> {
         self.show_with(ui, seed)
     }
 
-    fn show_with(self, ui: &mut Ui, entries: Vec<SelectEntry>) -> SelectResponse {
-        let binding = self.binding;
+    fn show_with(self, ui: &mut Ui, entries_in: Vec<SelectEntry>) -> SelectResponse {
+        let mut binding = self.binding;
         let theme = ShadcnTheme::of_ui(ui);
+        let nova = theme.style == Style::Nova;
         let dark = theme.mode.is_dark();
         let p = theme.palette;
+
+        // Groups flatten into the render list (nova-only group padding);
+        // all indices and heights below run over this flat list.
+        let flat = flatten_entries(&entries_in, nova);
+        let entries: &[SelectEntry] = &flat;
 
         let state_id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -672,8 +992,25 @@ impl<'a> Select<'a> {
             None => stored.clone(),
         };
 
-        // Trigger geometry: `w-fit` fits the widest label, min `min-w-36`.
-        let height = self.size.height();
+        // The trigger shows the selected item's ItemText content (§3.5);
+        // when the bound value matches no item (OPEN-16), the raw value
+        // is shown in foreground, preserving the pre-existing behaviour.
+        let selected_label = value_before.as_deref().and_then(|v| {
+            entries.iter().find_map(|e| match e {
+                SelectEntry::Item(it) if it.value == v => Some(it.label.as_str()),
+                _ => None,
+            })
+        });
+        let display = selected_label.or(value_before.as_deref());
+        let label = display
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.placeholder.clone().unwrap_or_default());
+
+        // Trigger geometry: `w-fit` fits the widest label (or the
+        // placeholder), with no minimum-width floor (§3.2).
+        let height = trigger_height(self.size, nova);
+        let (pad_l, pad_r) = trigger_padding(nova);
+        let gap = trigger_gap(nova);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let widest = entries
             .iter()
@@ -698,10 +1035,9 @@ impl<'a> Select<'a> {
                     })
                     .unwrap_or(0.0),
             );
-        let width = self.width.unwrap_or_else(|| {
-            (widest + TRIGGER_PAD_X + TRIGGER_ICON_GAP + ICON_SIZE + TRIGGER_PAD_RIGHT)
-                .max(SELECT_MIN_WIDTH)
-        });
+        let width = self
+            .width
+            .unwrap_or(widest + pad_l + gap + ICON_SIZE + pad_r);
 
         let sense = if self.disabled {
             Sense::hover()
@@ -712,67 +1048,175 @@ impl<'a> Select<'a> {
         let trigger_id = state_id.with("trigger");
         let response = ui.interact(rect, trigger_id, sense);
 
+        // Claim Escape + vertical arrows on the trigger's focus lock while
+        // focused: Escape closes the popup without surrendering focus (K7)
+        // and arrows drive the highlight/open (K3/K4) instead of moving
+        // focus spatially (the button focus-lock pattern).
+        if !self.disabled && response.has_focus() {
+            ctx.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    trigger_id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: false,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
+        }
+
         if ui.is_rect_visible(rect) {
-            let c = resolve_trigger_colors(
-                &p,
-                dark,
-                response.has_focus(),
-                self.invalid,
-                response.hovered(),
-                self.disabled,
-                value_before.is_some(),
-            );
-            let radius = theme.radius.lg_u8();
+            let spec = TransitionSpec::default();
+            let opacity = if self.disabled { 0.5 } else { 1.0 };
+            let endpoints =
+                resolve_trigger_endpoints(&p, dark, nova, self.invalid, value_before.is_some());
+            let focused = response.has_focus();
+            let hovered = response.hovered() && !self.disabled;
+            let radius = trigger_radius(self.size, nova, &theme.radius);
             let corner = CornerRadius::same(radius);
             let painter = ui.painter();
 
-            // `shadow-xs`
-            if !self.disabled {
-                let sh = shadow::shadow_xs(dark);
-                painter.add(
-                    egui::epaint::RectShape::filled(
-                        rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                        corner,
-                        sh.color,
-                    )
-                    .with_blur_width(2.0),
-                );
+            // `shadow-xs` (LAYER: survives under nova). The whole trigger
+            // fades to 50% when disabled, shadow included, so the resolved
+            // layers ride the same opacity.
+            let shadow = resolve_shadow(ShadowSize::Xs, theme.style, ShadowSlot::SelectTrigger);
+            if opacity >= 1.0 {
+                paint_shadow_layers(painter, rect, corner, shadow.layers(), dark);
+            } else {
+                let faded: Vec<ShadowLayer> = shadow
+                    .layers()
+                    .iter()
+                    .map(|l| ShadowLayer {
+                        alpha: l.alpha * opacity,
+                        ..*l
+                    })
+                    .collect();
+                paint_shadow_layers(painter, rect, corner, &faded, dark);
             }
 
-            if c.fill != Color32::TRANSPARENT {
-                painter.rect_filled(rect, corner, c.fill);
+            // Fill: dark `input/30` resting, `input/50` hovered; transparent
+            // in light. The hover leg animates the alpha (the colour
+            // transitions of §3.3); theme switches snap the endpoints (the
+            // dialog OBS-D1 precedent) rather than legging across the
+            // transparent boundary (the button BTN-FLK-02 lesson).
+            let hover_t = transition_progress(&ctx, trigger_id.with("fill_hover"), hovered, spec).t;
+            let fill_alpha = (endpoints.fill_rest_alpha
+                + (endpoints.fill_hover_alpha - endpoints.fill_rest_alpha) * hover_t)
+                * opacity;
+            if fill_alpha > 0.0 {
+                painter.rect_filled(rect, corner, color_alpha(p.input, fill_alpha));
             }
-            painter.rect_stroke(rect, corner, c.stroke, egui::epaint::StrokeKind::Inside);
 
-            // Label: `pl-2.5 text-sm` (nova `gap-1.5` to the chevron).
-            let label = value_before
-                .clone()
-                .unwrap_or_else(|| self.placeholder.clone().unwrap_or_default());
-            let text_pos = Pos2::new(rect.min.x + TRIGGER_PAD_X, rect.center().y);
-            painter.text(text_pos, Align2::LEFT_CENTER, label, font, c.text);
+            // Border: `input` at rest, `ring` focused, `destructive` invalid
+            // (invalid wins). Both endpoints ride the endpoint-change
+            // animator so theme switches animate; the focus/invalid mix is
+            // the boundary-safe `mix_color` (button pattern).
+            let rest_stroke = transition_color_to(
+                &ctx,
+                trigger_id.with("border_rest"),
+                endpoints.rest_stroke,
+                spec,
+            )
+            .color;
+            let active_stroke = transition_color_to(
+                &ctx,
+                trigger_id.with("border_active"),
+                endpoints.active_stroke,
+                spec,
+            )
+            .color;
+            let t_border = transition_progress(
+                &ctx,
+                trigger_id.with("border"),
+                focused || self.invalid,
+                spec,
+            )
+            .t;
+            let stroke_color =
+                color_alpha(mix_color(rest_stroke, active_stroke, t_border), opacity);
+            painter.rect_stroke(
+                rect,
+                corner,
+                Stroke::new(1.0, stroke_color),
+                egui::epaint::StrokeKind::Inside,
+            );
 
-            // Chevron: `size-4 text-muted-foreground` at `pr-2`.
+            // Text + chevron ride the endpoint-change animator (theme
+            // switches animate; the disabled fade snaps — `transition-colors`
+            // does not cover opacity).
+            let text_color = color_alpha(
+                transition_color_to(&ctx, trigger_id.with("text"), endpoints.text, spec).color,
+                opacity,
+            );
+            let chevron_color = color_alpha(
+                transition_color_to(&ctx, trigger_id.with("chevron"), endpoints.chevron, spec)
+                    .color,
+                opacity,
+            );
+
+            // Value: `line-clamp-1` — truncate with an ellipsis under an
+            // explicit narrow width; the chevron never shrinks (E11).
             let chev_rect = Rect::from_center_size(
-                Pos2::new(
-                    rect.max.x - TRIGGER_PAD_RIGHT - ICON_SIZE * 0.5,
-                    rect.center().y,
-                ),
+                Pos2::new(rect.max.x - pad_r - ICON_SIZE * 0.5, rect.center().y),
                 Vec2::splat(ICON_SIZE),
             );
-            Icon::ChevronDown.paint(painter, chev_rect, c.chevron, 2.0 * ICON_SIZE / 24.0);
+            let value_zone = Rect::from_min_max(
+                Pos2::new(rect.min.x + pad_l, rect.min.y),
+                Pos2::new(chev_rect.min.x - gap, rect.max.y),
+            );
+            let shown =
+                truncate_with_ellipsis(&label, value_zone.width(), painter, &font, text_color);
+            painter.with_clip_rect(value_zone).text(
+                Pos2::new(rect.min.x + pad_l, rect.center().y),
+                Align2::LEFT_CENTER,
+                shown,
+                font,
+                text_color,
+            );
 
-            // `focus-visible:ring-[3px] focus-visible:ring-ring/50`
-            if response.has_focus() && !self.disabled {
-                let ring_rect = rect.expand2(egui::vec2(1.0, 1.0));
-                crate::utils::focus::paint_ring(painter, ring_rect, c.ring, 3.0, radius as f32);
+            // Chevron: 16px, `muted-foreground` (50% under base), never
+            // rotates on open (§3.6).
+            Icon::ChevronDown.paint(painter, chev_rect, chevron_color, 2.0 * ICON_SIZE / 24.0);
+
+            // Focus ring: 3px `ring/50`, or the destructive ring when
+            // invalid. Under nova the invalid ring shows at rest
+            // (`aria-invalid:ring-3` ungated); under base it needs focus.
+            // The target rides the endpoint animator; visibility is a pure
+            // alpha ramp (button ring pattern). Painted on the rect directly
+            // (adjacent ring — the button BTN-VIS-02 lesson).
+            let ring_shown = focused || (self.invalid && nova);
+            let ring_target = transition_color_to(
+                &ctx,
+                trigger_id.with("ring_target"),
+                endpoints.ring_target,
+                spec,
+            )
+            .color;
+            let ring_alpha =
+                transition_alpha(&ctx, trigger_id.with("ring"), 0.0, 1.0, ring_shown, spec).alpha;
+            if ring_alpha > 0.0 {
+                paint_ring(
+                    painter,
+                    rect,
+                    color_alpha(ring_target, ring_alpha * opacity),
+                    3.0,
+                    radius as f32,
+                );
             }
         }
 
         // Trigger input: click (or keyboard Enter/Space on the focused
         // trigger, which egui surfaces as a click) toggles; ArrowUp/Down
-        // open while focused (Radix behavior).
+        // open while focused (Radix behavior). While the popup is already
+        // open, a keyboard click must NOT toggle — Enter/Space select the
+        // highlighted item (K6) via the keyboard block below; only pointer
+        // clicks toggle the open popup closed (M1/M2). Without this gate
+        // the focus-lock filter (which keeps the trigger focused across
+        // arrow navigation) would turn every Enter-select into a toggle.
         let mut just_opened = false;
-        if !self.disabled && response.clicked() {
+        let keyboard_click = ctx.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Space));
+        if !self.disabled && response.clicked() && !(open_at_start && keyboard_click) {
             state.open = !state.open;
             just_opened = state.open;
         }
@@ -785,14 +1229,17 @@ impl<'a> Select<'a> {
             }
         }
 
-        // Opening highlights the current selection (Radix scroll/highlight).
+        // Opening focus: K1/K2 asymmetry (Radix docs) — Space opens on the
+        // selected item, Enter opens on the first item. Mouse/arrow opens
+        // keep the selection highlight (OPEN-12: the arrow-open target is
+        // unsettled, so the pre-existing behaviour stands).
         let mut highlight: Option<usize> = ctx
             .data_mut(|d| d.get_temp::<Option<usize>>(state_id.with("highlight")))
             .unwrap_or(None);
         if just_opened {
-            highlight = value_before
-                .as_deref()
-                .and_then(|v| action_index_of_value(&entries, v));
+            let (enter, space) =
+                ctx.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Space)));
+            highlight = open_highlight(entries, value_before.as_deref(), enter, space);
         }
         if !state.open {
             state.trigger = Some(TriggerInfo {
@@ -826,18 +1273,18 @@ impl<'a> Select<'a> {
                 } else {
                     0
                 };
-                let mut found = typeahead_action_index(&entries, start, &query);
+                let mut found = typeahead_action_index(entries, start, &query);
                 if found.is_none() && query.chars().count() > 1 {
                     state.typeahead.buffer.clear();
                     state.typeahead.buffer.push(ch);
                     query = state.typeahead.buffer.clone();
-                    found = typeahead_action_index(&entries, 0, &query);
+                    found = typeahead_action_index(entries, 0, &query);
                 }
                 if let Some(action) = found {
                     if state.open && open_at_start {
                         highlight = Some(action);
                     } else if !state.open && response.has_focus() {
-                        if let Some(item_i) = item_index_at(&entries, action) {
+                        if let Some(item_i) = item_index_at(entries, action) {
                             if let Some(SelectEntry::Item(item)) = entries.get(item_i) {
                                 typeahead_selected = Some(item.value.clone());
                             }
@@ -850,9 +1297,19 @@ impl<'a> Select<'a> {
         // Popup (kept up during the close fade like the source's
         // `data-[state=closed]:animate-out`).
         let mut activated: Option<String> = None;
-        let mut popup_rects: Vec<Rect> = Vec::new();
+        let mut popup_rect: Option<Rect> = None;
         let popup_id = state_id.with("popup");
         let was_open_last_frame = ctx.read_response(popup_id).is_some();
+        // Scroll snapshot from last frame (scroll-button visibility +
+        // auto-repeat drive) and the last rendered highlight (highlight
+        // scroll-follow, OPEN-7/N3 — only scroll when the highlight moved).
+        let mut snapshot: ScrollSnapshot = ctx
+            .data_mut(|d| d.get_temp(state_id.with("scroll")))
+            .unwrap_or_default();
+        let rendered_highlight: Option<usize> = ctx
+            .data_mut(|d| d.get_temp(state_id.with("rendered_highlight")))
+            .flatten();
+        let scroll_to_highlight = highlight != rendered_highlight;
         if state.open || was_open_last_frame {
             if let Some(trigger) = state.trigger {
                 // Nova `.cn-select-content` runs its in/out animation at
@@ -861,7 +1318,7 @@ impl<'a> Select<'a> {
                 if state.open || progress.alpha > 0.002 {
                     render_popup(
                         &ctx,
-                        &entries,
+                        entries,
                         popup_id,
                         trigger.rect,
                         trigger.layer_id,
@@ -875,12 +1332,20 @@ impl<'a> Select<'a> {
                         highlight,
                         state.open,
                         progress.alpha,
-                        &mut popup_rects,
+                        &mut snapshot,
+                        scroll_to_highlight,
+                        &mut popup_rect,
                         &mut activated,
                     );
+                    ctx.data_mut(|d| {
+                        d.insert_temp(state_id.with("rendered_highlight"), highlight);
+                    });
                 }
             }
         }
+        ctx.data_mut(|d| {
+            d.insert_temp(state_id.with("scroll"), snapshot);
+        });
 
         // Keyboard behavior while the popup is already open (the frame it
         // opened, Radix only highlights).
@@ -897,13 +1362,13 @@ impl<'a> Select<'a> {
                 )
             });
             if down {
-                move_highlight(&entries, &mut highlight, 1);
+                move_highlight(entries, &mut highlight, 1);
             }
             if up {
-                move_highlight(&entries, &mut highlight, -1);
+                move_highlight(entries, &mut highlight, -1);
             }
             if home || end {
-                if let Some(idx) = edge_actionable(&entries, end) {
+                if let Some(idx) = edge_actionable(entries, end) {
                     highlight = Some(idx);
                 }
             }
@@ -915,7 +1380,7 @@ impl<'a> Select<'a> {
             }
             if (enter || space) && !esc && !tab {
                 if let Some(action) = highlight {
-                    if let Some(item_i) = item_index_at(&entries, action) {
+                    if let Some(item_i) = item_index_at(entries, action) {
                         if let Some(SelectEntry::Item(item)) = entries.get(item_i) {
                             if !item.disabled {
                                 activated = Some(item.value.clone());
@@ -926,13 +1391,13 @@ impl<'a> Select<'a> {
             }
         }
 
-        // Dismiss on a click outside every popup and the trigger (only once
+        // Dismiss on a click outside the popup and the trigger (only once
         // the popup was actually visible).
         if state.open {
             let trigger_rect = state.trigger.map(|t| t.rect).unwrap_or(rect);
             if crate::components::dropdown_menu::handle_outside_click(
                 &ctx,
-                &popup_rects,
+                popup_rect.as_slice(),
                 &[trigger_rect],
                 was_open_last_frame,
             ) {
@@ -956,7 +1421,6 @@ impl<'a> Select<'a> {
             changed = true;
         }
         if changed {
-            let mut binding = binding;
             if let Some(b) = binding.as_mut() {
                 b.set(value_after.clone());
             }
@@ -978,9 +1442,30 @@ impl<'a> Select<'a> {
     }
 }
 
-/// Renders the options popup (a `min-w-36 rounded-lg ring-1
-/// ring-foreground/10 shadow-md bg-popover p-1` list inside an
-/// [`egui::Popup`]).
+/// Opening highlight (K1/K2, Radix docs): Enter opens on the first item,
+/// Space (and mouse/arrow opens) on the selected item.
+fn open_highlight(
+    entries: &[SelectEntry],
+    selected_value: Option<&str>,
+    enter: bool,
+    space: bool,
+) -> Option<usize> {
+    if enter && !space {
+        edge_actionable(entries, false)
+    } else {
+        selected_value.and_then(|v| action_index_of_value(entries, v))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Popup rendering
+// ---------------------------------------------------------------------------
+
+/// Renders the popper popup below/above the trigger (D2: popper-only — the
+/// default `position="item-aligned"` geometry is Radix-internal, OPEN-2).
+/// The popup is content-sized (§5): its height is the row list clamped only
+/// by the available height, with 24px scroll buttons outside the viewport
+/// when the list scrolls (§6).
 #[allow(clippy::too_many_arguments)]
 fn render_popup(
     ctx: &Context,
@@ -996,28 +1481,34 @@ fn render_popup(
     highlight: Option<usize>,
     open: bool,
     alpha: f32,
-    popup_rects: &mut Vec<Rect>,
+    snapshot: &mut ScrollSnapshot,
+    scroll_to_highlight: bool,
+    popup_rect: &mut Option<Rect>,
     activated: &mut Option<String>,
 ) {
-    let content_width = SELECT_MIN_WIDTH.max(anchor.width());
-    let frame = egui::Frame::new()
-        .fill(p.popover)
-        .stroke(Stroke::new(1.0, color_alpha(p.foreground, 0.10)))
-        .corner_radius(CornerRadius::same(theme.radius.lg_u8()))
-        .inner_margin(Margin::same(CONTENT_PADDING as i8))
-        .shadow(shadow::shadow_md(dark));
+    let nova = theme.style == Style::Nova;
+    let content_width = content_min_width(nova).max(anchor.width());
+    let corner = CornerRadius::same(content_radius(nova, &theme.radius));
 
-    // `translate-y-1` on the popper content: the effective gap is the
-    // default side offset plus 4 px.
-    let gap = 8.0 + (1.0 - alpha) * 8.0;
-
-    // Clamp the list to the screen space around the trigger (the source
-    // clamps to `--radix-select-content-available-height`).
+    // Available height: the space around the trigger (Radix
+    // `--radix-select-content-available-height`), collision padding 10.
+    // No fixed ceiling (§5): the old 300 px cap is gone.
     let screen_h = ctx.content_rect().height();
-    let below = screen_h - anchor.max.y - gap - AVAILABLE_SLACK;
-    let above = anchor.min.y - gap - AVAILABLE_SLACK;
-    let available = below.max(above).max(160.0);
-    let max_height = MAX_CONTENT_HEIGHT.min(available);
+    let below = screen_h - anchor.max.y - POPUP_GAP - COLLISION_PADDING;
+    let above = anchor.min.y - POPUP_GAP - COLLISION_PADDING;
+    let available = below.max(above).max(0.0);
+
+    let rows_h = rows_height(entries, nova);
+    let layout = popup_layout(rows_h, available, snapshot.offset_y);
+
+    // Slide: entering slides 8px from the trigger side
+    // (`slide-in-from-top-2` for a bottom popup); the exit animation has
+    // no slide (§4.5). The scale (0.95) is omitted (D3).
+    let gap = if open {
+        POPUP_GAP - (1.0 - alpha) * SLIDE_DISTANCE
+    } else {
+        POPUP_GAP
+    };
 
     let popup = egui::Popup::new(
         popup_id,
@@ -1034,69 +1525,220 @@ fn render_popup(
 
     let inner = popup.show(|ui| {
         ui.set_opacity(alpha);
-        frame.show(ui, |ui| {
-            ui.set_min_width(content_width - 2.0 * CONTENT_PADDING);
-            render_rows(
-                ui,
-                entries,
-                popup_id,
-                max_height,
-                p,
-                theme,
-                selected_value,
-                highlight,
-                open,
-                activated,
+        let total = Vec2::new(content_width, layout.total_height);
+        let (_, rect) = ui.allocate_space(total);
+
+        // Shadow first (behind the body), then fill + strokes: 1px
+        // `border` inside, plus the nova 1px `ring-foreground/10` outside
+        // (the dialog pattern; the effective rendered stroke is OPEN-19).
+        paint_shadow_resolved(
+            ui.painter(),
+            rect,
+            corner,
+            ShadowSize::Md,
+            theme.style,
+            ShadowSlot::SelectContent,
+            dark,
+        );
+        ui.painter().rect_filled(rect, corner, p.popover);
+        ui.painter().rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0, p.border),
+            egui::epaint::StrokeKind::Inside,
+        );
+        if nova {
+            ui.painter().rect_stroke(
+                rect,
+                corner,
+                Stroke::new(1.0, color_alpha(p.foreground, 0.10)),
+                egui::epaint::StrokeKind::Outside,
             );
-        });
+        }
+
+        // Scroll-button hover from last frame drives this frame's
+        // auto-repeat (OPEN-5 mechanics; one frame of lag, symmetric for
+        // both buttons). Inert while the popup is closing.
+        let up_id = popup_id.with("scroll_up");
+        let down_id = popup_id.with("scroll_down");
+        let up_hovered = ctx.read_response(up_id).is_some_and(|r| r.hovered());
+        let down_hovered = ctx.read_response(down_id).is_some_and(|r| r.hovered());
+        let mut offset_override: Option<f32> = None;
+        if open && (up_hovered || down_hovered) {
+            let dt = ctx.input(|i| i.unstable_dt).clamp(0.0, 0.05);
+            let max_offset = (rows_h - layout.viewport_height).max(0.0);
+            let mut offset = snapshot.offset_y;
+            if up_hovered {
+                offset -= SCROLL_BUTTON_SPEED * dt;
+            }
+            if down_hovered {
+                offset += SCROLL_BUTTON_SPEED * dt;
+            }
+            offset_override = Some(offset.clamp(0.0, max_offset));
+            ctx.request_repaint();
+        }
+
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        if layout.show_up {
+            paint_scroll_button(&mut child, up_id, true, p, nova, corner);
+        }
+        // Viewport band: the `p-1` padding lives on the viewport, while the
+        // scroll buttons span the full content width (§6.1).
+        let band_h = layout.viewport_height + 2.0 * CONTENT_PADDING;
+        let (_, band) = child.allocate_space(Vec2::new(content_width, band_h));
+        let mut rows_ui = child.new_child(
+            UiBuilder::new()
+                .max_rect(band.shrink(CONTENT_PADDING))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        let output = render_rows(
+            &mut rows_ui,
+            entries,
+            popup_id,
+            layout.viewport_height,
+            offset_override,
+            p,
+            theme,
+            selected_value,
+            highlight,
+            open,
+            scroll_to_highlight,
+            activated,
+        );
+        snapshot.offset_y = output.state.clamped_offset().y;
+        snapshot.content_h = output.content_size.y;
+        snapshot.viewport_h = output.inner_rect.height();
+        if layout.show_down {
+            paint_scroll_button(&mut child, down_id, false, p, nova, corner);
+        }
     });
-    if let Some(ref r) = inner {
-        popup_rects.push(r.response.rect);
+    if let Some(inner) = inner {
+        *popup_rect = Some(inner.response.rect);
     }
 }
 
-/// The scrolling row list (`max-h` viewport with `p-1` padding).
+/// Renders the scrollable row list: a bare `ScrollArea` (not the themed
+/// wrapper — the viewport has no visible scrollbar, §2.8), `AlwaysHidden`
+/// scrollbar, no shrinking. The scroll offset is overridden only on
+/// scroll-button frames, so wheel scrolling keeps working between them.
 #[allow(clippy::too_many_arguments)]
 fn render_rows(
     ui: &mut Ui,
     entries: &[SelectEntry],
     popup_id: Id,
     max_height: f32,
+    offset_override: Option<f32>,
     p: &Palette,
     theme: &ShadcnTheme,
     selected_value: Option<&str>,
     highlight: Option<usize>,
     open: bool,
+    scroll_to_highlight: bool,
     activated: &mut Option<String>,
-) {
-    let scroll_id = popup_id.with("scroll");
-    crate::components::scroll_area::ScrollArea::new()
-        .height(max_height)
-        .id_salt(scroll_id.value().to_string())
-        .show(ui, |ui| {
-            let mut action_idx = 0usize;
-            for (i, entry) in entries.iter().enumerate() {
-                match entry {
-                    SelectEntry::Separator => paint_separator(ui, p),
-                    SelectEntry::Label(text) => paint_label(ui, text, p),
-                    SelectEntry::Item(item) => {
-                        let action = action_idx;
-                        action_idx += 1;
-                        let row_id = popup_id.with(("select_row", i));
-                        let highlighted = open && highlight == Some(action);
-                        let is_selected = selected_value.is_some_and(|v| v == item.value);
-                        if let Some(value) =
-                            paint_item(ui, row_id, item, highlighted, is_selected, p, theme, open)
-                        {
-                            *activated = Some(value);
-                        }
+) -> egui::containers::scroll_area::ScrollAreaOutput<()> {
+    let mut area = egui::ScrollArea::new([true, false])
+        .auto_shrink([false, false])
+        .max_height(max_height)
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .id_salt(popup_id.with("scroll"));
+    if let Some(offset) = offset_override {
+        area = area.vertical_scroll_offset(offset);
+    }
+    area.show(ui, |ui| {
+        let mut action_idx = 0usize;
+        for entry in entries.iter() {
+            match entry {
+                SelectEntry::Separator => paint_separator(ui, p),
+                SelectEntry::Label(text) => paint_label(ui, text, p, theme),
+                SelectEntry::GroupPad => {
+                    ui.allocate_space(Vec2::new(ui.available_width(), GROUP_PAD));
+                }
+                SelectEntry::Group(_) => {
+                    // Flattened before rendering; unreachable.
+                }
+                SelectEntry::Item(item) => {
+                    let highlighted = open && highlight == Some(action_idx);
+                    let selected = selected_value.is_some_and(|v| v == item.value);
+                    if let Some(value) = paint_item(
+                        ui,
+                        popup_id.with(("row", action_idx)),
+                        item,
+                        highlighted,
+                        selected,
+                        p,
+                        theme,
+                        open,
+                        scroll_to_highlight,
+                    ) {
+                        *activated = Some(value);
                     }
+                    action_idx += 1;
                 }
             }
-        });
+        }
+    })
 }
 
-/// Draws one option row; returns the option value when it was clicked.
+/// A scroll button (§6): 24px row, full content width, OUTSIDE the viewport,
+/// 16px chevron in `popover-foreground`, `cursor-default`. Under nova the
+/// row carries the `popover` fill + `z-10` (painted over the viewport);
+/// under base it is transparent. The outer corners match the frame radius.
+fn paint_scroll_button(
+    ui: &mut Ui,
+    id: Id,
+    up: bool,
+    p: &Palette,
+    nova: bool,
+    frame_corner: CornerRadius,
+) {
+    let width = ui.available_width();
+    let (_, rect) = ui.allocate_space(Vec2::new(width, SCROLL_BUTTON_HEIGHT));
+    let response = ui.interact(rect, id, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let corner = if up {
+            CornerRadius {
+                nw: frame_corner.nw,
+                ne: frame_corner.ne,
+                sw: 0,
+                se: 0,
+            }
+        } else {
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: frame_corner.sw,
+                se: frame_corner.se,
+            }
+        };
+        if nova {
+            ui.painter().rect_filled(rect, corner, p.popover);
+        }
+        let icon = if up {
+            Icon::ChevronUp
+        } else {
+            Icon::ChevronDown
+        };
+        let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(ICON_SIZE));
+        icon.paint(
+            ui.painter(),
+            icon_rect,
+            p.popover_foreground,
+            2.0 * ICON_SIZE / 24.0,
+        );
+    }
+    let _ = response;
+}
+
+/// A `SelectItem` row: highlight fill follows focus only — `focus:bg-accent`
+/// with `accent-foreground` text — hover alone never fills a row (§8.1).
+/// Disabled rows render at 50% opacity and ignore clicks. The check
+/// indicator renders iff the item is selected. The label is clipped to the
+/// text zone (the right 32px stays clear for the check); long labels clip
+/// rather than ellipsize (E1/OPEN-17 — defined behaviour for S5 to verify).
 #[allow(clippy::too_many_arguments)]
 fn paint_item(
     ui: &mut Ui,
@@ -1107,78 +1749,90 @@ fn paint_item(
     p: &Palette,
     theme: &ShadcnTheme,
     open: bool,
+    scroll_into_view: bool,
 ) -> Option<String> {
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), ITEM_HEIGHT));
+    let nova = theme.style == Style::Nova;
+    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), item_height(nova)));
     let sense = if item.disabled {
         Sense::hover()
     } else {
         Sense::click()
     };
     let response = ui.interact(rect, row_id, sense);
-
-    let hovered = response.hovered() && !item.disabled;
-    let fill = if (highlighted || hovered) && !item.disabled {
+    let fill = if highlighted && !item.disabled {
         p.accent
     } else {
         Color32::TRANSPARENT
     };
-    let mut fg = if highlighted || hovered {
+    let fg = if highlighted {
         p.accent_foreground
     } else {
         p.popover_foreground
     };
-    let mut check = fg;
-    if item.disabled {
-        fg = color_alpha(fg, 0.5);
-        check = color_alpha(check, 0.5);
-    }
-
+    let fg = if item.disabled {
+        color_alpha(fg, 0.5)
+    } else {
+        fg
+    };
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if fill != Color32::TRANSPARENT {
-            painter.rect_filled(rect, CornerRadius::same(theme.radius.md_u8()), fill);
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(item_radius(nova, &theme.radius)),
+                fill,
+            );
         }
-
-        // Label: nova `pl-1.5 text-sm` (`pr-8` before the indicator).
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        painter.text(
-            Pos2::new(rect.min.x + ITEM_PAD_X, rect.center().y),
+        let pad_x = item_pad_x(nova);
+        let zone = Rect::from_min_max(
+            Pos2::new(rect.min.x + pad_x, rect.min.y),
+            Pos2::new(rect.max.x - 32.0, rect.max.y),
+        );
+        painter.with_clip_rect(zone).text(
+            Pos2::new(rect.min.x + pad_x, rect.center().y),
             Align2::LEFT_CENTER,
             item.label.clone(),
             font,
             fg,
         );
-
-        // Check indicator: `absolute right-2 size-4` when selected.
         if selected {
-            let ind_rect = Rect::from_center_size(
-                Pos2::new(rect.max.x - 8.0 - ICON_SIZE * 0.5, rect.center().y),
-                Vec2::splat(ICON_SIZE),
-            );
-            Icon::Check.paint(painter, ind_rect, check, 2.0 * ICON_SIZE / 24.0);
+            let centre = Pos2::new(rect.max.x - 8.0 - indicator_offset(nova), rect.center().y);
+            let check_rect = Rect::from_center_size(centre, Vec2::splat(ICON_SIZE));
+            Icon::Check.paint(painter, check_rect, fg, 2.0 * ICON_SIZE / 24.0);
         }
     }
-
-    if open && response.clicked() && !item.disabled {
-        return Some(item.value.clone());
+    // Highlight scroll-follow (OPEN-7/N3): keep the highlighted row in
+    // view with the 4px popper scroll margin. Gated on a highlight change
+    // so wheel exploration is not stomped.
+    if scroll_into_view && highlighted {
+        ui.scroll_to_rect(rect.expand2(Vec2::new(0.0, SCROLL_MARGIN)), None);
     }
-    None
+    if open && response.clicked() && !item.disabled {
+        Some(item.value.clone())
+    } else {
+        None
+    }
 }
 
-fn paint_label(ui: &mut Ui, text: &str, p: &Palette) {
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), LABEL_HEIGHT));
+/// A `SelectLabel` row: `text-xs text-muted-foreground`, never
+/// keyboard-focusable (§2.12).
+fn paint_label(ui: &mut Ui, text: &str, p: &Palette, theme: &ShadcnTheme) {
+    let nova = theme.style == Style::Nova;
+    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), label_height(nova)));
     if ui.is_rect_visible(rect) {
         let font = FontId::proportional(crate::theme::tokens::type_scale::XS);
         ui.painter().text(
-            Pos2::new(rect.min.x + ITEM_PAD_X, rect.center().y),
+            Pos2::new(rect.min.x + label_pad_x(nova), rect.center().y),
             Align2::LEFT_CENTER,
-            text,
+            text.to_owned(),
             font,
             p.muted_foreground,
         );
     }
 }
 
+/// A `SelectSeparator` row: `-mx-1 my-1 h-px bg-border` (9px, both recipes).
 fn paint_separator(ui: &mut Ui, p: &Palette) {
     let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), SEPARATOR_HEIGHT));
     if ui.is_rect_visible(rect) {
@@ -1292,69 +1946,212 @@ mod tests {
     }
 
     #[test]
-    fn trigger_colors_follow_state() {
+    fn trigger_endpoints_light_base() {
         let p = palette(Mode::Light);
-        let c = resolve_trigger_colors(&p, false, false, false, false, false, false);
-        assert_eq!(c.fill, Color32::TRANSPARENT);
-        assert_eq!(c.stroke.color, p.input);
+        // Placeholder, valid: transparent fill, input border, ring target,
+        // muted text, 50% chevron (base `opacity-50`).
+        let c = resolve_trigger_endpoints(&p, false, false, false, false);
+        assert_eq!(c.fill_rest_alpha, 0.0);
+        assert_eq!(c.fill_hover_alpha, 0.0, "no light hover fill");
+        assert_eq!(c.rest_stroke, p.input);
+        assert_eq!(c.active_stroke, p.ring);
+        assert_eq!(c.ring_target, color_alpha(p.ring, 0.5));
         assert_eq!(c.text, p.muted_foreground, "placeholder look");
+        assert_eq!(c.chevron, color_alpha(p.muted_foreground, 0.5));
+        // Selected: foreground text.
+        let sel = resolve_trigger_endpoints(&p, false, false, false, true);
+        assert_eq!(sel.text, p.foreground);
+        // Invalid: full destructive border + /20 ring.
+        let inv = resolve_trigger_endpoints(&p, false, false, true, true);
+        assert_eq!(inv.active_stroke, p.destructive);
+        assert_eq!(inv.ring_target, color_alpha(p.destructive, 0.2));
+    }
+
+    #[test]
+    fn trigger_endpoints_light_nova() {
+        let p = palette(Mode::Light);
+        let c = resolve_trigger_endpoints(&p, false, true, false, false);
+        assert_eq!(c.fill_rest_alpha, 0.0);
+        assert_eq!(c.fill_hover_alpha, 0.0);
         assert_eq!(
             c.chevron, p.muted_foreground,
-            "nova chevron is full-opacity muted"
+            "nova chevron is full-opacity muted (OPEN-1)"
         );
-        let sel = resolve_trigger_colors(&p, false, false, false, false, false, true);
-        assert_eq!(sel.text, p.foreground);
-        let focused = resolve_trigger_colors(&p, false, true, false, false, false, true);
-        assert_eq!(focused.stroke.color, p.ring);
-        assert_eq!(focused.ring, color_alpha(p.ring, 0.5));
-        let invalid = resolve_trigger_colors(&p, false, false, true, false, false, true);
-        assert_eq!(invalid.stroke.color, p.destructive);
-        assert_eq!(invalid.ring, color_alpha(p.destructive, 0.2));
-        let disabled = resolve_trigger_colors(&p, false, false, false, false, true, true);
-        assert_eq!(disabled.text, color_alpha(p.muted_foreground, 0.5));
-        assert_eq!(
-            disabled.chevron,
-            color_alpha(p.muted_foreground, 0.5),
-            "only the disabled chevron dims"
-        );
+        let inv = resolve_trigger_endpoints(&p, false, true, true, true);
+        assert_eq!(inv.active_stroke, p.destructive, "light: no /50 variant");
+        assert_eq!(inv.ring_target, color_alpha(p.destructive, 0.2));
     }
 
     #[test]
-    fn dark_mode_hover_uses_input_50() {
+    fn trigger_endpoints_dark_fills_and_invalid() {
         let p = palette(Mode::Dark);
-        let hovered = resolve_trigger_colors(&p, true, false, false, true, false, true);
-        assert_eq!(hovered.fill, color_alpha(p.input, 0.5));
-        let resting = resolve_trigger_colors(&p, true, false, false, false, false, true);
-        assert_eq!(resting.fill, color_alpha(p.input, 0.3));
-    }
-
-    #[test]
-    fn dark_mode_invalid_border_is_half_destructive() {
-        let p = palette(Mode::Dark);
-        let invalid = resolve_trigger_colors(&p, true, false, true, false, false, true);
+        let c = resolve_trigger_endpoints(&p, true, true, false, true);
+        assert_eq!(c.fill_rest_alpha, 0.3, "dark:bg-input/30");
+        assert_eq!(c.fill_hover_alpha, 0.5, "dark:hover:bg-input/50");
+        // Nova dark invalid: /50 border + /40 ring.
+        let inv = resolve_trigger_endpoints(&p, true, true, true, true);
         assert_eq!(
-            invalid.stroke.color,
+            inv.active_stroke,
             color_alpha(p.destructive, 0.5),
             "nova dark:aria-invalid:border-destructive/50"
         );
-        assert_eq!(invalid.ring, color_alpha(p.destructive, 0.4));
+        assert_eq!(inv.ring_target, color_alpha(p.destructive, 0.4));
+        // Base dark invalid: the /50 border is nova-only.
+        let inv_base = resolve_trigger_endpoints(&p, true, false, true, true);
+        assert_eq!(inv_base.active_stroke, p.destructive);
+        assert_eq!(inv_base.ring_target, color_alpha(p.destructive, 0.4));
     }
 
     #[test]
-    fn geometry_constants_match_source() {
-        assert_eq!(
-            SelectSize::Default.height(),
-            32.0,
-            "nova data-[size=default]:h-8"
-        );
-        assert_eq!(SelectSize::Sm.height(), 28.0, "nova data-[size=sm]:h-7");
+    fn geometry_helpers_match_both_recipes() {
+        let r = RadiusTokens::new(10.0);
+        // Trigger heights: base h-9/h-8, nova h-8/h-7.
+        assert_eq!(SelectSize::Default.height(), 36.0);
+        assert_eq!(SelectSize::Sm.height(), 32.0);
+        assert_eq!(SelectSize::Default.height_for(Style::Nova), 32.0);
+        assert_eq!(SelectSize::Sm.height_for(Style::Nova), 28.0);
+        assert_eq!(SelectSize::Default.height_for(Style::Vega), 36.0);
+        assert_eq!(SELECT_TRIGGER_HEIGHT_DEFAULT, 36.0);
+        assert_eq!(SELECT_TRIGGER_HEIGHT_SM, 32.0);
+        // Trigger radii: base rounded-md both sizes; nova rounded-lg
+        // default, min(md, 10px) sm — the two nova sizes MUST differ.
+        assert_eq!(trigger_radius(SelectSize::Default, false, &r), 8);
+        assert_eq!(trigger_radius(SelectSize::Sm, false, &r), 8);
+        assert_eq!(trigger_radius(SelectSize::Default, true, &r), 10);
+        assert_eq!(trigger_radius(SelectSize::Sm, true, &r), 8);
+        // The sm cap resolves the token: a raised --radius still caps at 10.
+        let big = RadiusTokens::new(16.0);
+        assert_eq!(trigger_radius(SelectSize::Sm, true, &big), 10);
+        assert_eq!(trigger_radius(SelectSize::Default, true, &big), 16);
+        // Padding + gap: base px-3/gap-2, nova pl-2.5 pr-2/gap-1.5.
+        assert_eq!(trigger_padding(false), (12.0, 12.0));
+        assert_eq!(trigger_padding(true), (10.0, 8.0));
+        assert_eq!(trigger_gap(false), 8.0);
+        assert_eq!(trigger_gap(true), 6.0);
+        // Items: base 32px/pl-2/rounded-sm, nova 28px/pl-1.5/rounded-md.
+        assert_eq!(item_height(false), 32.0);
+        assert_eq!(item_height(true), 28.0);
+        assert_eq!(item_pad_x(false), 8.0);
+        assert_eq!(item_pad_x(true), 6.0);
+        assert_eq!(item_radius(false, &r), 6);
+        assert_eq!(item_radius(true, &r), 8);
+        // Labels: base 24px/px-2, nova 20px/px-1.5.
+        assert_eq!(label_height(false), 24.0);
+        assert_eq!(label_height(true), 20.0);
+        assert_eq!(label_pad_x(false), 8.0);
+        assert_eq!(label_pad_x(true), 6.0);
+        // Content: base min-w-[8rem]/rounded-md, nova min-w-36/rounded-lg.
         assert_eq!(SELECT_MIN_WIDTH, 144.0, "nova min-w-36");
-        assert_eq!(TRIGGER_PAD_X, 10.0, "pl-2.5");
-        assert_eq!(TRIGGER_PAD_RIGHT, 8.0, "pr-2");
-        assert_eq!(ITEM_HEIGHT, 28.0, "py-1 + text-sm");
-        assert_eq!(ITEM_PAD_X, 6.0, "pl-1.5");
-        assert_eq!(LABEL_HEIGHT, 20.0, "py-1 + text-xs");
-        assert_eq!(MAX_CONTENT_HEIGHT, 300.0);
+        assert_eq!(content_min_width(false), 128.0);
+        assert_eq!(content_min_width(true), 144.0);
+        assert_eq!(content_radius(false, &r), 8);
+        assert_eq!(content_radius(true, &r), 10);
+        // Check indicator centre: 7px in (base 14px box), 8px (nova 16px).
+        assert_eq!(indicator_offset(false), 7.0);
+        assert_eq!(indicator_offset(true), 8.0);
+        assert_eq!(SEPARATOR_HEIGHT, 9.0);
+        assert_eq!(SCROLL_BUTTON_HEIGHT, 24.0);
+    }
+
+    #[test]
+    fn flatten_entries_inserts_nova_group_padding_only() {
+        let grouped = vec![SelectEntry::Group(vec![
+            SelectEntry::Label("G".to_string()),
+            SelectEntry::Item(SelectItem::new("A")),
+        ])];
+        // No groups: borrowed, no allocation.
+        let plain = entries();
+        assert!(matches!(flatten_entries(&plain, true), Cow::Borrowed(_)));
+        // Nova: 4px pads around the group.
+        let flat = flatten_entries(&grouped, true);
+        assert_eq!(flat.len(), 4);
+        assert!(matches!(flat[0], SelectEntry::GroupPad));
+        assert!(matches!(flat[1], SelectEntry::Label(_)));
+        assert!(matches!(flat[2], SelectEntry::Item(_)));
+        assert!(matches!(flat[3], SelectEntry::GroupPad));
+        // Base: no group rule, renders flat.
+        let flat_base = flatten_entries(&grouped, false);
+        assert_eq!(flat_base.len(), 2);
+        assert!(matches!(flat_base[0], SelectEntry::Label(_)));
+        assert!(matches!(flat_base[1], SelectEntry::Item(_)));
+        // Groups still count one actionable item for navigation.
+        assert_eq!(count_actionable(&flat), 1);
+    }
+
+    #[test]
+    fn rows_height_counts_recipe_rows_and_group_pads() {
+        let grouped = vec![SelectEntry::Group(vec![
+            SelectEntry::Label("G".to_string()),
+            SelectEntry::Item(SelectItem::new("A")),
+            SelectEntry::Item(SelectItem::new("B")),
+        ])];
+        let flat_nova = flatten_entries(&grouped, true);
+        assert_eq!(
+            rows_height(&flat_nova, true),
+            4.0 + 20.0 + 28.0 + 28.0 + 4.0
+        );
+        let flat_base = flatten_entries(&grouped, false);
+        assert_eq!(rows_height(&flat_base, false), 24.0 + 32.0 + 32.0);
+        // Separators are 9px in both recipes.
+        let sep = vec![SelectEntry::Separator];
+        assert_eq!(rows_height(&sep, true), 9.0);
+        assert_eq!(rows_height(&sep, false), 9.0);
+    }
+
+    #[test]
+    fn popup_layout_is_content_sized_without_a_ceiling() {
+        // One nova option: 28px row + 8px padding, no buttons.
+        let one = popup_layout(28.0, 554.0, 0.0);
+        assert!(!one.show_up && !one.show_down);
+        assert_eq!(one.viewport_height, 28.0);
+        assert_eq!(one.total_height, 36.0);
+        // Empty list: padding only (OPEN-15 — defined, no crash).
+        let empty = popup_layout(0.0, 554.0, 0.0);
+        assert_eq!(empty.total_height, 8.0);
+        // 40 nova options at the top: down button only, viewport clamped
+        // by the available height — no fixed 300px ceiling.
+        let top = popup_layout(1120.0, 554.0, 0.0);
+        assert!(!top.show_up && top.show_down);
+        assert_eq!(top.viewport_height, 522.0);
+        assert_eq!(top.total_height, 554.0);
+        // Scrolled to the middle: both buttons.
+        let mid = popup_layout(1120.0, 554.0, 100.0);
+        assert!(mid.show_up && mid.show_down);
+        assert_eq!(mid.viewport_height, 498.0);
+        assert_eq!(mid.total_height, 554.0);
+        // Scrolled to the bottom: up button only.
+        let bottom = popup_layout(1120.0, 554.0, 622.0);
+        assert!(bottom.show_up && !bottom.show_down);
+        assert_eq!(bottom.viewport_height, 522.0);
+        assert_eq!(bottom.total_height, 554.0);
+        // Just fits: no buttons even at the boundary.
+        let fits = popup_layout(546.0, 554.0, 0.0);
+        assert!(!fits.show_up && !fits.show_down);
+        assert_eq!(fits.total_height, 554.0);
+    }
+
+    #[test]
+    fn open_highlight_keeps_the_k1_k2_asymmetry() {
+        let e = entries();
+        // K2: Enter opens on the first item, even with a selection.
+        assert_eq!(open_highlight(&e, Some("carrot"), true, false), Some(0));
+        // K1: Space opens on the selected item.
+        assert_eq!(open_highlight(&e, Some("carrot"), false, true), Some(3));
+        // Mouse/arrow opens keep the selection highlight (OPEN-12).
+        assert_eq!(open_highlight(&e, Some("carrot"), false, false), Some(3));
+        // No selection: Enter opens on the first item, Space on nothing.
+        assert_eq!(open_highlight(&e, None, true, false), Some(0));
+        assert_eq!(open_highlight(&e, None, false, true), None);
+        // Both keys: Space wins (the selection).
+        assert_eq!(open_highlight(&e, Some("carrot"), true, true), Some(3));
+        // Enter skips a disabled first item.
+        let disabled_first = vec![
+            SelectEntry::Item(SelectItem::new("A").disabled(true)),
+            SelectEntry::Item(SelectItem::new("B")),
+        ];
+        assert_eq!(open_highlight(&disabled_first, None, true, false), Some(1));
+        let empty: Vec<SelectEntry> = Vec::new();
+        assert_eq!(open_highlight(&empty, None, true, false), None);
     }
 
     #[test]
@@ -1394,6 +2191,14 @@ mod tests {
         b.disabled_item("Z");
         b.separator();
         assert_eq!(b.entries.len(), 6);
+
+        let mut g = SelectBuilder::new();
+        g.group(|sub| {
+            sub.label("G");
+            sub.item(SelectItem::new("I"));
+        });
+        assert_eq!(g.entries.len(), 1);
+        assert!(matches!(g.entries[0], SelectEntry::Group(_)));
     }
 
     /// Advances time so animations make progress across frames.
@@ -1413,6 +2218,7 @@ mod tests {
             self.time += 0.1;
             let input = egui::RawInput {
                 time: Some(self.time),
+                screen_rect: Some(SCREEN),
                 ..Default::default()
             };
             let mut out = self.ctx.run_ui(input, |ctx| {
@@ -1433,6 +2239,7 @@ mod tests {
                 self.time += 0.1;
                 let input = egui::RawInput {
                     time: Some(self.time),
+                    screen_rect: Some(SCREEN),
                     events: vec![egui::Event::PointerButton {
                         pos,
                         button: egui::PointerButton::Primary,
@@ -1458,6 +2265,7 @@ mod tests {
             self.time += 0.1;
             let input = egui::RawInput {
                 time: Some(self.time),
+                screen_rect: Some(SCREEN),
                 events: vec![egui::Event::Key {
                     key,
                     pressed: true,
@@ -1483,6 +2291,7 @@ mod tests {
             self.time += 0.1;
             let input = egui::RawInput {
                 time: Some(self.time),
+                screen_rect: Some(SCREEN),
                 events: vec![egui::Event::Text(text.to_owned())],
                 ..Default::default()
             };
@@ -1518,9 +2327,22 @@ mod tests {
                 .data_mut(|d| d.get_temp::<Option<String>>(id))
                 .flatten()
         }
+
+        fn popup_rect(&self, salt: &str) -> Rect {
+            let popup_id = Id::unique("select_test_ui").with(salt).with("popup");
+            self.ctx
+                .read_response(popup_id)
+                .map(|r| r.rect)
+                .unwrap_or(Rect::NOTHING)
+        }
     }
 
     const OPTS: [&str; 1] = ["Only option"];
+
+    /// The simulated 600×600 screen: `ctx.content_rect()` (which the popup
+    /// clamps against) follows `RawInput::screen_rect`, so the harness must
+    /// declare the same screen its Ui claims.
+    const SCREEN: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(600.0, 600.0));
 
     fn layout(h: &mut Harness, salt: &str) -> Rect {
         let mut trigger_rect = Rect::ZERO;
@@ -1906,5 +2728,236 @@ mod tests {
                 .show_seeded(ui);
         });
         assert!(!h.state("tab").open, "Tab dismisses the popup");
+    }
+
+    #[test]
+    fn enter_opens_on_the_first_item() {
+        let mut h = Harness::new();
+        let mut value = Some("Beta".to_string());
+        h.run(|ui| {
+            Select::new(&mut value)
+                .id_salt("k2")
+                .options(["Alpha", "Beta", "Cherry"])
+                .show_seeded(ui);
+        });
+        let trigger_id = Id::unique("select_test_ui").with("k2").with("trigger");
+        h.ctx.memory_mut(|m| m.request_focus(trigger_id));
+        h.key(Key::Enter, |ui| {
+            Select::new(&mut value)
+                .id_salt("k2")
+                .options(["Alpha", "Beta", "Cherry"])
+                .show_seeded(ui);
+        });
+        assert!(h.state("k2").open, "Enter opens the focused trigger");
+        assert_eq!(
+            h.highlight("k2"),
+            Some(0),
+            "K2: Enter highlights the first item, not the selection"
+        );
+    }
+
+    #[test]
+    fn space_opens_on_the_selected_item() {
+        let mut h = Harness::new();
+        let mut value = Some("Beta".to_string());
+        h.run(|ui| {
+            Select::new(&mut value)
+                .id_salt("k1")
+                .options(["Alpha", "Beta", "Cherry"])
+                .show_seeded(ui);
+        });
+        let trigger_id = Id::unique("select_test_ui").with("k1").with("trigger");
+        h.ctx.memory_mut(|m| m.request_focus(trigger_id));
+        h.key(Key::Space, |ui| {
+            Select::new(&mut value)
+                .id_salt("k1")
+                .options(["Alpha", "Beta", "Cherry"])
+                .show_seeded(ui);
+        });
+        assert!(h.state("k1").open, "Space opens the focused trigger");
+        assert_eq!(
+            h.highlight("k1"),
+            Some(1),
+            "K1: Space highlights the selected item"
+        );
+    }
+
+    #[test]
+    fn escape_closes_and_keeps_trigger_focus() {
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "escf");
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("escf")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(h.state("escf").open);
+        // Focus the trigger and let the focus-lock filter arm: it only
+        // stores once the widget had focus last frame too.
+        let trigger_id = Id::unique("select_test_ui").with("escf").with("trigger");
+        h.ctx.memory_mut(|m| m.request_focus(trigger_id));
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("escf")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("escf")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        h.key(Key::Escape, |ui| {
+            Select::uncontrolled()
+                .id_salt("escf")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(!h.state("escf").open, "Escape must close the select");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger_id),
+            "K7: Escape keeps focus on the trigger"
+        );
+    }
+
+    #[test]
+    fn popup_is_content_sized_for_one_option() {
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "sz1");
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("sz1")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(h.state("sz1").open);
+        // Let the popup settle (sizing pass + 100ms enter animation).
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("sz1")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("sz1")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        let popup = h.popup_rect("sz1");
+        assert!(popup != Rect::NOTHING, "popup must be on screen");
+        assert!(
+            (popup.height() - 36.0).abs() < 3.0,
+            "one nova option: 28px row + 8px padding, no empty area (height={})",
+            popup.height()
+        );
+        assert!(
+            ((popup.min.y - rect.max.y) - 4.0).abs() < 2.0,
+            "rest gap is the 4px popper gap (gap={})",
+            popup.min.y - rect.max.y
+        );
+    }
+
+    #[test]
+    fn popup_clamps_to_available_height_for_long_lists() {
+        let mut h = Harness::new();
+        let options: Vec<String> = (0..40).map(|i| format!("Option {i}")).collect();
+        let mut rect = Rect::ZERO;
+        h.run(|ui| {
+            rect = Select::uncontrolled()
+                .id_salt("sz40")
+                .options(options.clone())
+                .show_seeded(ui)
+                .trigger
+                .rect;
+        });
+        h.run(|ui| {
+            rect = Select::uncontrolled()
+                .id_salt("sz40")
+                .options(options.clone())
+                .show_seeded(ui)
+                .trigger
+                .rect;
+        });
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("sz40")
+                .options(options.clone())
+                .show_seeded(ui);
+        });
+        assert!(h.state("sz40").open);
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("sz40")
+                .options(options.clone())
+                .show_seeded(ui);
+        });
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("sz40")
+                .options(options.clone())
+                .show_seeded(ui);
+        });
+        let popup = h.popup_rect("sz40");
+        assert!(popup != Rect::NOTHING, "popup must be on screen");
+        // Available: 600 - 32 (trigger) - 4 (gap) - 10 (collision) = 554.
+        assert!(
+            (popup.height() - 554.0).abs() < 3.0,
+            "long list clamps to the available height, not a fixed ceiling (height={})",
+            popup.height()
+        );
+        assert!(
+            popup.height() > 300.0,
+            "the old 300px cap is gone (height={})",
+            popup.height()
+        );
+        assert!(
+            popup.max.y <= 590.0 + 1.0,
+            "popup respects the 10px collision padding (max.y={})",
+            popup.max.y
+        );
+    }
+
+    #[test]
+    fn group_popup_height_counts_nova_group_padding() {
+        let mut h = Harness::new();
+        let show = |ui: &mut Ui| {
+            Select::uncontrolled().id_salt("grp").show(ui, |s| {
+                s.group(|g| {
+                    g.label("Frameworks");
+                    g.item(SelectItem::new("Next.js"));
+                    g.item(SelectItem::new("Astro"));
+                });
+            })
+        };
+        let mut rect = Rect::ZERO;
+        h.run(|ui| {
+            rect = show(ui).trigger.rect;
+        });
+        h.run(|ui| {
+            rect = show(ui).trigger.rect;
+        });
+        h.click(rect.center(), |ui| {
+            show(ui);
+        });
+        assert!(h.state("grp").open);
+        h.run(|ui| {
+            show(ui);
+        });
+        h.run(|ui| {
+            show(ui);
+        });
+        let popup = h.popup_rect("grp");
+        assert!(popup != Rect::NOTHING, "popup must be on screen");
+        // Rows: 4 (group pad) + 20 (label) + 28 + 28 (items) + 4 (pad) =
+        // 84, plus 8px viewport padding.
+        assert!(
+            (popup.height() - 92.0).abs() < 3.0,
+            "group pads count in the content-sized height (height={})",
+            popup.height()
+        );
     }
 }
