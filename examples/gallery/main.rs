@@ -360,7 +360,7 @@ fn demo_pages() -> Vec<DemoPage> {
         },
         DemoPage {
             name: "select",
-            show: Some(demos::select_demo),
+            show: Some(demos::select_demo::select_demo),
         },
         DemoPage {
             name: "combobox",
