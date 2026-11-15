@@ -12,32 +12,42 @@
 //!   Focus: 1px `border-ring` + 3px `ring-ring/50`; invalid: destructive
 //!   border + ring (under nova the invalid ring shows at rest). The chevron
 //!   is `size-4 text-muted-foreground`, at 50% opacity under base
-//!   (`opacity-50`); under nova its opacity is OPEN-1 and the pre-existing
-//!   full-opacity render is kept pending the S4 reference capture. The
+//!   (`opacity-50`); under nova its opacity is OPEN-1 (unsettled — no
+//!   rendered reference exists) and the full-opacity render is kept. The
 //!   value clamps to one line with an ellipsis (`line-clamp-1`).
 //! - **Content:** base `min-w-[8rem] rounded-md border shadow-md bg-popover`;
 //!   nova `min-w-36 rounded-lg` + 1px `ring-foreground/10`. The popup is
 //!   content-sized — it grows and shrinks with the row set, clamped only by
 //!   the available height; no fixed ceiling, no reserved empty area below
 //!   the last item. Scroll buttons (24px rows, 16px chevrons) show per
-//!   scroll direction and auto-repeat while hovered (mechanics OPEN-5).
+//!   scroll direction and auto-repeat while hovered (OPEN-5 mechanics,
+//!   settled by S6 from the Radix source: hover/press auto-scroll).
 //! - **Items:** base 32px rows (`py-1.5 pl-2 rounded-sm`), nova 28px rows
 //!   (`py-1 pl-1.5 rounded-md`); highlight fill follows focus only
 //!   (`focus:bg-accent`) — hover alone never fills a row. The check
 //!   indicator sits at `right-2` on the selected item. Labels and
 //!   separators follow their recipes; groups render with 4px padding under
 //!   nova (`.cn-select-group`).
-//! - **Keyboard (Radix docs + spec §11):** click/Enter/Space/ArrowUp/Down
-//!   open the focused trigger — Space highlights the selected item, Enter
-//!   highlights the first item (the K1/K2 asymmetry is preserved);
-//!   ArrowUp/Down move the highlight (skipping disabled items, wrapping),
-//!   Home/End jump, Enter/Space select and close, Tab and Escape dismiss,
-//!   and typing performs typeahead. Highlight scroll-follow keeps the
-//!   highlighted row in view (OPEN-7, pending S6 confirmation).
+//! - **Keyboard (Radix docs + spec §11):** clicking the trigger opens the
+//!   popup; Enter/Space/ArrowUp/Down open it while the trigger is focused
+//!   — Space highlights the selected item, Enter highlights the first item
+//!   (the K1/K2 asymmetry is preserved); ArrowUp/Down move the highlight
+//!   (skipping disabled items, wrapping), Home/End jump, Enter/Space select
+//!   and close, Tab and Escape dismiss (Escape returns focus to the
+//!   trigger), and typing performs typeahead. Highlight scroll-follow keeps
+//!   the highlighted row in view (OPEN-7, settled by S6 from the Radix
+//!   source: `scrollIntoView` on every focus move).
 //!
 //! The value is controlled through `&mut Option<String>` or `&mut String`;
 //! pass neither and use [`Select::uncontrolled`] to keep the selection inside
 //! the egui state (read it from [`SelectResponse::value`]).
+//!
+//! Notes: the scroll offset persists across close/reopen. Closing by
+//! clicking outside the popup, or by clicking an item, leaves keyboard
+//! focus unset (egui's click-elsewhere default); Escape returns focus to
+//! the trigger. The Rust API has no item-icon support (the spec's item
+//! layout includes an icon slot). There is no `cursor-not-allowed`
+//! equivalent in egui, so a disabled trigger keeps the default cursor.
 //!
 //! Platform limits / proposed deviations (spec §15, Expert Reviewer
 //! approval pending): **D1** no ARIA tree (keyboard/focus behaviour fully
@@ -100,7 +110,7 @@ use std::borrow::Cow;
 // ---------------------------------------------------------------------------
 
 /// Content min width: nova `min-w-36` (144 px). The base recipe uses
-/// `min-w-[8rem]` (128 px); see [`content_min_width`].
+/// `min-w-[8rem]` (128 px).
 pub const SELECT_MIN_WIDTH: f32 = 144.0;
 /// Content min width: base `min-w-[8rem]` (128 px).
 const CONTENT_MIN_WIDTH_BASE: f32 = 128.0;
@@ -130,9 +140,11 @@ const SLIDE_DISTANCE: f32 = 8.0;
 const COLLISION_PADDING: f32 = 10.0;
 /// Scroll margin for highlight scroll-follow: popper `scroll-my-1` (4 px).
 const SCROLL_MARGIN: f32 = 4.0;
-/// Scroll-button auto-repeat speed in points per second. The step/speed is
-/// OPEN-5 (Radix-internal); this value is a working default for S6 to
-/// verify, kept in one place so it can be re-tuned without a rework.
+/// Scroll-button auto-repeat speed in points per second. OPEN-5's
+/// mechanics are settled (S6, from the Radix source: hover/press
+/// auto-scroll, buttons shown per scroll direction); this drive rate is
+/// the implementation's value, kept in one place so it can be re-tuned
+/// without a rework.
 const SCROLL_BUTTON_SPEED: f32 = 240.0;
 
 // ---------------------------------------------------------------------------
@@ -498,8 +510,10 @@ pub(crate) fn action_index_of_value(entries: &[SelectEntry], value: &str) -> Opt
 }
 
 /// First actionable item whose label starts with `query` (case-insensitive),
-/// searching from action index `start` (exclusive) and wrapping once — the
-/// Radix select typeahead match. Disabled items are skipped.
+/// searching from action index `start` (inclusive) and wrapping once — the
+/// Radix select typeahead match. Callers pass the index after the current
+/// highlight, so the search is exclusive of the highlighted item.
+/// Disabled items are skipped.
 pub(crate) fn typeahead_action_index(
     entries: &[SelectEntry],
     start: usize,
@@ -695,8 +709,8 @@ pub(crate) struct TriggerEndpoints {
 /// Mirrors the trigger recipes (§3.3): `border-input`, the dark fills,
 /// `dark:aria-invalid:border-destructive/50` (nova only), the focus/invalid
 /// ring styles, and `data-[placeholder]:text-muted-foreground`. The base
-/// chevron is `opacity-50`; under nova its opacity is OPEN-1, so the
-/// pre-existing full-opacity render is kept pending the S4 capture.
+/// chevron is `opacity-50`; under nova its opacity is OPEN-1 (unsettled —
+/// no rendered reference exists), so the full-opacity render is kept.
 pub(crate) fn resolve_trigger_endpoints(
     p: &Palette,
     dark: bool,
@@ -889,9 +903,9 @@ impl<'a> Select<'a> {
         }
     }
 
-    /// Creates an uncontrolled select: the value lives in the egui state
-    /// keyed by [`Select::id_salt`]; read it from
-    /// [`SelectResponse::value`].
+    /// Creates an uncontrolled select: the value lives in egui state keyed
+    /// to this instance (give it a stable [`Select::id_salt`] so the value
+    /// survives layout changes); read it from [`SelectResponse::value`].
     pub fn uncontrolled() -> Self {
         Self {
             binding: None,
@@ -967,7 +981,8 @@ impl<'a> Select<'a> {
 
     /// Renders the trigger, and the option list popup when open. The closure
     /// adds labels, separators and grouped items through the
-    /// [`SelectBuilder`].
+    /// [`SelectBuilder`]. An empty closure falls back to the seeded
+    /// `.option(…)`s.
     pub fn show(self, ui: &mut Ui, content: impl FnOnce(&mut SelectBuilder)) -> SelectResponse {
         let mut builder = SelectBuilder::new();
         content(&mut builder);
@@ -1829,7 +1844,7 @@ fn paint_scroll_button(
 /// Disabled rows render at 50% opacity and ignore clicks. The check
 /// indicator renders iff the item is selected. The label is clipped to the
 /// text zone (the right 32px stays clear for the check); long labels clip
-/// rather than ellipsize (E1/OPEN-17 — defined behaviour for S5 to verify).
+/// rather than ellipsize (E1/OPEN-17 — defined behaviour, verified by S5).
 #[allow(clippy::too_many_arguments)]
 fn paint_item(
     ui: &mut Ui,
