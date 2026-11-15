@@ -921,8 +921,8 @@ pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
     ));
     ui.add_space(12.0);
 
-    ui.label("Overflow — child content taller than the ratio box (OPEN O2 watch; spec §4.3)");
-    ui.label("Lines below the box edge mean overflowing content paints outside the box (the current implementation choice, not spec behaviour).");
+    ui.label("Overflow — child content taller than the ratio box (O2 CLOSED; spec §4.3)");
+    ui.label("The Radix primitive sets no overflow control on either element, so overflowing content paints outside the box under the CSS `visible` default — lines below the box edge are the original behaviour.");
     ui.add_space(4.0);
     let overflow = AspectRatio::new(16.0 / 9.0)
         .max_width(320.0)

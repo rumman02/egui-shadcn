@@ -20,32 +20,42 @@
 //! });
 //! ```
 //!
-//! Rust-side notes (not original behaviour): [`AspectRatio::max_width`] is a
-//! Rust-only convenience with no counterpart in the original; degenerate
-//! ratios collapse to a 0-height box, matching the derived original
-//! behaviour (see `height_for_width`); child overflow handling is an
-//! implementation choice pending spec OPEN item O2
-//! (see [`AspectRatio::show`]).
+//! [`AspectRatio::max_width`] is a Rust-only convenience with no
+//! counterpart in the original. Degenerate ratios collapse to a
+//! 0-height box, matching the derived original behaviour (see
+//! `height_for_width`); child overflow follows the original too — the
+//! Radix primitive sets no overflow control on either element, so
+//! overflowing content paints outside the box under the CSS `visible`
+//! default, which the Rust layout-bounded, paint-unclipped choice
+//! matches (spec §10 O2, CLOSED by the Batch A S8 gate; see
+//! [`AspectRatio::show`]).
+//!
+//! The Radix mechanism cited here is identical at every sampled commit
+//! from 2020 to 2026 (S6 report §6.3); the exact snapshot-era `radix-ui`
+//! version (spec §10 O5) stays open but is immaterial to the overflow
+//! and degenerate behaviour.
 
 use egui::{InnerResponse, Sense, Ui, UiBuilder, Vec2};
 
 /// Height for `width` at the given ratio (pure, testable).
 ///
 /// Degenerate ratios collapse to a 0-height box, matching the derived
-/// original behaviour (frozen S0 spec §9 O4, CLOSED as derived by the
+/// original behaviour (frozen S0 spec §10 O4, CLOSED as derived by the
 /// Batch A S8 gate; S1 decision D3 — the `0.01` floor — is SUPERSEDED
 /// by the O4 closure). The Radix primitive enforces the ratio with the
 /// inline style `paddingBottom: \`${100 / ratio}%\``; for ratio 0,
-/// negative, `NaN`, or infinite the resulting declaration is invalid
-/// CSS (a non-numeric percentage, or a negative padding) and is dropped
-/// at parse time, leaving the initial padding of 0 — so the wrapper
-/// collapses to height 0 and its content overflows visibly. Positive
-/// finite ratios follow the exact formula `width / ratio`, unbounded
-/// for tiny positives. Any non-finite or negative width is treated as
-/// `0` (unchanged width sanitization), and a non-finite computed height
-/// (overflow) is treated as `0`, so the resulting height is always
-/// finite and non-negative, and the allocated rect is never `NaN`,
-/// negative, or infinite.
+/// negative, or `NaN` the resulting declaration is invalid CSS (a
+/// non-numeric percentage, or a negative padding) and is dropped at
+/// parse time, leaving the initial padding of 0, while for infinite
+/// ratios the declaration evaluates to `0%` (or `-0%`, which equals 0)
+/// — so in every degenerate case the wrapper collapses to height 0 and
+/// its content overflows visibly. Positive finite ratios follow the
+/// exact formula `width / ratio`, unbounded for tiny positives. Any
+/// non-finite or negative width is treated as `0` (unchanged width
+/// sanitization), and a non-finite computed height (overflow) is
+/// treated as `0`, so the resulting height is always finite and
+/// non-negative, and the allocated rect is never `NaN`, negative, or
+/// infinite.
 pub(crate) fn height_for_width(width: f32, ratio: f32) -> f32 {
     let width = if width.is_finite() {
         width.max(0.0)
@@ -138,13 +148,17 @@ impl AspectRatio {
     /// Renders the container and lays out `content` inside it.
     ///
     /// The child `Ui` fills exactly the ratio box (spec §4.1). Overflow
-    /// and clipping behaviour is an implementation choice pending spec
-    /// OPEN item O2: the child is layout-bounded to the box via
-    /// `max_rect`, but its paint is not clipped to the box — egui child
-    /// `Ui`s inherit the parent clip rect, so overflowing content may
-    /// paint outside the box. This must be revisited if O2 closes with a
-    /// contradicting Radix behaviour. The container itself takes no
-    /// focus and introduces no tab stop.
+    /// follows the original (spec §10 O2, CLOSED by the Batch A S8
+    /// gate): the Radix primitive sets no overflow control on either
+    /// element — the wrapper's height comes solely from `padding-bottom`
+    /// and the inner element is absolutely positioned at inset 0 — so
+    /// overflowing content paints outside the box under the CSS
+    /// `visible` default, without affecting layout. The Rust choice
+    /// matches: the child is layout-bounded to the box via `max_rect`,
+    /// but its paint is not clipped to the box — egui child `Ui`s
+    /// inherit the parent clip rect, so overflowing content paints
+    /// outside the box. The container itself takes no focus and
+    /// introduces no tab stop.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let (rect, response) = ui.allocate_exact_size(self.size_in(ui), Sense::hover());
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(*ui.layout()));
