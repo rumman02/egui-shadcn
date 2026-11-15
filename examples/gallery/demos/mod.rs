@@ -1076,7 +1076,7 @@ pub fn typography_demo(ui: &mut egui::Ui) {
     ])
     .show(ui);
     ui.label(format!(
-        "Ul: allocated {:.1} × {:.1} px (spec §5.3 breakdown 8 + 3×24 + 2×8 = 96px; measured total matches 8 + 3×36 + 2×8 = 132 — each item row allocates the 36px interact size via ui.horizontal inside the component; rect left offset {:.1} px vs the 24px ml-6 indent; the faint vertical line at the indent edge is painted by the component's ui.indent call — S5 judges)",
+        "Ul: allocated {:.1} × {:.1} px (spec §5.3 breakdown 8 + 3×24 + 2×8 = 96px; rect left offset {:.1} px = the 24px ml-6 indent, applied as an explicit offset; no indent guide line — defects TYP-VIS-01/02/03 fixed in S9, verified by S10)",
         ul.rect.width(),
         ul.rect.height(),
         ul.rect.left() - content_left
@@ -1089,7 +1089,7 @@ pub fn typography_demo(ui: &mut egui::Ui) {
     ])
     .show(ui);
     ui.label(format!(
-        "Ol: allocated {:.1} × {:.1} px (same 132px measured total as Ul; spec breakdown 96px; decimal markers 1. 2. 3.)",
+        "Ol: allocated {:.1} × {:.1} px (same 96px total as Ul; spec breakdown 8 + 3×24 + 2×8; decimal markers 1. 2. 3.)",
         ol.rect.width(),
         ol.rect.height()
     ));

@@ -24,6 +24,11 @@
 //! too. Each element implements ONE recipe, not two; there is no style
 //! branching in this module.
 //!
+//! The family has 15 elements: 14 QUOTED recipes plus 1 INVENTED
+//! ([`CodeBlock`], spec §2.4). [`Ul`]/[`Ol`] share one recipe row in the
+//! table below, which is why the table has 14 rows (spec §2.1; counting
+//! resolved by S4).
+//!
 //! # Recipes (QUOTED class strings; sizes/leading via TAILWIND-DEFAULT)
 //!
 //! | Element | Quoted recipe | Line height | Source margins (caller-applied, OPEN-2) |
@@ -475,6 +480,13 @@ pub enum ListMarker {
 /// `my-6 ml-6 list-disc [&>li]:mt-2` (and the `list-decimal` variant)
 /// (QUOTED). Size/leading/weight inherited (`text-base`, 16px/24px/400).
 /// The `my-6` block margins are caller-applied (spec §4).
+///
+/// Geometry (spec §5.3, DERIVED): each item is a 24px line box, the first
+/// sits 8px below the list's top edge, and consecutive items are 8px apart
+/// — a 3-item list totals 8 + 3×24 + 2×8 = 96px. The 24px `ml-6` indent is
+/// applied as an explicit offset (not `ui.indent`, whose first argument is
+/// an id salt), and no indent guide line is painted (defects TYP-VIS-01,
+/// TYP-VIS-02, TYP-VIS-03 — fixed in S9, closing evidence verified by S10).
 ///
 /// ```ignore
 /// Ul::new(&["Shipping", "Delivery", "Returns"]).show(ui);
