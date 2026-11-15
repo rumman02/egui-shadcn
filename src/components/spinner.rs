@@ -28,10 +28,17 @@
 //! clock the Phase 1 motion system builds on); the motion system has no
 //! continuous-rotation primitive, so there is no transition API to reuse
 //! here and no timer is hand-rolled. Repaints are requested only while
-//! the spinner is visible, and painting allocates nothing per frame:
-//! the embedded polyline is drawn as individual line segments plus a
-//! filled disc at each end (egui's open-path stroking has flat caps;
-//! the discs supply the round caps Lucide specifies).
+//! the spinner is visible. The embedded polyline is drawn as a single
+//! joined path plus a filled disc at each end (egui's open-path
+//! stroking has flat caps; the discs supply the round caps Lucide
+//! specifies). The joined path is what keeps the stroke at its nominal
+//! width: drawing the polyline as individual segments widened it by
+//! ~0.6px at 16px (SPN-VIS-01), because neighbouring segments'
+//! feathered quads overlap and accumulate alpha. The path needs one
+//! owned `Vec` of points per frame — egui's path API takes points by
+//! value and offers no borrowed-points variant — so painting allocates
+//! one small `Vec` per visible spinner per frame; that is the only
+//! per-frame allocation (see the SPN-VIS-01 S9 report for the D3 note).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -41,7 +48,7 @@
 //! ```
 
 use crate::icons::{El, Icon};
-use egui::{Color32, Pos2, Response, Sense, Stroke, Ui, Vec2, Widget};
+use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, Widget};
 
 /// The historical sampled-arc geometry: center, radius, and sweep on the
 /// 24x24 icon grid (`M21 12a9 9 0 1 1-9-9`). These helpers are shared
@@ -113,6 +120,21 @@ fn loader_polyline() -> &'static [[f32; 2]] {
     }
 }
 
+/// Appends the loader polyline's points, rotated by `angle_deg` about
+/// the grid center and mapped into `rect`, to `out` — in dataset
+/// order, without allocating. Pure and testable (see
+/// `path_points_match_rotated_dataset`); the caller owns the buffer.
+fn append_path_points(rect: Rect, size: f32, angle_deg: f32, out: &mut Vec<Pos2>) {
+    let scale = size / 24.0;
+    for &p in loader_polyline() {
+        let r = rotate_grid_point(p, angle_deg);
+        out.push(Pos2::new(
+            rect.min.x + r[0] * scale,
+            rect.min.y + r[1] * scale,
+        ));
+    }
+}
+
 /// A shadcn spinner. See the [module docs](self) for an example.
 #[derive(Clone, Debug)]
 pub struct Spinner {
@@ -174,24 +196,28 @@ impl Spinner {
             // while on screen (spec deviation D3).
             ui.ctx().request_repaint();
             let angle = angle_at(ui.input(|i| i.time));
-            let scale = self.size / 24.0;
             let stroke = Stroke::new(stroke_width(self.size), color);
             let painter = ui.painter();
-            let to_screen = |p: [f32; 2]| {
-                let r = rotate_grid_point(p, angle);
-                Pos2::new(rect.min.x + r[0] * scale, rect.min.y + r[1] * scale)
-            };
-            // Drawn segment-by-segment from the static polyline so
-            // painting allocates nothing per frame (spec D3).
+            // One joined path, stroked by the tessellator as a single
+            // strip with shared normals at the joints: per-segment
+            // drawing widened the stroke (SPN-VIS-01). The `Vec` is
+            // the only per-frame allocation; egui's path API takes
+            // points by value and offers no borrowed-points variant
+            // (see the module docs). The cap discs below are unchanged.
             let pts = loader_polyline();
-            for w in pts.windows(2) {
-                painter.line_segment([to_screen(w[0]), to_screen(w[1])], stroke);
-            }
+            let mut points = Vec::with_capacity(pts.len());
+            append_path_points(rect, self.size, angle, &mut points);
+            painter.add(Shape::line(points, stroke));
             // Round caps: egui's open-path stroking ends flat, so a disc
             // of half the stroke width at each arc end supplies the
             // round caps Lucide specifies.
             if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                let scale = self.size / 24.0;
                 let cap = stroke.width / 2.0;
+                let to_screen = |p: [f32; 2]| {
+                    let r = rotate_grid_point(p, angle);
+                    Pos2::new(rect.min.x + r[0] * scale, rect.min.y + r[1] * scale)
+                };
                 painter.circle_filled(to_screen(*first), cap, color);
                 painter.circle_filled(to_screen(*last), cap, color);
             }
@@ -297,6 +323,42 @@ mod tests {
         assert!((dx.hypot(dy) - 9.0).abs() < 1e-4);
         // The center itself never moves.
         assert_eq!(rotate_grid_point([12.0, 12.0], 137.0), [12.0, 12.0]);
+    }
+
+    #[test]
+    fn path_points_match_rotated_dataset() {
+        // The joined path fed to `Shape::line` must be the embedded
+        // dataset polyline, rotated about the grid center and mapped
+        // into the spinner rect — same points, same order, same
+        // endpoints — so the SPN-VIS-01 fix changes the stroke width
+        // without changing the glyph.
+        let rect = Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::splat(16.0));
+        let mut pts = Vec::new();
+        append_path_points(rect, 16.0, 0.0, &mut pts);
+        assert_eq!(pts.len(), 97);
+        // First point: dataset start (21, 12) at scale 2/3, unrotated.
+        assert!((pts[0].x - (100.0 + 21.0 * 2.0 / 3.0)).abs() < 1e-4);
+        assert!((pts[0].y - (50.0 + 12.0 * 2.0 / 3.0)).abs() < 1e-4);
+        // Last point: dataset end (14.781, 3.44).
+        assert!((pts[96].x - (100.0 + 14.781 * 2.0 / 3.0)).abs() < 1e-3);
+        assert!((pts[96].y - (50.0 + 3.44 * 2.0 / 3.0)).abs() < 1e-3);
+        // Every point lies on the radius-6 circle about the rect center.
+        let c = rect.center();
+        for p in &pts {
+            assert!(((p.x - c.x).hypot(p.y - c.y) - 6.0).abs() < 0.01);
+        }
+        // Rotation: at 90° the first point moves to 6 o'clock.
+        let mut rot = Vec::new();
+        append_path_points(rect, 16.0, 90.0, &mut rot);
+        assert!((rot[0].x - c.x).abs() < 1e-4);
+        assert!((rot[0].y - (c.y + 6.0)).abs() < 1e-4);
+        // 24px: radius 9, same angles, dataset coordinates unscaled.
+        let rect24 = Rect::from_min_size(Pos2::ZERO, Vec2::splat(24.0));
+        let mut pts24 = Vec::new();
+        append_path_points(rect24, 24.0, 0.0, &mut pts24);
+        assert_eq!(pts24.len(), 97);
+        assert!((pts24[0].x - 21.0).abs() < 1e-4);
+        assert!((pts24[0].y - 12.0).abs() < 1e-4);
     }
 
     #[test]
