@@ -1052,6 +1052,20 @@ impl<'a> Select<'a> {
         let trigger_id = state_id.with("trigger");
         let response = ui.interact(rect, trigger_id, sense);
 
+        // Native `<button>` behaviour (spec §11 K7; SEL-INT-01): a clicked
+        // trigger holds keyboard focus afterwards, so Escape-close has
+        // focus to return. egui's `interact` does not move focus on
+        // pointer press, so request it explicitly on click — the pattern
+        // `DragValue`/`TextEdit` use, and the button BTN-INT-01 fix. Without
+        // it the pointer path never holds focus (S3 O2), the focus-lock
+        // filter below never arms, and `Focus::begin_pass` clears focus on
+        // Escape before the widget runs — leaving focus nowhere. Requesting
+        // before painting lets `has_focus()` below see the focus on the
+        // click frame itself. Disabled triggers never take focus.
+        if !self.disabled && response.clicked() {
+            response.request_focus();
+        }
+
         // Claim Escape + vertical arrows on the trigger's focus lock while
         // focused: Escape closes the popup without surrendering focus (K7)
         // and arrows drive the highlight/open (K3/K4) instead of moving
@@ -3327,6 +3341,76 @@ mod tests {
             h.ctx.memory(|m| m.focused()),
             Some(trigger_id),
             "K7: Escape keeps focus on the trigger"
+        );
+    }
+
+    #[test]
+    fn pointer_click_open_then_escape_returns_focus_to_trigger() {
+        // SEL-INT-01: the pointer path must behave like the keyboard path —
+        // a click focuses the trigger (native `<button>` behaviour), the
+        // focus-lock filter arms, and Escape-close leaves focus on the
+        // trigger. No manual focus request: the click itself must focus.
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "escptr");
+        let trigger_id = Id::unique("select_test_ui").with("escptr").with("trigger");
+        assert_eq!(h.ctx.memory(|m| m.focused()), None);
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("escptr")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(h.state("escptr").open, "click must open the select");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger_id),
+            "pointer click must focus the trigger"
+        );
+        // Settle frames so the focus-lock filter arms (it only stores
+        // once the widget had focus last frame too).
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("escptr")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        h.run(|ui| {
+            Select::uncontrolled()
+                .id_salt("escptr")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        h.key(Key::Escape, |ui| {
+            Select::uncontrolled()
+                .id_salt("escptr")
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(!h.state("escptr").open, "Escape must close the select");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger_id),
+            "K7: Escape after pointer-open returns focus to the trigger"
+        );
+    }
+
+    #[test]
+    fn disabled_trigger_click_takes_no_focus() {
+        // SEL-INT-01 guard: disabled triggers never take focus.
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "escdis");
+        h.click(rect.center(), |ui| {
+            Select::uncontrolled()
+                .id_salt("escdis")
+                .disabled(true)
+                .options(OPTS)
+                .show_seeded(ui);
+        });
+        assert!(!h.state("escdis").open, "disabled select must not open");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            None,
+            "disabled trigger must not take focus on click"
         );
     }
 
