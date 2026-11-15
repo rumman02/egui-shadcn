@@ -10,7 +10,8 @@
 //!
 //! Behavior follows the Radix defaults the wrapper does not override
 //! (frozen S0 spec §10): the dialog is modal, focus moves into the panel
-//! on open and returns to the trigger on close, Tab cycles inside, and it
+//! on open and returns to the trigger on close once the close fade has
+//! finished, Tab cycles inside, and it
 //! closes on Escape, on backdrop click, and via the top-right X or any
 //! [`DialogClose`]. Backdrop and panel fade together (fade-only: egui
 //! widgets do not scale — proposed deviation D2); the close X is a 16px
@@ -18,6 +19,14 @@
 //! no blur (proposed deviation D1 — the original's own
 //! `supports-backdrop-filter:` guard renders the same flat backdrop where
 //! blur is unsupported).
+//!
+//! Notes: [`DialogContent`] renders its own portal and backdrop — no
+//! standalone Portal or Overlay parts are exposed. The 640px breakpoint
+//! keys off the window width (proposed deviation D4). Tab order includes
+//! one invisible stop on the backdrop (egui modal behaviour); it never
+//! dismisses the dialog. Accessibility is limited by the platform
+//! (proposed deviation D3): the close X exposes the label "Close" through
+//! widget info, and the remaining ARIA wiring has no egui equivalent.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -498,7 +507,8 @@ impl DialogContent {
         self
     }
 
-    /// Hides the top-right close button (`showCloseButton = false`).
+    /// Shows (`true`, the default) or hides (`false`) the top-right close
+    /// button (`showCloseButton`).
     pub fn show_close_button(mut self, show: bool) -> Self {
         self.show_close_button = show;
         self
@@ -513,6 +523,10 @@ impl DialogContent {
 
     /// Renders the modal, or nothing while closed. Returns the modal area
     /// response while visible.
+    ///
+    /// The content closure runs twice per frame while the dialog is open:
+    /// an invisible measure pass (widgets disabled, so callbacks cannot
+    /// double-fire) followed by the real pass.
     pub fn show(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui)) -> Option<Response> {
         let Some(state_id) = current_scope(ui) else {
             // Outside a Dialog: render statically so mistakes stay visible.
@@ -866,8 +880,10 @@ impl DialogDescription {
 }
 
 /// Dialog footer: `flex flex-col-reverse gap-2` below `sm` (children stack
-/// vertically in reverse DOM order), `sm:flex-row sm:justify-end` at/above
-/// 640px (right-aligned row in DOM order). Under nova the footer is a
+/// vertically in reverse DOM order, each stretched to the full content
+/// width — the flex `align-items: stretch` default), `sm:flex-row
+/// sm:justify-end` at/above 640px (right-aligned row in DOM order, children
+/// content-sized). Under nova the footer is a
 /// full-bleed strip (`bg-muted/50 -mx-4 -mb-4 rounded-b-xl border-t p-4`);
 /// the base recipe has no strip styling (§4).
 ///
@@ -888,8 +904,8 @@ impl DialogFooter {
         }
     }
 
-    /// Appends an outline "Close" button that closes the dialog (the source's
-    /// `showCloseButton` prop, default `false`).
+    /// When `show` is true, appends an outline "Close" button that closes
+    /// the dialog (the source's `showCloseButton` prop, default `false`).
     pub fn show_close_button(mut self, show: bool) -> Self {
         self.show_close_button = show;
         self
