@@ -1,15 +1,32 @@
-//! shadcn `dialog.tsx` — a modal dialog with dimmed backdrop.
+//! shadcn `dialog.tsx` — a modal dialog with a dimmed backdrop.
 //!
-//! Ported from `apps/v4/registry/new-york-v4/ui/dialog.tsx` (Radix Dialog)
-//! with the nova recipe: `bg-popover text-popover-foreground
-//! ring-foreground/10 rounded-xl p-4 text-sm gap-4 sm:max-w-sm` content over
-//! a `bg-black/10` animated backdrop (the source's backdrop blur cannot be
-//! reproduced without shaders, so the dim alone carries the effect).
+//! Ported from `apps/v4/registry/new-york-v4/ui/dialog.tsx` (Radix Dialog),
+//! both recipes: the base recipe (`bg-background`, `rounded-lg`, `p-6`,
+//! `sm:max-w-lg`, `bg-black/50` backdrop, 200ms) and the nova recipe
+//! (`bg-popover text-popover-foreground ring-foreground/10 rounded-xl p-4
+//! text-sm gap-4 sm:max-w-sm` over a `bg-black/10` backdrop, 100ms). The
+//! panel keeps `shadow-lg` under BOTH recipes: nova is silent on shadow
+//! for this slot, so the base value survives (the settled LAYER ruling).
 //!
-//! Behavior follows Radix: the dialog is modal (input to the rest of the UI
-//! is blocked), closes on Escape, on backdrop click, and via the top-right X
-//! or any [`DialogClose`]. Content fades in/out
-//! (`fade-in-0 zoom-in-95` / `duration-200`).
+//! Behavior follows the Radix defaults the wrapper does not override
+//! (frozen S0 spec §10): the dialog is modal, focus moves into the panel
+//! on open and returns to the trigger on close once the close fade has
+//! finished, Tab cycles inside, and it
+//! closes on Escape, on backdrop click, and via the top-right X or any
+//! [`DialogClose`]. Backdrop and panel fade together (fade-only: egui
+//! widgets do not scale — proposed deviation D2); the close X is a 16px
+//! icon box with opacity-only hover, not a ghost button. The backdrop has
+//! no blur (proposed deviation D1 — the original's own
+//! `supports-backdrop-filter:` guard renders the same flat backdrop where
+//! blur is unsupported).
+//!
+//! Notes: [`DialogContent`] renders its own portal and backdrop — no
+//! standalone Portal or Overlay parts are exposed. The 640px breakpoint
+//! keys off the window width (proposed deviation D4). Tab order includes
+//! one invisible stop on the backdrop (egui modal behaviour); it never
+//! dismisses the dialog. Accessibility is limited by the platform
+//! (proposed deviation D3): the close X exposes the label "Close" through
+//! widget info, and the remaining ARIA wiring has no egui equivalent.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -34,21 +51,71 @@
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::icons::Icon;
-use crate::theme::{color_alpha, ShadcnTheme};
-use crate::utils::animation::nova_overlay_progress;
+use crate::theme::fonts::{medium, semibold};
+use crate::theme::tokens::{spacing, type_scale};
+use crate::theme::{color_alpha, ShadcnTheme, Style};
+use crate::utils::shadow::{paint_shadow_resolved, ShadowSize, ShadowSlot};
+use egui::epaint::StrokeKind;
 use egui::{
-    Color32, Context, CornerRadius, Frame, Id, Margin, Modal, Pos2, Rect, Response, Sense, Stroke,
-    Ui, UiBuilder, Vec2, WidgetInfo,
+    Align, Color32, Context, CornerRadius, Direction, Frame, Id, Layout, Modal, Pos2, Rect,
+    Response, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetInfo,
 };
 
 /// nova max width: `sm:max-w-sm` (384 px).
 pub const DIALOG_MAX_WIDTH: f32 = 384.0;
-/// nova padding: `p-4`.
-const INNER_PADDING: i8 = 16;
+/// base max width: `sm:max-w-lg` (512 px).
+pub const DIALOG_BASE_MAX_WIDTH: f32 = 512.0;
+/// The `sm:` breakpoint (Tailwind v4 default `--breakpoint-sm: 40rem`).
+/// Panel width, header alignment, and footer direction all change at this
+/// viewport width (§3–§4; deviation D4 keys it off the window width).
+const SM_BREAKPOINT: f32 = 640.0;
 /// nova ring: `ring-foreground/10`.
 const RING_ALPHA: f32 = 0.10;
 /// nova backdrop: `bg-black/10`.
-const BACKDROP_ALPHA: f32 = 0.10;
+const BACKDROP_ALPHA_NOVA: f32 = 0.10;
+/// base backdrop: `bg-black/50`.
+const BACKDROP_ALPHA_BASE: f32 = 0.50;
+/// Close X box: the bare `size-4` icon box (§7).
+const CLOSE_X_SIZE: f32 = 16.0;
+/// Close X resting opacity: `opacity-70`.
+const CLOSE_X_OPACITY: f32 = 0.70;
+/// nova animation duration: `duration-100`.
+const ANIM_NOVA_SECS: f32 = 0.1;
+/// base content animation duration: `duration-200`.
+const ANIM_BASE_SECS: f32 = 0.2;
+/// Floor for the panel width so degenerate viewports still lay out.
+const MIN_PANEL_WIDTH: f32 = 80.0;
+
+/// Panel width (§3): below `sm` the panel is the viewport minus 2rem with
+/// no other cap; at/above `sm` it is capped by the recipe max width. An
+/// explicit `width` override caps at every width (it is the caller's
+/// `className` max-width, not an `sm:` rule).
+fn panel_width(nova: bool, width_override: Option<f32>, screen_w: f32) -> f32 {
+    let avail = (screen_w - 32.0).max(MIN_PANEL_WIDTH);
+    match width_override {
+        Some(w) => w.min(avail).max(MIN_PANEL_WIDTH),
+        None if screen_w < SM_BREAKPOINT => avail,
+        None => {
+            let cap = if nova {
+                DIALOG_MAX_WIDTH
+            } else {
+                DIALOG_BASE_MAX_WIDTH
+            };
+            cap.min(avail).max(MIN_PANEL_WIDTH)
+        }
+    }
+}
+
+/// Fade progress 0..1 for the open/close animation at the recipe duration.
+/// Mirrors `nova_overlay_progress` (same egui value animator, `alpha = t`)
+/// with a recipe duration; the foundation helper is nova-only (100ms).
+/// OPEN-8: easing is the animator's default. OPEN-9: the base overlay
+/// duration is unresolved, so the overlay runs at the content duration to
+/// preserve the §9 rule that backdrop and panel animate together.
+fn overlay_alpha(ctx: &Context, id: Id, open: bool, duration_secs: f32) -> f32 {
+    let target = if open { 1.0 } else { 0.0 };
+    ctx.animate_value_with_time(id, target, duration_secs)
+}
 
 // ---------------------------------------------------------------------------
 // Scope plumbing (mirrors popover.rs)
@@ -80,10 +147,17 @@ fn current_scope(ui: &Ui) -> Option<Id> {
     })
 }
 
-/// Per-instance state: just the open flag.
+/// Per-instance state: the open flag, the previous frame's open flag (for
+/// open/close transition handling), the widget that had focus before the
+/// dialog opened (for focus return on close, §10), and whether the modal
+/// rendered on the previous frame (so the focus return can wait until the
+/// modal layer is gone, DLG-INT-01).
 #[derive(Clone, Copy, Debug, Default)]
 struct DialogState {
     open: bool,
+    was_open: bool,
+    return_focus: Option<Id>,
+    was_rendered: bool,
 }
 
 fn read_state(ctx: &Context, state_id: Id) -> DialogState {
@@ -92,6 +166,49 @@ fn read_state(ctx: &Context, state_id: Id) -> DialogState {
 
 fn write_state(ctx: &Context, state_id: Id, state: DialogState) {
     ctx.data_mut(|d| d.insert_temp(state_id, state));
+}
+
+/// Settles a pending focus return after the dialog closes (§10, OPEN-3).
+///
+/// The restore must NOT run while the modal still renders, nor on the
+/// closing frame alone: egui clears focus on any widget created behind the
+/// previous frame's top modal layer (`Context::create_widget` calls
+/// `Memory::ignore_focus`, which drops focus when it matches the widget),
+/// and the modal layer stays topmost for one frame after the modal's last
+/// render (`Focus::end_pass` copies `top_modal_layer_current_frame` into
+/// `top_modal_layer`). A restore issued on the closing frame is therefore
+/// wiped by the trigger's own `interact` on the next frame — the DLG-INT-01
+/// mechanism. So the restore is (re-)issued on every fully-closed frame
+/// until it sticks across a full frame boundary (which also covers callers
+/// that show the content before the trigger, where the first restore is
+/// wiped later in the same frame), and abandoned if focus demonstrably
+/// moved elsewhere after the dialog fully closed — never fight the user's
+/// Tab. Nested/stacked dialogs are out of scope (OPEN-11).
+fn settle_focus_return(ctx: &Context, state_id: Id, rendered: bool) {
+    let mut state = read_state(ctx, state_id);
+    let was_rendered = state.was_rendered;
+    state.was_rendered = rendered;
+    if rendered {
+        // Modal still up (open or fading): wait until it is gone.
+        write_state(ctx, state_id, state);
+        return;
+    }
+    let Some(id) = state.return_focus else {
+        write_state(ctx, state_id, state);
+        return;
+    };
+    let current = ctx.memory(|m| m.focused());
+    if current == Some(id) {
+        // The restore survived a full frame boundary: it stuck.
+        state.return_focus = None;
+    } else if !was_rendered && current.is_some() {
+        // Focus moved elsewhere after the dialog fully closed: the user
+        // (or another widget) owns it now; don't yank it back.
+        state.return_focus = None;
+    } else {
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+    write_state(ctx, state_id, state);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +273,12 @@ impl<'a> Dialog<'a> {
 
         let ctx = ui.ctx().clone();
         if let Some(open) = self.controlled.as_deref() {
-            write_state(&ctx, state_id, DialogState { open: *open });
+            // Controlled: sync the open flag only, preserving the
+            // transition bookkeeping (`was_open`, `return_focus`) that
+            // `DialogContent` maintains.
+            let mut state = read_state(&ctx, state_id);
+            state.open = *open;
+            write_state(&ctx, state_id, state);
         } else {
             let exists = ctx.data_mut(|d| d.get_temp::<DialogState>(state_id).is_some());
             if !exists {
@@ -165,6 +287,7 @@ impl<'a> Dialog<'a> {
                     state_id,
                     DialogState {
                         open: self.default_open,
+                        ..Default::default()
                     },
                 );
             }
@@ -223,7 +346,7 @@ impl<'a> DialogTrigger<'a> {
         }
     }
 
-    /// Disables the trigger.
+    /// Disables the trigger. A disabled trigger does not open the dialog.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -264,6 +387,7 @@ impl<'a> DialogTrigger<'a> {
 pub struct DialogClose<'a> {
     label: Option<String>,
     widget: Option<crate::components::popover::TriggerWidget<'a>>,
+    disabled: bool,
     id_salt: Option<String>,
 }
 
@@ -279,6 +403,7 @@ impl<'a> DialogClose<'a> {
         Self {
             label: Some(label.into()),
             widget: None,
+            disabled: false,
             id_salt: None,
         }
     }
@@ -288,8 +413,16 @@ impl<'a> DialogClose<'a> {
         Self {
             label: None,
             widget: Some(Box::new(w)),
+            disabled: false,
             id_salt: None,
         }
+    }
+
+    /// Disables the close control (`disabled:pointer-events-none`): clicks
+    /// on it do not close the dialog.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// Sets a stable id salt for focus persistence.
@@ -301,15 +434,15 @@ impl<'a> DialogClose<'a> {
     /// Renders the close control; `changed()` when the dialog closed.
     pub fn show(self, ui: &mut Ui) -> Response {
         let Some(state_id) = current_scope(ui) else {
-            return outline_button(&self.label, false, self.id_salt.clone()).show(ui);
+            return outline_button(&self.label, self.disabled, self.id_salt.clone()).show(ui);
         };
 
         let mut response = match self.widget {
             Some(w) => w(ui),
-            None => outline_button(&self.label, false, self.id_salt.clone()).show(ui),
+            None => outline_button(&self.label, self.disabled, self.id_salt.clone()).show(ui),
         };
 
-        if response.clicked() {
+        if response.clicked() && !self.disabled {
             let ctx = ui.ctx().clone();
             let mut state = read_state(&ctx, state_id);
             state.open = false;
@@ -334,9 +467,11 @@ fn outline_button(label: &Option<String>, disabled: bool, id_salt: Option<String
 // DialogContent
 // ---------------------------------------------------------------------------
 
-/// The modal panel: centered, `bg-popover ring-foreground/10 rounded-xl p-4`
-/// (nova, ring-only) with a close X at `top-2 right-2`, over a dimmed
-/// backdrop. Closes on Escape and backdrop click.
+/// The modal panel: centered, `bg-background` (base) / `bg-popover` (nova)
+/// with a 1px border plus `ring-foreground/10` under nova and `shadow-lg`
+/// under both recipes, a close X at the recipe inset, over a dimmed
+/// backdrop. Closes on Escape and backdrop click; focus moves into the
+/// panel on open and returns to the trigger on close.
 #[derive(Clone, Debug)]
 pub struct DialogContent {
     width: Option<f32>,
@@ -351,8 +486,8 @@ impl Default for DialogContent {
 }
 
 impl DialogContent {
-    /// Creates dialog content with the source defaults (`sm:max-w-sm`, close
-    /// button shown).
+    /// Creates dialog content with the source defaults (recipe max width,
+    /// close button shown).
     pub fn new() -> Self {
         Self {
             width: None,
@@ -361,14 +496,19 @@ impl DialogContent {
         }
     }
 
-    /// Overrides the panel max width (default: [`DIALOG_MAX_WIDTH`], clamped
-    /// to the window minus 2rem like `max-w-[calc(100%-2rem)]`).
+    /// Overrides the panel max width (default: the recipe cap —
+    /// [`DIALOG_MAX_WIDTH`] under nova, [`DIALOG_BASE_MAX_WIDTH`] under
+    /// base — clamped to the window minus 2rem like
+    /// `max-w-[calc(100%-2rem)]`). The override is the caller's `className`
+    /// max-width, so it caps at every viewport width, unlike the recipe
+    /// cap which only applies at/above `sm` (§3).
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
         self
     }
 
-    /// Hides the top-right close button (`showCloseButton = false`).
+    /// Shows (`true`, the default) or hides (`false`) the top-right close
+    /// button (`showCloseButton`).
     pub fn show_close_button(mut self, show: bool) -> Self {
         self.show_close_button = show;
         self
@@ -383,110 +523,216 @@ impl DialogContent {
 
     /// Renders the modal, or nothing while closed. Returns the modal area
     /// response while visible.
-    pub fn show(self, ui: &mut Ui, content: impl FnOnce(&mut Ui)) -> Option<Response> {
+    ///
+    /// The content closure runs twice per frame while the dialog is open:
+    /// an invisible measure pass (widgets disabled, so callbacks cannot
+    /// double-fire) followed by the real pass.
+    pub fn show(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui)) -> Option<Response> {
         let Some(state_id) = current_scope(ui) else {
             // Outside a Dialog: render statically so mistakes stay visible.
             content(ui);
             return None;
         };
         let ctx = ui.ctx().clone();
-        let state = read_state(&ctx, state_id);
+
+        // Focus transitions (§10). The pre-open focus snapshot is taken
+        // before the early return so it fires on the opening frame; the
+        // restore itself settles below, once the modal-render decision is
+        // known (see `settle_focus_return`).
+        let mut state = read_state(&ctx, state_id);
         let open = state.open;
+        let opening = open && !state.was_open;
+        if opening {
+            // Remember who had focus so it can be restored on close.
+            state.return_focus = ctx.memory(|m| m.focused());
+        }
+        state.was_open = open;
+        write_state(&ctx, state_id, state);
 
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
+        let nova = theme.style == Style::Nova;
+        let dark = theme.mode.is_dark();
 
         let modal_id = state_id.with("modal");
         let anim_id = state_id.with("anim");
+        let panel_id = state_id.with("panel");
 
-        // nova `duration-100`: fade in/out at 100ms in both directions.
-        let progress = nova_overlay_progress(&ctx, anim_id, open);
-        if !(open || progress.alpha > 0.002) {
+        // Fade-only animation (proposed deviation D2 — egui widgets do not
+        // scale): backdrop and panel share the recipe duration and the same
+        // progress value, so they animate together (§9).
+        let duration = if nova { ANIM_NOVA_SECS } else { ANIM_BASE_SECS };
+        let alpha = overlay_alpha(&ctx, anim_id, open, duration);
+        let rendered = open || alpha > 0.002;
+        // Settle the pending focus return now that the modal-render
+        // decision is known (DLG-INT-01): the restore runs only on
+        // fully-closed frames, after the modal layer is gone.
+        settle_focus_return(&ctx, state_id, rendered);
+        if !rendered {
             return None;
         }
 
-        let pad = INNER_PADDING as f32;
+        let pad = if nova { spacing::LG } else { spacing::XL };
         let screen_w = ctx.content_rect().width();
-        let max_width = self
-            .width
-            .unwrap_or(DIALOG_MAX_WIDTH)
-            .min(screen_w - 32.0)
-            .max(80.0);
-
-        // `bg-black/10` on the backdrop, fading with the dialog.
-        let backdrop = color_alpha(
-            Color32::from_black_alpha(255),
-            BACKDROP_ALPHA * progress.alpha,
-        );
-
-        // The panel frame, painted inside the opacity scope so it fades too.
-        // nova `.cn-dialog-content` is ring-only: no shadow.
-        let frame = Frame::new()
-            .fill(p.popover)
-            .stroke(Stroke::new(1.0, color_alpha(p.foreground, RING_ALPHA)))
-            .corner_radius(CornerRadius::same(theme.radius.xl_u8()))
-            .inner_margin(Margin::same(INNER_PADDING));
+        let max_width = panel_width(nova, self.width, screen_w);
+        let radius = CornerRadius::same(if nova {
+            theme.radius.xl_u8()
+        } else {
+            theme.radius.lg_u8()
+        });
+        let fill = if nova { p.popover } else { p.background };
+        let text_color = if nova {
+            p.popover_foreground
+        } else {
+            p.foreground
+        };
+        let backdrop_alpha = if nova {
+            BACKDROP_ALPHA_NOVA
+        } else {
+            BACKDROP_ALPHA_BASE
+        };
+        // Flat backdrop, no blur: proposed deviation D1 (egui has no
+        // backdrop blur; the original's own `supports-backdrop-filter:`
+        // guard renders the same flat backdrop where blur is unsupported).
+        let backdrop = color_alpha(Color32::BLACK, backdrop_alpha * alpha);
+        let x_inset = if nova { spacing::SM } else { spacing::LG };
 
         let modal = Modal::new(modal_id)
             .backdrop_color(backdrop)
             .frame(Frame::new());
 
+        let show_close = self.show_close_button;
         let modal_resp = modal.show(&ctx, |ui| {
-            ui.set_opacity(progress.alpha);
-            frame.show(ui, |ui| {
-                // Pin the content width: the footer strip bleeds into the
-                // panel padding, and an auto-sized container would otherwise
-                // grow every frame to fit the bleed.
-                let inner_w = max_width - pad * 2.0;
-                ui.set_min_width(inner_w);
-                ui.set_max_width(inner_w);
-                ui.style_mut().visuals.override_text_color = Some(p.popover_foreground);
-                // nova `.cn-dialog-content`: `grid gap-4` column flow.
-                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::LG;
-                content(ui);
-                if self.show_close_button && progress.alpha > 0.75 {
-                    // `absolute top-2 right-2` relative to the panel: a nova
-                    // ghost `size-7` (28px) icon button.
-                    const X_BOX: f32 = 28.0;
-                    let x_rect = Rect::from_min_size(
-                        Pos2::new(
-                            ui.max_rect().right() + pad - 8.0 - X_BOX,
-                            ui.max_rect().top() - pad + 8.0,
-                        ),
-                        Vec2::splat(X_BOX),
-                    );
-                    let x_id = state_id.with("dialog_close_x");
-                    let x_resp = ui.interact(x_rect, x_id, Sense::click());
-                    x_resp.widget_info(|| {
-                        WidgetInfo::labeled(egui::Role::Button, true, "Close".to_owned())
-                    });
-                    if ui.is_rect_visible(x_rect) {
-                        // nova ghost icon-sm: `rounded-[min(var(--radius-md),12px)]`.
-                        let corner = CornerRadius::same(theme.radius.md_u8());
-                        let fill = if x_resp.hovered() {
-                            // `hover:bg-muted`
-                            p.muted
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        let fg = if x_resp.hovered() {
-                            // `hover:text-foreground`
-                            p.foreground
-                        } else {
-                            color_alpha(p.foreground, 0.7)
-                        };
-                        ui.painter().rect_filled(x_rect, corner, fill);
-                        let icon_rect = Rect::from_center_size(x_rect.center(), Vec2::splat(16.0));
-                        Icon::X.paint(ui.painter(), icon_rect, fg, 16.0 / 24.0);
+            ui.set_opacity(alpha);
+
+            // Measure the content height with an invisible pass so the
+            // shadow, fill, border, and ring can be painted behind the real
+            // content with the exact panel rect (same pattern as
+            // `footer_strip`: widgets in the measuring pass are disabled,
+            // so no callbacks can double-fire).
+            let inner_w = max_width - pad * 2.0;
+            let measure_rect =
+                Rect::from_min_size(ui.cursor().min, Vec2::new(inner_w, f32::INFINITY));
+            let mut measure = ui.new_child(UiBuilder::new().max_rect(measure_rect).invisible());
+            measure.spacing_mut().item_spacing.y = spacing::LG;
+            measure.style_mut().visuals.override_text_color = Some(text_color);
+            content(&mut measure);
+            let content_h = measure.min_rect().height();
+
+            let panel_h = content_h + pad * 2.0;
+            let (_, panel_rect) = ui.allocate_space(Vec2::new(max_width, panel_h));
+            // The panel holds focus while open (§10): focus moves into the
+            // dialog on open without presuming which descendant Radix
+            // targets (OPEN-1 — the Content-element resolution). Focusable
+            // but not interactive, with no visible outline (`outline-none`,
+            // §3/§8). This interact runs first, so Tab order starts here.
+            // Tab cannot leave the dialog: egui only offers focus to
+            // widgets on or above the top modal layer (OPEN-2).
+            let _panel_resp = ui.interact(panel_rect, panel_id, Sense::focusable_noninteractive());
+
+            // Shadow first, behind the body. The faded painter fades it in
+            // lockstep with the panel. `shadow-lg` under both recipes
+            // (LAYER: nova is silent for this slot, §6/§14).
+            paint_shadow_resolved(
+                ui.painter(),
+                panel_rect,
+                radius,
+                ShadowSize::Lg,
+                theme.style,
+                ShadowSlot::DialogContent,
+                dark,
+            );
+            ui.painter().rect_filled(panel_rect, radius, fill);
+            // Base `border` (1px, border token) survives under nova (LAYER);
+            // nova adds `ring-1 ring-foreground/10` just outside it (§6).
+            ui.painter().rect_stroke(
+                panel_rect,
+                radius,
+                Stroke::new(1.0, p.border),
+                StrokeKind::Inside,
+            );
+            if nova {
+                ui.painter().rect_stroke(
+                    panel_rect,
+                    radius,
+                    Stroke::new(1.0, color_alpha(p.foreground, RING_ALPHA)),
+                    StrokeKind::Outside,
+                );
+            }
+
+            // Real content pass inside the panel padding. `grid gap-4`
+            // between direct children, both recipes (§3).
+            let inner_rect = panel_rect.shrink(pad);
+            let mut child = ui.new_child(UiBuilder::new().max_rect(inner_rect));
+            child.set_min_width(inner_w);
+            child.set_max_width(inner_w);
+            child.spacing_mut().item_spacing.y = spacing::LG;
+            child.style_mut().visuals.override_text_color = Some(text_color);
+            content(&mut child);
+
+            if show_close {
+                // `absolute top-2 right-2` (nova) / `top-4 right-4`
+                // (base) relative to the panel: the 16px icon box (§7).
+                // No alpha gate — the X fades WITH the panel (§9); gating
+                // it on animation progress was the staging defect.
+                let x_rect = Rect::from_min_size(
+                    Pos2::new(
+                        panel_rect.right() - x_inset - CLOSE_X_SIZE,
+                        panel_rect.top() + x_inset,
+                    ),
+                    Vec2::splat(CLOSE_X_SIZE),
+                );
+                let x_id = state_id.with("dialog_close_x");
+                let x_resp = ui.interact(x_rect, x_id, Sense::click());
+                x_resp.widget_info(|| {
+                    WidgetInfo::labeled(egui::Role::Button, true, "Close".to_owned())
+                });
+                if ui.is_rect_visible(x_rect) {
+                    // `focus:ring-2 focus:ring-ring focus:ring-offset-2`:
+                    // 2px ring with a 2px offset in the background token,
+                    // `rounded-xs`. Painted on any focus (egui has no
+                    // focus-visible distinction).
+                    if x_resp.has_focus() {
+                        let corner = CornerRadius::same(2);
+                        ui.painter().rect_stroke(
+                            x_rect,
+                            corner,
+                            Stroke::new(4.0, p.ring),
+                            StrokeKind::Outside,
+                        );
+                        ui.painter().rect_stroke(
+                            x_rect,
+                            corner,
+                            Stroke::new(2.0, p.background),
+                            StrokeKind::Outside,
+                        );
                     }
-                    if x_resp.clicked() {
-                        let mut s = read_state(&ctx, state_id);
-                        s.open = false;
-                        write_state(&ctx, state_id, s);
-                    }
+                    // Opacity-only hover (`opacity-70`, `hover:opacity-100`,
+                    // `transition-opacity`): no hover fill in either recipe.
+                    let fg = if x_resp.hovered() {
+                        p.foreground
+                    } else {
+                        color_alpha(p.foreground, CLOSE_X_OPACITY)
+                    };
+                    Icon::X.paint(ui.painter(), x_rect, fg, 2.0 * CLOSE_X_SIZE / 24.0);
                 }
-            });
+                if x_resp.clicked() {
+                    let mut s = read_state(&ctx, state_id);
+                    s.open = false;
+                    write_state(&ctx, state_id, s);
+                }
+            }
         });
+
+        if opening {
+            // Focus moves into the dialog (§10) — unless a widget inside
+            // already claimed it this frame (e.g. an autofocus target),
+            // which takes precedence over the panel default.
+            let current = ctx.memory(|m| m.focused());
+            if current == state.return_focus {
+                ctx.memory_mut(|m| m.request_focus(panel_id));
+            }
+        }
 
         // `should_close` covers Escape (topmost modal only) and backdrop
         // clicks.
@@ -504,7 +750,21 @@ impl DialogContent {
 // DialogHeader / DialogTitle / DialogDescription / DialogFooter
 // ---------------------------------------------------------------------------
 
-/// `flex flex-col gap-2` header inside a [`DialogContent`].
+/// Horizontal text alignment for header children: the header's `text-center`
+/// below `sm` / `sm:text-left` rule (§4) is carried by the header layout's
+/// cross alignment, which title/description read back here. Only a
+/// top-down layout's cross alignment is a horizontal alignment.
+fn header_halign(ui: &Ui) -> Align {
+    let layout = ui.layout();
+    if layout.main_dir == Direction::TopDown && layout.cross_align == Align::Center {
+        Align::Center
+    } else {
+        Align::LEFT
+    }
+}
+
+/// `flex flex-col gap-2` header inside a [`DialogContent`]: text centered
+/// below `sm`, left-aligned at/above 640px (§4).
 #[derive(Clone, Debug, Default)]
 pub struct DialogHeader {
     _private: (),
@@ -518,16 +778,19 @@ impl DialogHeader {
 
     /// Renders the header with an 8 px column gap.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
-        ui.vertical(|ui| {
+        let wide = ui.ctx().content_rect().width() >= SM_BREAKPOINT;
+        let align = if wide { Align::Min } else { Align::Center };
+        ui.with_layout(Layout::top_down(align), |ui| {
             ui.set_min_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::SM;
+            ui.spacing_mut().item_spacing.y = spacing::SM;
             content(ui)
         })
         .inner
     }
 }
 
-/// nova dialog title: `text-base leading-none font-medium`.
+/// Dialog title: base `text-lg leading-none font-semibold`, nova
+/// `text-base leading-none font-medium` (§5). Long titles wrap (§12).
 #[derive(Clone, Debug)]
 pub struct DialogTitle {
     text: String,
@@ -543,19 +806,44 @@ impl DialogTitle {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let font = egui::FontId::proportional(crate::theme::tokens::type_scale::BASE);
-        let galley = ui
-            .painter()
-            .layout_no_wrap(self.text, font, p.popover_foreground);
+        let nova = theme.style == Style::Nova;
+        // Colour inherits the panel text (no colour class on Title itself).
+        let (size, font, color) = if nova {
+            (
+                type_scale::BASE,
+                medium(type_scale::BASE),
+                p.popover_foreground,
+            )
+        } else {
+            (type_scale::LG, semibold(type_scale::LG), p.foreground)
+        };
+        let format = egui::TextFormat {
+            font_id: font,
+            color,
+            line_height: Some(size),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = ui.available_width();
+        job.halign = header_halign(ui);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
         if ui.is_rect_visible(rect) {
-            ui.painter().galley(rect.min, galley, p.popover_foreground);
+            // Align the galley's own rect with the allocated rect: with a
+            // centered halign the galley rect is centered on the origin,
+            // so painting at `rect.min` would shift the text by half its
+            // width.
+            let pos = rect.min - galley.rect.min.to_vec2();
+            ui.painter().galley(pos, galley, color);
         }
         response
     }
 }
 
-/// `text-sm text-muted-foreground` dialog description, wrapping.
+/// `text-sm text-muted-foreground` dialog description, wrapping, default
+/// line-height, both recipes (§5). (The nova link styling applies to links
+/// inside the description; this plain-text API renders no links.)
 #[derive(Clone, Debug)]
 pub struct DialogDescription {
     text: String,
@@ -571,26 +859,38 @@ impl DialogDescription {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let font = egui::FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let galley = ui
-            .painter()
-            .layout(self.text, font, p.muted_foreground, ui.available_width());
+        let font = egui::FontId::proportional(type_scale::SM);
+        let format = egui::TextFormat {
+            font_id: font,
+            color: p.muted_foreground,
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&self.text, 0.0, format);
+        job.wrap.max_width = ui.available_width();
+        job.halign = header_halign(ui);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
         if ui.is_rect_visible(rect) {
-            ui.painter().galley(rect.min, galley, p.muted_foreground);
+            let pos = rect.min - galley.rect.min.to_vec2();
+            ui.painter().galley(pos, galley, p.muted_foreground);
         }
         response
     }
 }
 
-/// nova dialog footer: `bg-muted/50 -mx-4 -mb-4 rounded-b-xl border-t p-4`
-/// with right-aligned children (`sm:justify-end`).
-///
-/// The strip is full-bleed: it stretches to the panel's left/right edges and
-/// hangs into the bottom padding.
+/// Dialog footer: `flex flex-col-reverse gap-2` below `sm` (children stack
+/// vertically in reverse DOM order, each stretched to the full content
+/// width — the flex `align-items: stretch` default), `sm:flex-row
+/// sm:justify-end` at/above 640px (right-aligned row in DOM order, children
+/// content-sized). Under nova the footer is a
+/// full-bleed strip (`bg-muted/50 -mx-4 -mb-4 rounded-b-xl border-t p-4`);
+/// the base recipe has no strip styling (§4).
 ///
 /// Like the source, [`DialogFooter::show_close_button`] appends an outline
-/// "Close" button (a [`DialogClose`], so clicking it closes the dialog).
+/// "Close" button (a [`DialogClose`], so clicking it closes the dialog)
+/// AFTER the children in DOM order: at the top of the stacked footer below
+/// `sm`, at the right end of the row at/above `sm`.
 #[derive(Clone, Debug, Default)]
 pub struct DialogFooter {
     show_close_button: bool,
@@ -604,24 +904,159 @@ impl DialogFooter {
         }
     }
 
-    /// Appends an outline "Close" button that closes the dialog (the source's
-    /// `showCloseButton` prop, default `false`).
+    /// When `show` is true, appends an outline "Close" button that closes
+    /// the dialog (the source's `showCloseButton` prop, default `false`).
     pub fn show_close_button(mut self, show: bool) -> Self {
         self.show_close_button = show;
         self
     }
 
-    /// Renders the footer strip. The content is right-aligned; the optional
-    /// close button sits after it in the row.
+    /// Renders the footer.
     pub fn show<R>(self, ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
         let show_close = self.show_close_button;
-        footer_strip(ui, |ui| {
+        dialog_footer(ui, |ui| {
             let r = content(ui);
             if show_close {
                 DialogClose::new("Close").show(ui);
             }
             r
         })
+    }
+}
+
+/// The dialog footer layout: recipe strip (nova only) + responsive direction
+/// (§4). Separate from [`footer_strip`] (kept for `alert_dialog.rs`): the
+/// dialog footer needs the base no-strip variant and the `sm:` direction
+/// switch, which the shared strip does not provide.
+fn dialog_footer<R>(ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R) -> R {
+    let theme = ShadcnTheme::of_ui(ui);
+    let p = theme.palette;
+    let nova = theme.style == Style::Nova;
+    let wide = ui.ctx().content_rect().width() >= SM_BREAKPOINT;
+    let pad = spacing::LG; // p-4: strip padding/bleed (nova)
+    let gap = spacing::SM; // gap-2
+
+    // Measure the content with the same layout the real pass uses, so the
+    // strip (nova) and the in-flow reservation match the rendered content.
+    // Widgets in the measuring pass are disabled, so no callbacks can
+    // double-fire.
+    let flow_min = ui.cursor().min;
+    let flow_w = ui.available_width();
+    let measure_rect = Rect::from_min_size(flow_min, Vec2::new(flow_w, f32::INFINITY));
+    let mut measure = ui.new_child(UiBuilder::new().max_rect(measure_rect).invisible());
+    if wide {
+        // NOTE: cross-align Min, not Center: `advance_after_rects` expands
+        // `min_rect` to the frame rect, and a Center cross-align makes the
+        // frame span the full (infinite) available height, so the measured
+        // height would be infinite. Min keeps the frame widget-sized; the
+        // row width (the main direction) is unaffected, and the real pass
+        // below still centers vertically.
+        measure.with_layout(Layout::left_to_right(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            content(ui)
+        });
+    } else {
+        // Stack height is direction-independent; measure top-down, with the
+        // same cross-axis justify as the real pass so wrapping children
+        // measure at their real (stretched) width.
+        measure.with_layout(
+            Layout::top_down(Align::Min).with_cross_justify(true),
+            |ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                content(ui)
+            },
+        );
+    }
+    let measured = measure.min_rect();
+    let content_w = measured.width();
+    let content_h = measured.height();
+
+    if nova {
+        // Full-bleed strip: it stretches to the panel's side edges and hangs
+        // into the bottom padding; the in-flow reservation is the strip
+        // height minus the bleed.
+        let strip = Rect::from_min_size(
+            Pos2::new(measure_rect.left() - pad, measure_rect.top()),
+            Vec2::new(flow_w + pad * 2.0, content_h + pad * 2.0),
+        );
+        if ui.is_rect_visible(strip) {
+            let painter = ui.painter();
+            let corner = CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: theme.radius.xl_u8(),
+                se: theme.radius.xl_u8(),
+            };
+            painter.rect_filled(strip, corner, color_alpha(p.muted, 0.5));
+            // border-t
+            painter.line_segment(
+                [strip.left_top(), strip.right_top()],
+                Stroke::new(1.0, p.border),
+            );
+        }
+        let inner = Rect::from_min_size(
+            Pos2::new(strip.left() + pad, strip.top() + pad),
+            Vec2::new(strip.width() - pad * 2.0, content_h),
+        );
+        let real = layout_footer_content(ui, inner, wide, gap, content_w, content);
+        ui.allocate_space(Vec2::new(flow_w, (strip.height() - pad).max(0.0)));
+        real
+    } else {
+        // Base: no strip — plain flex layout, no bleed, no extra padding.
+        let inner = Rect::from_min_size(flow_min, Vec2::new(flow_w, content_h));
+        let real = layout_footer_content(ui, inner, wide, gap, content_w, content);
+        ui.allocate_space(Vec2::new(flow_w, content_h));
+        real
+    }
+}
+
+/// Lays out footer content in the measured rect: a right-aligned row in DOM
+/// order at/above `sm`, a bottom-up stack (reverse DOM order) below `sm`.
+/// The stack justifies its cross axis: `flex-col-reverse` carries the CSS
+/// `align-items: stretch` default, so every child spans the content width
+/// (DLG-VIS-01). The row does not justify: cross-axis stretch there is
+/// vertical and all children share the row height.
+fn layout_footer_content<R>(
+    ui: &mut Ui,
+    inner: Rect,
+    wide: bool,
+    gap: f32,
+    content_w: f32,
+    mut content: impl FnMut(&mut Ui) -> R,
+) -> R {
+    if wide {
+        // Right-aligned row: the child rect hugs the right edge of the
+        // strip/panel, and DOM order runs left to right inside it.
+        let row = Rect::from_min_size(
+            Pos2::new(inner.right() - content_w, inner.top()),
+            Vec2::new(content_w, inner.height()),
+        );
+        let mut child = ui.new_child(UiBuilder::new().max_rect(row));
+        child
+            .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                content(ui)
+            })
+            .inner
+    } else {
+        // Column-reverse: the first DOM child lands at the bottom.
+        // `with_cross_justify(true)` is the egui form of the flex
+        // `align-items: stretch` default: the placer expands each child to
+        // the frame width, so buttons (which paint their whole allocated
+        // rect, content centred) span the content width. Children that
+        // bypass the placer with absolute rects, or constrain their own
+        // width inside a nested layout, keep their own size — the same
+        // boundary as a CSS `align-self` override.
+        let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
+        child
+            .with_layout(
+                Layout::bottom_up(Align::Min).with_cross_justify(true),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = gap;
+                    content(ui)
+                },
+            )
+            .inner
     }
 }
 
@@ -685,70 +1120,101 @@ pub(crate) fn footer_strip<R>(ui: &mut Ui, mut content: impl FnMut(&mut Ui) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Mode, Preset};
+    use crate::theme::{Mode, Preset, Style};
     use egui::Pos2;
 
     struct Harness {
         ctx: egui::Context,
         time: f64,
-    }
-
-    /// The test screen; the modal anchors to the context screen rect, so the
-    /// harness pins it to match the test Ui.
-    fn screen() -> egui::Rect {
-        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0))
+        screen_w: f32,
+        screen_h: f32,
     }
 
     impl Harness {
         fn new() -> Self {
+            Self::with_preset(Preset::default())
+        }
+
+        fn with_preset(preset: Preset) -> Self {
             let ctx = egui::Context::default();
-            Preset::default().install(&ctx);
-            Self { ctx, time: 0.0 }
+            preset.install(&ctx);
+            Self {
+                ctx,
+                time: 0.0,
+                screen_w: 800.0,
+                screen_h: 600.0,
+            }
+        }
+
+        /// The test screen; the modal anchors to the context screen rect, so
+        /// the harness pins it to match the test Ui.
+        fn screen(&self) -> Rect {
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(self.screen_w, self.screen_h))
+        }
+
+        fn set_screen(&mut self, w: f32, h: f32) {
+            self.screen_w = w;
+            self.screen_h = h;
         }
 
         fn raw_input(&self, events: Vec<egui::Event>) -> egui::RawInput {
             egui::RawInput {
                 time: Some(self.time),
-                screen_rect: Some(screen()),
+                screen_rect: Some(self.screen()),
                 events,
                 ..Default::default()
             }
         }
 
-        fn run(&mut self, mut f: impl FnMut(&mut Ui)) {
+        fn frame(&mut self, events: Vec<egui::Event>, mut f: impl FnMut(&mut Ui)) {
             self.time += 0.1;
-            let input = self.raw_input(vec![]);
+            let input = self.raw_input(events);
+            let screen = self.screen();
             let mut out = self.ctx.run_ui(input, |ctx| {
                 let ui = &mut egui::Ui::new(
                     ctx.clone(),
                     Id::unique("dialog_test_ui"),
-                    UiBuilder::new().max_rect(screen()),
+                    UiBuilder::new().max_rect(screen),
                 );
                 f(ui);
             });
             out.textures_delta.clear();
         }
 
+        fn run(&mut self, f: impl FnMut(&mut Ui)) {
+            self.frame(vec![], f);
+        }
+
         fn click(&mut self, pos: Pos2, mut f: impl FnMut(&mut Ui)) {
             for pressed in [true, false] {
-                self.time += 0.1;
-                let input = self.raw_input(vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::default(),
-                }]);
-                let mut out = self.ctx.run_ui(input, |ctx| {
-                    let ui = &mut egui::Ui::new(
-                        ctx.clone(),
-                        Id::unique("dialog_test_ui"),
-                        UiBuilder::new()
-                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
-                    );
-                    f(ui);
-                });
-                out.textures_delta.clear();
+                self.frame(
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                    &mut f,
+                );
             }
+        }
+
+        /// Sends one key press for one frame.
+        fn press_key(&mut self, key: egui::Key, f: impl FnMut(&mut Ui)) {
+            self.frame(
+                vec![egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                    physical_key: None,
+                }],
+                f,
+            );
+        }
+
+        fn focused(&self) -> Option<Id> {
+            self.ctx.memory(|m| m.focused())
         }
 
         fn state(&self, salt: &str) -> DialogState {
@@ -758,34 +1224,43 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        /// Sends Escape for one frame.
-        fn press_escape(&mut self, mut f: impl FnMut(&mut Ui)) {
-            self.time += 0.1;
-            let input = self.raw_input(vec![egui::Event::Key {
-                key: egui::Key::Escape,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::default(),
-                physical_key: None,
-            }]);
-            let mut out = self.ctx.run_ui(input, |ctx| {
-                let ui = &mut egui::Ui::new(
-                    ctx.clone(),
-                    Id::unique("dialog_test_ui"),
-                    UiBuilder::new().max_rect(screen()),
-                );
-                f(ui);
-            });
-            out.textures_delta.clear();
+        /// The widget rect from the last pass, if the widget was used.
+        fn widget_rect(&self, id: Id) -> Option<Rect> {
+            self.ctx.read_response(id).map(|r| r.rect)
         }
     }
 
+    fn test_ui_id() -> Id {
+        Id::unique("dialog_test_ui")
+    }
+
     #[test]
-    fn constants_match_nova_source() {
-        assert_eq!(DIALOG_MAX_WIDTH, 384.0); // sm:max-w-sm
-        assert_eq!(INNER_PADDING, 16); // p-4
+    fn constants_match_recipes() {
+        assert!((DIALOG_MAX_WIDTH - 384.0).abs() < f32::EPSILON); // sm:max-w-sm
+        assert!((DIALOG_BASE_MAX_WIDTH - 512.0).abs() < f32::EPSILON); // sm:max-w-lg
+        assert!((SM_BREAKPOINT - 640.0).abs() < f32::EPSILON);
         assert!((RING_ALPHA - 0.10).abs() < f32::EPSILON);
-        assert!((BACKDROP_ALPHA - 0.10).abs() < f32::EPSILON); // bg-black/10
+        assert!((BACKDROP_ALPHA_NOVA - 0.10).abs() < f32::EPSILON); // bg-black/10
+        assert!((BACKDROP_ALPHA_BASE - 0.50).abs() < f32::EPSILON); // bg-black/50
+        assert!((CLOSE_X_SIZE - 16.0).abs() < f32::EPSILON); // size-4
+        assert!((CLOSE_X_OPACITY - 0.70).abs() < f32::EPSILON); // opacity-70
+        assert!((ANIM_NOVA_SECS - 0.1).abs() < f32::EPSILON); // duration-100
+        assert!((ANIM_BASE_SECS - 0.2).abs() < f32::EPSILON); // duration-200
+    }
+
+    #[test]
+    fn panel_width_rules() {
+        // At/above sm: recipe cap.
+        assert!((panel_width(true, None, 800.0) - 384.0).abs() < f32::EPSILON);
+        assert!((panel_width(false, None, 800.0) - 512.0).abs() < f32::EPSILON);
+        assert!((panel_width(true, None, 640.0) - 384.0).abs() < f32::EPSILON);
+        assert!((panel_width(false, None, 640.0) - 512.0).abs() < f32::EPSILON);
+        // Below sm: viewport minus 2rem, no cap (matrix N-05).
+        assert!((panel_width(true, None, 600.0) - 568.0).abs() < f32::EPSILON);
+        assert!((panel_width(false, None, 416.0) - 384.0).abs() < f32::EPSILON);
+        // Explicit override caps at every width.
+        assert!((panel_width(true, Some(560.0), 800.0) - 560.0).abs() < f32::EPSILON);
+        assert!((panel_width(true, Some(560.0), 500.0) - 468.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -865,7 +1340,7 @@ mod tests {
         });
         assert!(h.state("d2").open);
 
-        h.press_escape(|ui| {
+        h.press_key(egui::Key::Escape, |ui| {
             Dialog::new().id_salt("d2").show(ui, |ui| {
                 DialogTrigger::new("Open").show(ui);
                 DialogContent::new().show(ui, |ui| {
@@ -950,6 +1425,39 @@ mod tests {
     }
 
     #[test]
+    fn dialog_close_disabled_does_not_close() {
+        let mut h = Harness::new();
+        let mut open = true;
+        let mut close_rect = Rect::ZERO;
+
+        for _ in 0..3 {
+            h.run(|ui| {
+                Dialog::controlled(&mut open).id_salt("d4b").show(ui, |ui| {
+                    DialogContent::new().show(ui, |ui| {
+                        DialogTitle::new("Title").show(ui);
+                        DialogFooter::new().show(ui, |ui| {
+                            close_rect = DialogClose::new("Close").disabled(true).show(ui).rect;
+                        });
+                    });
+                });
+            });
+        }
+        assert!(open);
+
+        h.click(close_rect.center(), |ui| {
+            Dialog::controlled(&mut open).id_salt("d4b").show(ui, |ui| {
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                    DialogFooter::new().show(ui, |ui| {
+                        DialogClose::new("Close").disabled(true).show(ui);
+                    });
+                });
+            });
+        });
+        assert!(open, "a disabled DialogClose must not close the dialog");
+    }
+
+    #[test]
     fn button_directly_in_modal_receives_clicks() {
         let mut h = Harness::new();
         let mut open = true;
@@ -1015,11 +1523,458 @@ mod tests {
         assert!(!c.show_close_button);
         let t = DialogTrigger::new("hi").disabled(true).id_salt("t");
         assert!(t.disabled);
-        let _ = DialogClose::new("bye").id_salt("bye");
+        let cl = DialogClose::new("bye").disabled(true).id_salt("bye");
+        assert!(cl.disabled);
         let _ = DialogHeader::new();
         let f = DialogFooter::new().show_close_button(true);
         assert!(f.show_close_button);
         let _ = DialogTitle::new("T");
         let _ = DialogDescription::new("D");
+    }
+
+    #[test]
+    fn panel_geometry_nova_centered_384() {
+        let mut h = Harness::new();
+        let mut open = true;
+        for _ in 0..4 {
+            h.run(|ui| {
+                Dialog::controlled(&mut open)
+                    .id_salt("geo1")
+                    .show(ui, |ui| {
+                        DialogContent::new().show(ui, |ui| {
+                            DialogTitle::new("Title").show(ui);
+                        });
+                    });
+            });
+        }
+        let panel_id = test_ui_id().with("geo1").with("panel");
+        let rect = h.widget_rect(panel_id).expect("panel widget used");
+        assert!((rect.width() - 384.0).abs() < 1.0, "nova width: {rect:?}");
+        assert!(
+            (rect.center().x - 400.0).abs() < 1.0,
+            "centered x: {rect:?}"
+        );
+        assert!(
+            (rect.center().y - 300.0).abs() < 1.0,
+            "centered y: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn panel_geometry_base_512() {
+        let mut h = Harness::with_preset(Preset::default().with_style(Style::Vega));
+        let mut open = true;
+        for _ in 0..4 {
+            h.run(|ui| {
+                Dialog::controlled(&mut open)
+                    .id_salt("geo2")
+                    .show(ui, |ui| {
+                        DialogContent::new().show(ui, |ui| {
+                            DialogTitle::new("Title").show(ui);
+                        });
+                    });
+            });
+        }
+        let panel_id = test_ui_id().with("geo2").with("panel");
+        let rect = h.widget_rect(panel_id).expect("panel widget used");
+        assert!((rect.width() - 512.0).abs() < 1.0, "base width: {rect:?}");
+    }
+
+    #[test]
+    fn panel_width_below_sm_is_viewport_minus_2rem() {
+        let mut h = Harness::new();
+        h.set_screen(500.0, 600.0);
+        let mut open = true;
+        for _ in 0..4 {
+            h.run(|ui| {
+                Dialog::controlled(&mut open)
+                    .id_salt("geo3")
+                    .show(ui, |ui| {
+                        DialogContent::new().show(ui, |ui| {
+                            DialogTitle::new("Title").show(ui);
+                        });
+                    });
+            });
+        }
+        let panel_id = test_ui_id().with("geo3").with("panel");
+        let rect = h.widget_rect(panel_id).expect("panel widget used");
+        assert!((rect.width() - 468.0).abs() < 1.0, "narrow width: {rect:?}");
+    }
+
+    #[test]
+    fn title_geometry_by_recipe_leading_none() {
+        // nova: 16px text, leading-none → 16px box.
+        let mut h = Harness::new();
+        let mut rect = Rect::ZERO;
+        h.run(|ui| {
+            rect = DialogTitle::new("Hello").show(ui).rect;
+        });
+        assert!(
+            (rect.height() - 16.0).abs() < 0.01,
+            "nova title height: {rect:?}"
+        );
+
+        // base: 18px text, leading-none → 18px box.
+        let mut h = Harness::with_preset(Preset::default().with_style(Style::Vega));
+        h.run(|ui| {
+            rect = DialogTitle::new("Hello").show(ui).rect;
+        });
+        assert!(
+            (rect.height() - 18.0).abs() < 0.01,
+            "base title height: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn header_alignment_narrow_centers_wide_left() {
+        // Below sm: header text centers.
+        let mut h = Harness::new();
+        h.set_screen(400.0, 600.0);
+        let mut rect = Rect::ZERO;
+        h.run(|ui| {
+            DialogHeader::new().show(ui, |ui| {
+                rect = DialogTitle::new("Hi").show(ui).rect;
+            });
+        });
+        assert!(
+            (rect.center().x - 200.0).abs() < 1.0,
+            "narrow title centers: {rect:?}"
+        );
+
+        // At/above sm: header text left-aligns.
+        let mut h = Harness::new();
+        h.run(|ui| {
+            DialogHeader::new().show(ui, |ui| {
+                rect = DialogTitle::new("Hi").show(ui).rect;
+            });
+        });
+        assert!(rect.min.x.abs() < 1.0, "wide title left-aligns: {rect:?}");
+    }
+
+    #[test]
+    fn footer_row_dom_order_and_close_last() {
+        let mut h = Harness::new();
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        for _ in 0..2 {
+            h.run(|ui| {
+                DialogFooter::new().show_close_button(true).show(ui, |ui| {
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("B").show(ui).rect;
+                });
+            });
+        }
+        // DOM order left to right in the row.
+        assert!(a.center().x < b.center().x, "A left of B: {a:?} {b:?}");
+        // The appended Close button sits right of B: A is not at the right
+        // edge of the 800px flow (the old right_to_left order put A
+        // rightmost).
+        assert!(
+            a.right() < 700.0,
+            "Close button is right of the content: {a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn footer_stack_reverses_dom_order() {
+        let mut h = Harness::new();
+        h.set_screen(400.0, 600.0);
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        for _ in 0..2 {
+            h.run(|ui| {
+                DialogFooter::new().show_close_button(true).show(ui, |ui| {
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("B").show(ui).rect;
+                });
+            });
+        }
+        // flex-col-reverse: the first DOM child lands at the bottom.
+        assert!(
+            a.center().y > b.center().y,
+            "A below B in the stack: {a:?} {b:?}"
+        );
+        // The appended Close button renders at the TOP of the stack, above B.
+        assert!(b.min.y > 50.0, "Close button sits above B: {a:?} {b:?}");
+    }
+
+    #[test]
+    fn footer_stack_stretches_children_full_width() {
+        // DLG-VIS-01: `flex-col-reverse` + `align-items: stretch` — every
+        // stacked child spans the footer's content width.
+        let mut h = Harness::new();
+        h.set_screen(400.0, 600.0);
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        let mut avail = 0.0;
+        for _ in 0..2 {
+            h.run(|ui| {
+                DialogFooter::new().show_close_button(true).show(ui, |ui| {
+                    avail = ui.available_width();
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("B").show(ui).rect;
+                });
+            });
+        }
+        assert!(avail > 100.0, "footer has content width: {avail}");
+        assert!(
+            (a.width() - avail).abs() < 0.01,
+            "A spans content width {avail}: {a:?}"
+        );
+        assert!(
+            (b.width() - avail).abs() < 0.01,
+            "B spans content width {avail}: {b:?}"
+        );
+        assert!(
+            (a.left() - b.left()).abs() < 0.01,
+            "both start at the content left edge: {a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn footer_row_keeps_content_sized_buttons() {
+        // The wide row must NOT stretch: buttons stay content-sized.
+        let mut h = Harness::new();
+        h.set_screen(800.0, 600.0);
+        let mut a = Rect::ZERO;
+        let mut b = Rect::ZERO;
+        let mut flow_w = 0.0;
+        for _ in 0..2 {
+            h.run(|ui| {
+                flow_w = ui.available_width();
+                DialogFooter::new().show(ui, |ui| {
+                    a = Button::new("A").show(ui).rect;
+                    b = Button::new("Longer label B").show(ui).rect;
+                });
+            });
+        }
+        assert!(
+            (a.width() - b.width()).abs() > 20.0,
+            "row buttons keep distinct content widths: {a:?} {b:?}"
+        );
+        assert!(
+            a.width() + b.width() < flow_w,
+            "row buttons do not stretch: {a:?} {b:?} flow {flow_w}"
+        );
+    }
+
+    #[test]
+    fn close_x_geometry_nova() {
+        let mut h = Harness::new();
+        let mut open = true;
+        for _ in 0..4 {
+            h.run(|ui| {
+                Dialog::controlled(&mut open)
+                    .id_salt("xgeo")
+                    .show(ui, |ui| {
+                        DialogContent::new().show(ui, |ui| {
+                            DialogTitle::new("Title").show(ui);
+                        });
+                    });
+            });
+        }
+        let panel_id = test_ui_id().with("xgeo").with("panel");
+        let x_id = test_ui_id().with("xgeo").with("dialog_close_x");
+        let panel = h.widget_rect(panel_id).expect("panel widget used");
+        let x = h.widget_rect(x_id).expect("close X widget used");
+        assert!((x.width() - 16.0).abs() < 0.01, "X width: {x:?}");
+        assert!((x.height() - 16.0).abs() < 0.01, "X height: {x:?}");
+        assert!(
+            (x.right() - (panel.right() - 8.0)).abs() < 1.0,
+            "X 8px from panel right: panel {panel:?} x {x:?}"
+        );
+        assert!(
+            (x.top() - (panel.top() + 8.0)).abs() < 1.0,
+            "X 8px from panel top: panel {panel:?} x {x:?}"
+        );
+    }
+
+    #[test]
+    fn focus_moves_into_dialog_on_open() {
+        let mut h = Harness::new();
+        let mut trigger_rect = Rect::ZERO;
+        h.run(|ui| {
+            Dialog::new().id_salt("foc1").show(ui, |ui| {
+                trigger_rect = DialogTrigger::new("Open").show(ui).rect;
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+            });
+        });
+        h.click(trigger_rect.center(), |ui| {
+            Dialog::new().id_salt("foc1").show(ui, |ui| {
+                DialogTrigger::new("Open").show(ui);
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+            });
+        });
+        assert!(h.state("foc1").open);
+        let panel_id = test_ui_id().with("foc1").with("panel");
+        assert_eq!(
+            h.focused(),
+            Some(panel_id),
+            "focus moves into the dialog on open"
+        );
+    }
+
+    #[test]
+    fn focus_returns_to_trigger_on_close() {
+        let mut h = Harness::new();
+        let trigger_rect = std::cell::Cell::new(Rect::ZERO);
+        let mut show = |ui: &mut Ui| {
+            Dialog::new().id_salt("foc2").show(ui, |ui| {
+                trigger_rect.set(DialogTrigger::new("Open").id_salt("trig").show(ui).rect);
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+            });
+        };
+        h.run(&mut show);
+        let pos = trigger_rect.get().center();
+        h.click(pos, &mut show);
+        assert!(h.state("foc2").open);
+
+        h.press_key(egui::Key::Escape, &mut show);
+        assert!(!h.state("foc2").open);
+        // The restore lands on the first fully-closed frame (after the
+        // fade-out), not on the closing frame: while the modal renders,
+        // the modal layer would wipe it (DLG-INT-01). Three settle frames
+        // cover the closing frame, the first fully-closed frame, and one
+        // frame past it.
+        h.run(&mut show);
+        h.run(&mut show);
+        h.run(&mut show);
+        let trigger_id = test_ui_id().with("trig");
+        assert_eq!(
+            h.focused(),
+            Some(trigger_id),
+            "focus returns to the trigger on close"
+        );
+        // DLG-INT-01: the return must SURVIVE later frames. The modal layer
+        // from the closing frame makes egui wipe focus when the trigger is
+        // next created (`ignore_focus` for widgets behind the previous
+        // frame's top modal layer), so a single-frame assertion masks the
+        // bug. Two more settle frames expose it.
+        h.run(&mut show);
+        h.run(&mut show);
+        assert_eq!(
+            h.focused(),
+            Some(trigger_id),
+            "focus return survives later frames (DLG-INT-01)"
+        );
+    }
+
+    #[test]
+    fn focus_returns_to_trigger_on_close_content_first() {
+        // The restore must also work when the caller shows the content
+        // BEFORE the trigger: the restore issued on the first fully-closed
+        // frame is wiped by the trigger's own `interact` later in that same
+        // frame (the modal layer is still top), so the restore must retry
+        // until it sticks (DLG-INT-01).
+        let mut h = Harness::new();
+        let trigger_rect = std::cell::Cell::new(Rect::ZERO);
+        let mut show = |ui: &mut Ui| {
+            Dialog::new().id_salt("foc2b").show(ui, |ui| {
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+                trigger_rect.set(DialogTrigger::new("Open").id_salt("trig").show(ui).rect);
+            });
+        };
+        h.run(&mut show);
+        let pos = trigger_rect.get().center();
+        h.click(pos, &mut show);
+        assert!(h.state("foc2b").open);
+
+        // Warm up: in content-first order the modal first renders on the
+        // frame AFTER the click toggles `open`, so the modal layer needs a
+        // frame to become topmost before Escape can dismiss it (same
+        // warm-up as `trigger_click_opens_and_closes`).
+        h.run(&mut show);
+        h.run(&mut show);
+
+        h.press_key(egui::Key::Escape, &mut show);
+        assert!(!h.state("foc2b").open);
+        for _ in 0..4 {
+            h.run(&mut show);
+        }
+        let trigger_id = test_ui_id().with("trig");
+        assert_eq!(
+            h.focused(),
+            Some(trigger_id),
+            "focus returns to the trigger on close (content-first order)"
+        );
+    }
+
+    #[test]
+    fn tab_cycles_inside_dialog() {
+        let mut h = Harness::new();
+        let trigger_rect = std::cell::Cell::new(Rect::ZERO);
+        let outside_id = std::cell::Cell::new(Id::NULL);
+        let mut show = |ui: &mut Ui| {
+            outside_id.set(Button::new("Outside").show(ui).id);
+            Dialog::new().id_salt("foc3").show(ui, |ui| {
+                trigger_rect.set(DialogTrigger::new("Open").show(ui).rect);
+                DialogContent::new().show(ui, |ui| {
+                    Button::new("In1").show(ui);
+                    Button::new("In2").show(ui);
+                });
+            });
+        };
+        h.run(&mut show);
+        let pos = trigger_rect.get().center();
+        h.click(pos, &mut show);
+        assert!(h.state("foc3").open);
+
+        let x_id = test_ui_id().with("foc3").with("dialog_close_x");
+        let mut saw_x = false;
+        for _ in 0..8 {
+            h.press_key(egui::Key::Tab, &mut show);
+            let focus = h.focused();
+            assert_ne!(
+                focus,
+                Some(outside_id.get()),
+                "Tab must never leave the dialog"
+            );
+            if focus == Some(x_id) {
+                saw_x = true;
+            }
+        }
+        assert!(saw_x, "Tab cycling reaches the close X");
+    }
+
+    #[test]
+    fn close_x_keyboard_enter_closes() {
+        let mut h = Harness::new();
+        let trigger_rect = std::cell::Cell::new(Rect::ZERO);
+        let mut show = |ui: &mut Ui| {
+            Dialog::new().id_salt("foc4").show(ui, |ui| {
+                trigger_rect.set(DialogTrigger::new("Open").show(ui).rect);
+                DialogContent::new().show(ui, |ui| {
+                    DialogTitle::new("Title").show(ui);
+                });
+            });
+        };
+        h.run(&mut show);
+        let pos = trigger_rect.get().center();
+        h.click(pos, &mut show);
+        assert!(h.state("foc4").open);
+
+        // Tab until the close X has focus.
+        let x_id = test_ui_id().with("foc4").with("dialog_close_x");
+        for _ in 0..10 {
+            if h.focused() == Some(x_id) {
+                break;
+            }
+            h.press_key(egui::Key::Tab, &mut show);
+        }
+        assert_eq!(h.focused(), Some(x_id), "Tab reaches the close X");
+
+        h.press_key(egui::Key::Enter, &mut show);
+        assert!(
+            !h.state("foc4").open,
+            "Enter on the focused close X closes the dialog"
+        );
     }
 }
