@@ -1649,6 +1649,12 @@ fn render_rows(
         area = area.vertical_scroll_offset(offset);
     }
     area.show(ui, |ui| {
+        // Rows stack with zero inter-row spacing: the frame height model
+        // (`rows_height` / `popup_layout`) sums pure entry heights (§5),
+        // so the theme's global 8px `item_spacing` must not leak between
+        // rows here (SEL-VIS-02). The paint functions below allocate one
+        // rect each and never read the spacing, so only the pitch changes.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let mut action_idx = 0usize;
         for entry in entries.iter() {
             match entry {
@@ -2096,6 +2102,81 @@ mod tests {
         let sep = vec![SelectEntry::Separator];
         assert_eq!(rows_height(&sep, true), 9.0);
         assert_eq!(rows_height(&sep, false), 9.0);
+    }
+
+    #[test]
+    fn rendered_row_pitch_matches_height_model() {
+        // SEL-VIS-02: the harness installs the theme, so the global 8px
+        // `item_spacing` is live — exactly the pre-fix conditions. The
+        // ScrollArea content height must equal the pure-height model
+        // (`rows_height`), in both recipes, with every entry kind
+        // present (label, items, separator, nova group pads). Any leaked
+        // spacing would add 8px per entry and fail this assertion.
+        for (style, nova) in [(Style::Nova, true), (Style::Vega, false)] {
+            let theme = Preset::default().with_style(style).build(Mode::Light);
+            let grouped = vec![
+                SelectEntry::Group(vec![
+                    SelectEntry::Label("G".to_string()),
+                    SelectEntry::Item(SelectItem::new("A")),
+                    SelectEntry::Item(SelectItem::new("B")),
+                ]),
+                SelectEntry::Item(SelectItem::new("C")),
+                SelectEntry::Separator,
+                SelectEntry::Item(SelectItem::new("D")),
+            ];
+            let flat = flatten_entries(&grouped, nova).into_owned();
+            let expected = rows_height(&flat, nova);
+            let mut harness = Harness::new();
+            let mut content_h = f32::NAN;
+            let mut first_bottom = f32::NAN;
+            let mut second_top = f32::NAN;
+            let popup_id = Id::unique("vis02_pitch");
+            // Two frames: row rects are registered by `paint_item` under
+            // `popup_id.with(("row", action_idx))` and readable via
+            // `read_response` only on the following frame.
+            for frame in 0..2 {
+                harness.run(|ui| {
+                    let mut activated = None;
+                    let output = render_rows(
+                        ui,
+                        &flat,
+                        popup_id,
+                        2000.0,
+                        None,
+                        &theme.palette,
+                        &theme,
+                        None,
+                        None,
+                        true,
+                        false,
+                        &mut activated,
+                    );
+                    content_h = output.content_size.y;
+                    if frame == 1 {
+                        // The first two actionable rows must be adjacent
+                        // (no 8px gap between them).
+                        if let Some(r) = ui.ctx().read_response(popup_id.with(("row", 0))) {
+                            first_bottom = r.rect.bottom();
+                        }
+                        if let Some(r) = ui.ctx().read_response(popup_id.with(("row", 1))) {
+                            second_top = r.rect.top();
+                        }
+                    }
+                });
+            }
+            assert_eq!(
+                content_h, expected,
+                "content height must equal the height model ({style:?})"
+            );
+            assert!(
+                first_bottom.is_finite() && second_top.is_finite(),
+                "row responses must be readable ({style:?})"
+            );
+            assert_eq!(
+                second_top, first_bottom,
+                "consecutive rows must be adjacent, no inter-row gap ({style:?})"
+            );
+        }
     }
 
     #[test]
