@@ -66,8 +66,8 @@
 use crate::icons::Icon;
 use crate::theme::{Mode, Palette, ShadcnTheme};
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Layout, Pos2, Rect, Response, Sense, Ui, Vec2,
-    Widget,
+    Align, Align2, Color32, CornerRadius, FontId, Layout, Pos2, Rect, Response, Sense, Ui,
+    UiBuilder, Vec2, Widget,
 };
 
 /// Fixed chip height: `h-5` = 20px (spec §3.1).
@@ -297,13 +297,10 @@ impl Widget for Kbd {
 /// original's div-props/`kbd`-element mismatch (spec §11 D5) is not
 /// reproduced; it has no visual consequence.
 ///
-/// Mixed-height children: a child taller than all previous children
-/// expands the row downward (egui's expand-down rule for horizontal
-/// layouts) rather than re-centring the earlier children. All standard
-/// `Kbd` children are 20px tall, so the spec case is exact; true
-/// re-centring of mixed heights would need a second layout pass, which
-/// immediate mode cannot do. Recorded, not a defect against the spec
-/// (S9 limitation).
+/// The group measures its content before allocating (see
+/// [`KbdGroup::show`]), so every child centres within the tallest-child
+/// row (`items-center`), whatever order the children arrive in —
+/// including mixed-height children.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KbdGroup;
 
@@ -314,27 +311,70 @@ impl KbdGroup {
     }
 
     /// Renders the group around its children.
+    ///
+    /// The content closure runs TWICE: once invisibly to measure the
+    /// tallest child, once for real. The measuring pass is invisible
+    /// (hence disabled), so no callbacks can double-fire; `Kbd` children
+    /// are stateless paints and are unaffected. Callers must not rely on
+    /// the closure running exactly once.
     pub fn show<R>(
         self,
         ui: &mut Ui,
-        content: impl FnOnce(&mut Ui) -> R,
+        mut content: impl FnMut(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
-        // Do NOT use `ui.horizontal` here: it seeds the row height to
-        // `spacing().interact_size.y` (36px under the crate theme), and
-        // the Center cross-align then makes every child's *frame* rect
-        // that tall, so the group allocates 36px whatever its children
-        // are (defect KBD-VIS-01). Seed the row with zero height
-        // instead: each child's frame is then exactly the child's own
-        // height, the row's `min_rect` — and hence the response rect —
-        // is the tallest child (spec §3.3), and `Align::Center` still
-        // centres children within the row. Direction handling mirrors
+        // Measure-then-real (the `dialog_footer` pattern): the group must
+        // PRESENT its true content-sized box to its parent, so a centring
+        // parent centres the true box. Seeding the row with zero height
+        // (the cycle-1 KBD-VIS-01 fix) is centred as a 0-height rect by
+        // `justify_and_align` inside a centred parent, and egui's
+        // expand-down rule then grows the row downward from the middle of
+        // the parent frame — the group rendered 10px low inside a centred
+        // `InputGroupAddon` (defect KBD-VIS-02). Measuring first gives the
+        // real pass the tallest-child height upfront, so the parent
+        // centres the true 20px box and every child centres within the
+        // row. Do NOT use `ui.horizontal` here either: it seeds the row
+        // height to `spacing().interact_size.y` (36px under the crate
+        // theme), so the group would allocate 36px whatever its children
+        // are (defect KBD-VIS-01). Direction handling mirrors
         // `Ui::horizontal`.
-        let layout = if ui.layout().prefer_right_to_left() {
+        let rtl = ui.layout().prefer_right_to_left();
+        let flow_min = ui.cursor().min;
+        let flow_w = ui.available_size_before_wrap().x;
+
+        // Measure pass: invisible (hence disabled) with a Min cross-align,
+        // so the measured height is the tallest child. A Center
+        // cross-align would make each child's frame span the full
+        // (infinite) available height, so the measured height would be
+        // infinite. The layout must be set on the `UiBuilder`: the child
+        // inherits the parent's layout at creation, and a centred
+        // horizontal parent would make the region seed computation centre
+        // an infinite height (NaN).
+        let measure_rect = Rect::from_min_size(flow_min, Vec2::new(flow_w, f32::INFINITY));
+        let measure_layout = if rtl {
+            Layout::right_to_left(Align::Min)
+        } else {
+            Layout::left_to_right(Align::Min)
+        };
+        let mut measure = ui.new_child(
+            UiBuilder::new()
+                .max_rect(measure_rect)
+                .layout(measure_layout)
+                .invisible(),
+        );
+        // `gap-1`, as in the real pass.
+        measure.spacing_mut().item_spacing.x = GAP;
+        content(&mut measure);
+        let content_h = measure.min_rect().height().max(0.0);
+
+        // Real pass: the true height, so `justify_and_align` centres the
+        // true box in a centring parent, and `Align::Center` centres every
+        // child within the row.
+        let layout = if rtl {
             Layout::right_to_left(Align::Center)
         } else {
             Layout::left_to_right(Align::Center)
         };
-        let initial_size = Vec2::new(ui.available_size_before_wrap().x, 0.0);
+        let initial_size = Vec2::new(flow_w, content_h);
         ui.allocate_ui_with_layout(initial_size, layout, |ui| {
             // `gap-1`
             ui.spacing_mut().item_spacing.x = GAP;
@@ -561,6 +601,87 @@ mod tests {
             // Chips are vertically centred in the group: same top edge.
             assert_eq!(group.response.rect.min.y, first.min.y);
             assert_eq!(group.response.rect.min.y, second.min.y);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn group_centres_in_a_centred_parent_row() {
+        // Defect KBD-VIS-02: inside a centred parent row (the
+        // `InputGroupAddon` case — `ui.horizontal` with a 36px min
+        // height), the group must present its true 20px box so the
+        // parent centres it: group centre == row centre, i.e. 8px from
+        // the row top. The zero-height seed rendered the group 10px low
+        // (row_top + 18, grown downward) and stretched the row to 38px,
+        // so this test fails on the unfixed code on both counts. The
+        // installed preset applies the gallery theme spacing, as in the
+        // KBD-VIS-01 test above.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("kbd_group_centred_parent_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            );
+            let row = ui.horizontal(|ui| {
+                ui.set_min_size(Vec2::new(0.0, crate::theme::tokens::spacing::CONTROL));
+                let group = KbdGroup::new().show(ui, |ui| {
+                    let first = Kbd::new("⌘").show(ui).rect;
+                    let second = Kbd::new("K").show(ui).rect;
+                    (first, second)
+                });
+                (group.response.rect, group.inner)
+            });
+            let (group_rect, (first, second)) = row.inner;
+            let row_rect = row.response.rect;
+            assert_eq!(
+                row_rect.height(),
+                crate::theme::tokens::spacing::CONTROL,
+                "the row stays 36px tall; the group must not stretch it"
+            );
+            assert_eq!(group_rect.height(), CHIP_HEIGHT);
+            assert!(
+                (group_rect.center().y - row_rect.center().y).abs() < 0.001,
+                "group centre {:?} != row centre {:?}",
+                group_rect.center(),
+                row_rect.center()
+            );
+            assert!((group_rect.min.y - row_rect.min.y - 8.0).abs() < 0.001);
+            assert_eq!(group_rect.min.y, first.min.y);
+            assert_eq!(group_rect.min.y, second.min.y);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn group_centres_mixed_height_children() {
+        // The measure-then-real allocation centres every child in the
+        // tallest-child row, whatever order children arrive in. The
+        // zero-height seed left an earlier shorter child at the top
+        // when a later child was taller (the S9 limitation, now
+        // superseded): the short-first order below fails on the
+        // unfixed code, where the 12px child sits at the row top
+        // instead of centred 4px down.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("kbd_group_mixed_height_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            );
+            let group = KbdGroup::new().show(ui, |ui| {
+                let (short, _) = ui.allocate_exact_size(Vec2::new(10.0, 12.0), Sense::hover());
+                let tall = Kbd::new("K").show(ui).rect;
+                (short, tall)
+            });
+            let (short, tall) = group.inner;
+            assert_eq!(group.response.rect.height(), CHIP_HEIGHT);
+            assert!((short.min.y - group.response.rect.min.y - 4.0).abs() < 0.001);
+            assert_eq!(tall.min.y, group.response.rect.min.y);
         });
         out.textures_delta.clear();
     }
