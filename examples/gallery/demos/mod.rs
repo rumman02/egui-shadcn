@@ -908,42 +908,113 @@ pub fn spinner_demo(ui: &mut egui::Ui) {
 }
 
 pub fn skeleton_demo(ui: &mut egui::Ui) {
-    ui.label("Text-line placeholders");
-    ui.add_space(4.0);
-    Skeleton::new()
-        .size(ui.available_width().min(320.0), 16.0)
-        .show(ui);
-    Skeleton::new()
-        .size(ui.available_width().min(280.0), 16.0)
-        .show(ui);
-    Skeleton::new()
-        .size(ui.available_width().min(300.0), 16.0)
-        .show(ui);
+    // Every section prints the rect the skeleton actually allocated, so
+    // S5/S6/S7 can verify geometry from screenshots. The pulse values are
+    // the OPEN-1 interim position (Tailwind v4 defaults), not
+    // snapshot-verified (spec §6).
+    ui.label(
+        "Pulse (OPEN-1 interim): 2s cubic-bezier(0.4, 0, 0.6, 1), opacity 1 → 0.5 → 1, infinite.",
+    );
 
     ui.add_space(12.0);
-    ui.label("Card placeholder");
+    ui.label("1. Default — 120 x 20 px (Rust-side convenience default; the original declares no size, spec §3.1)");
     ui.add_space(4.0);
+    let rect = Skeleton::new().show(ui).rect;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (expected: 120 x 20)",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("2. Explicit sizes — caller-sized, no minimum/maximum/aspect rule (spec §3.1, §9)");
+    for (w, h) in [(200.0, 20.0), (80.0, 80.0), (320.0, 12.0)] {
+        ui.add_space(4.0);
+        let rect = Skeleton::new().size(w, h).show(ui).rect;
+        ui.label(format!(
+            "requested: {:.0} x {:.0} px; allocated: {:.0} x {:.0} px",
+            w,
+            h,
+            rect.width(),
+            rect.height()
+        ));
+    }
+
+    ui.add_space(12.0);
+    ui.label("3. Static — full opacity, no pulse (D3 Rust extension, spec §10; use this section for clean fill/radius pixel measurement)");
+    ui.add_space(4.0);
+    let rect = Skeleton::new()
+        .size(200.0, 20.0)
+        .animate(false)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (expected: 200 x 20); fill is the `muted` token at full opacity",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("4. Circle / avatar placeholder — caller radius override wins over the recipe radius (spec §3.3; merge mechanism OPEN-2)");
+    ui.add_space(4.0);
+    let override_radius = theme_radius_full(ui);
+    let rect = Skeleton::new()
+        .size(48.0, 48.0)
+        .corner_radius(override_radius)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px; corner_radius override: {} px (painter clamps it to a full circle)",
+        rect.width(),
+        rect.height(),
+        override_radius
+    ));
+
+    ui.add_space(12.0);
+    ui.label("5. Multiple skeletons — three identical placeholders in a row (phase observed, not judged; the spec states no sync requirement, spec §9)");
+    ui.add_space(4.0);
+    let mut rects = [egui::Rect::NOTHING; 3];
     ui.horizontal(|ui| {
-        Skeleton::new()
-            .size(48.0, 48.0)
-            .corner_radius(theme_radius_full(ui))
-            .show(ui);
-        ui.vertical(|ui| {
-            Skeleton::new().size(180.0, 16.0).show(ui);
-            ui.add_space(6.0);
-            Skeleton::new().size(140.0, 12.0).show(ui);
-        });
+        for rect in &mut rects {
+            *rect = Skeleton::new().size(120.0, 20.0).show(ui).rect;
+        }
     });
+    let identical = rects
+        .iter()
+        .all(|r| r.width() == 120.0 && r.height() == 20.0);
+    ui.label(format!(
+        "allocated: {:.0} x {:.0}, {:.0} x {:.0}, {:.0} x {:.0} px (identical sizes: {})",
+        rects[0].width(),
+        rects[0].height(),
+        rects[1].width(),
+        rects[1].height(),
+        rects[2].width(),
+        rects[2].height(),
+        identical
+    ));
 
     ui.add_space(12.0);
-    ui.label("Large block (h-[125px] w-[250px])");
+    ui.label("6. Zero-size — allocates without panic (spec §9; nothing visible is expected)");
     ui.add_space(4.0);
-    Skeleton::new().size(250.0, 125.0).show(ui);
+    let rect = Skeleton::new().size(0.0, 0.0).show(ui).rect;
+    ui.label(format!(
+        "allocated: {:.0} x {:.0} px (expected: 0 x 0, no panic)",
+        rect.width(),
+        rect.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Static (animation off)");
-    ui.add_space(4.0);
-    Skeleton::new().size(200.0, 20.0).animate(false).show(ui);
+    ui.label("7. Text-line composition — demo composition (OPEN-4), not spec behaviour");
+    for w in [320.0, 280.0, 300.0] {
+        ui.add_space(4.0);
+        let rect = Skeleton::new().size(w, 16.0).show(ui).rect;
+        ui.label(format!(
+            "requested: {:.0} x 16 px; allocated: {:.0} x {:.0} px",
+            w,
+            rect.width(),
+            rect.height()
+        ));
+    }
 }
 
 fn theme_radius_full(ui: &egui::Ui) -> u8 {
