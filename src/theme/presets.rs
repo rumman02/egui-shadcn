@@ -507,6 +507,9 @@ impl Preset {
     /// the accent theme's sparse palette, overridden by mode defaults. In
     /// light mode, `surface-foreground` / `code-foreground` then resolve from
     /// the merged `foreground`, following the `globals.css` `var()` chain.
+    /// In dark mode with a neutral base, `accent` resolves to the docs-site
+    /// value `oklch(0.371 0 0)` (`globals.css:156`) instead of the registry
+    /// data's `0.269` (see the override below).
     pub fn slots(&self, mode: crate::theme::Mode) -> Slots {
         let base = find_theme(self.base_color.name()).unwrap_or(&NEUTRAL_FALLBACK);
         // A theme that names a base color means "no accent" — the base color
@@ -571,6 +574,19 @@ impl Preset {
                 slots[crate::theme::colors::slot::FOREGROUND];
             slots[crate::theme::colors::slot::CODE_FOREGROUND] =
                 slots[crate::theme::colors::slot::SURFACE_FOREGROUND];
+        }
+        // Dark neutral accent: the registry data (`themes.ts`) carries
+        // `oklch(0.269 0 0)` for the dark neutral accent, but the docs
+        // site's stylesheet renders `oklch(0.371 0 0)` (snapshot
+        // `apps/v4/app/globals.css:156`), which the frozen select spec
+        // cites. Per the coordinator ruling of 2026-11-15 (SEL-VIS-03,
+        // Position A), the rendered reference governs this one slot:
+        // override at resolve time so the generated theme data and its
+        // fidelity tests stay untouched. Neutral + dark only — every
+        // other base/mode keeps its `themes.ts` accent, and the `gray`
+        // fallback resolves through neutral so it inherits the override.
+        if matches!(mode, crate::theme::Mode::Dark) && base.name == "neutral" {
+            slots[crate::theme::colors::slot::ACCENT] = "oklch(0.371 0 0)";
         }
         slots
     }
@@ -1127,5 +1143,66 @@ mod tests {
         let dark = preset.slots(crate::theme::Mode::Dark);
         assert_eq!(dark[slot::SURFACE_FOREGROUND], "oklch(0.708 0 0)");
         assert_eq!(dark[slot::CODE_FOREGROUND], "oklch(0.708 0 0)");
+    }
+
+    #[test]
+    fn dark_neutral_accent_resolves_to_globals_css_value() {
+        // SEL-VIS-03, coordinator ruling 2026-11-15 (Position A): the dark
+        // neutral accent resolves to the docs-site value oklch(0.371 0 0)
+        // (snapshot globals.css:156), not the registry data's 0.269. The
+        // `gray` fallback resolves through neutral and inherits it; the
+        // light neutral accent is untouched.
+        use crate::theme::colors::slot;
+        let p = Preset::default_preset();
+        assert_eq!(
+            p.slots(crate::theme::Mode::Dark)[slot::ACCENT],
+            "oklch(0.371 0 0)"
+        );
+        assert_eq!(
+            p.slots(crate::theme::Mode::Light)[slot::ACCENT],
+            "oklch(0.97 0 0)"
+        );
+        let gray = Preset::default_preset().with_base_color(BaseColor::Gray);
+        assert_eq!(
+            gray.slots(crate::theme::Mode::Dark)[slot::ACCENT],
+            "oklch(0.371 0 0)"
+        );
+    }
+
+    #[test]
+    fn dark_accent_unchanged_for_other_base_colors() {
+        // The SEL-VIS-03 override is neutral-only: every other base keeps
+        // its themes.ts dark accent verbatim.
+        use crate::theme::colors::slot;
+        let cases = [
+            (BaseColor::Stone, "oklch(0.268 0.007 34.298)"),
+            (BaseColor::Zinc, "oklch(0.274 0.006 286.033)"),
+            (BaseColor::Mauve, "oklch(0.263 0.024 320.12)"),
+            (BaseColor::Olive, "oklch(0.286 0.016 107.4)"),
+            (BaseColor::Mist, "oklch(0.275 0.011 216.9)"),
+            (BaseColor::Taupe, "oklch(0.268 0.011 36.5)"),
+        ];
+        for (base, expected) in cases {
+            let preset = Preset::default_preset().with_base_color(base);
+            assert_eq!(
+                preset.slots(crate::theme::Mode::Dark)[slot::ACCENT],
+                expected,
+                "{base:?} dark accent"
+            );
+        }
+    }
+
+    #[test]
+    fn dark_neutral_accent_override_survives_accent_theme_overlay() {
+        // Sparse accent themes carry no accent slot, so the accent still
+        // resolves from the base — and the neutral-dark override applies
+        // after merging, while the overlay still overrides its own slots.
+        use crate::theme::colors::slot;
+        let preset = Preset::default_preset()
+            .with_base_color(BaseColor::Neutral)
+            .with_theme_color(ThemeColor::Blue);
+        let dark = preset.slots(crate::theme::Mode::Dark);
+        assert_eq!(dark[slot::ACCENT], "oklch(0.371 0 0)");
+        assert_eq!(dark[slot::PRIMARY], "oklch(0.424 0.199 265.638)");
     }
 }
