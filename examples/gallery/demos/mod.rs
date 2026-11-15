@@ -944,8 +944,8 @@ pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
     ));
     ui.add_space(12.0);
 
-    ui.label("Degenerate ratios — Rust-side safety decision D3, NOT spec behaviour (spec §4.4 / OPEN O4)");
-    ui.label("Width is capped at 2px so the 0.01-floor height (200px) fits the page; the rect must stay finite and non-negative.");
+    ui.label("Degenerate ratios — 0-height box, matching the derived original behaviour (O4 CLOSED as derived; S8 gate E1; D3 SUPERSEDED)");
+    ui.label("Radix enforces the ratio via paddingBottom: `${100 / ratio}%`; for 0, negative, NaN, or infinite ratios the declaration is invalid CSS and is dropped, leaving padding 0 — the box collapses and content overflows visibly. The rect must stay finite and non-negative.");
     ui.add_space(4.0);
     for (ratio, name) in [(0.0f32, "ratio 0"), (-1.0f32, "ratio -1")] {
         ui.label(name);
@@ -959,7 +959,7 @@ pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
         });
         let rect = resp.response.rect;
         ui.label(format!(
-            "{name}: measured {w:.1} × {h:.1} px, finite: {finite}, non-negative: {non_neg} (expected 2.0 × 200.0 at the 0.01 floor)",
+            "{name}: measured {w:.1} × {h:.1} px, finite: {finite}, non-negative: {non_neg} (expected 2.0 × 0.0 — collapsed box)",
             w = rect.width(),
             h = rect.height(),
             finite = rect.width().is_finite() && rect.height().is_finite(),

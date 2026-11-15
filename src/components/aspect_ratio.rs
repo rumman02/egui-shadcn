@@ -22,35 +22,45 @@
 //!
 //! Rust-side notes (not original behaviour): [`AspectRatio::max_width`] is a
 //! Rust-only convenience with no counterpart in the original; degenerate
-//! ratios are clamped as a safety decision (see `height_for_width`); child
-//! overflow handling is an implementation choice pending spec OPEN item O2
+//! ratios collapse to a 0-height box, matching the derived original
+//! behaviour (see `height_for_width`); child overflow handling is an
+//! implementation choice pending spec OPEN item O2
 //! (see [`AspectRatio::show`]).
 
 use egui::{InnerResponse, Sense, Ui, UiBuilder, Vec2};
 
 /// Height for `width` at the given ratio (pure, testable).
 ///
-/// Rust-side safety decision (frozen S0 spec §9 D3; OPEN item O4): the
-/// original's behaviour for degenerate ratios is unestablished, so any
-/// ratio that is non-finite, zero, negative, or below `0.01` is treated
-/// as `0.01`, and any non-finite or negative width is treated as `0`.
-/// The resulting height is therefore always finite and non-negative, and
-/// the allocated rect is never `NaN`, negative, or infinite. This
-/// clamping is NOT spec compliance — no clamping rule exists in the
-/// original — and ratios below `0.01` (taller than 100:1) render at the
-/// `0.01` floor.
+/// Degenerate ratios collapse to a 0-height box, matching the derived
+/// original behaviour (frozen S0 spec §9 O4, CLOSED as derived by the
+/// Batch A S8 gate; S1 decision D3 — the `0.01` floor — is SUPERSEDED
+/// by the O4 closure). The Radix primitive enforces the ratio with the
+/// inline style `paddingBottom: \`${100 / ratio}%\``; for ratio 0,
+/// negative, `NaN`, or infinite the resulting declaration is invalid
+/// CSS (a non-numeric percentage, or a negative padding) and is dropped
+/// at parse time, leaving the initial padding of 0 — so the wrapper
+/// collapses to height 0 and its content overflows visibly. Positive
+/// finite ratios follow the exact formula `width / ratio`, unbounded
+/// for tiny positives. Any non-finite or negative width is treated as
+/// `0` (unchanged width sanitization), and a non-finite computed height
+/// (overflow) is treated as `0`, so the resulting height is always
+/// finite and non-negative, and the allocated rect is never `NaN`,
+/// negative, or infinite.
 pub(crate) fn height_for_width(width: f32, ratio: f32) -> f32 {
     let width = if width.is_finite() {
         width.max(0.0)
     } else {
         0.0
     };
-    let ratio = if ratio.is_finite() && ratio > 0.01 {
-        ratio
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return 0.0;
+    }
+    let height = width / ratio;
+    if height.is_finite() {
+        height
     } else {
-        0.01
-    };
-    width / ratio
+        0.0
+    }
 }
 
 /// A shadcn aspect-ratio container: a pure layout box that constrains its
@@ -86,8 +96,8 @@ impl AspectRatio {
     ///
     /// Any positive finite number is a valid ratio (e.g. `16.0 / 9.0`,
     /// `1.0`, `9.0 / 16.0`, `4.0 / 3.0`). Degenerate ratios (zero,
-    /// negative, `NaN`, infinite) are clamped by a Rust-side safety
-    /// decision, not spec compliance — see `height_for_width`.
+    /// negative, `NaN`, infinite) collapse to a 0-height box, matching
+    /// the derived original behaviour — see `height_for_width`.
     pub fn new(ratio: f32) -> Self {
         Self {
             ratio,
@@ -180,15 +190,61 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_ratios_are_clamped() {
-        // Each degenerate input renders at the 0.01 floor (D3), finite.
-        for ratio in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let h = height_for_width(100.0, ratio);
-            assert!(h.is_finite(), "ratio {ratio}: height {h}");
-            assert!((h - 100.0 / 0.01).abs() < 1e-3, "ratio {ratio}: height {h}");
+    fn degenerate_ratios_collapse_to_zero_height() {
+        // O4 CLOSED as derived (S8 gate E1; D3 SUPERSEDED): every
+        // degenerate ratio renders a 0-height box.
+        for ratio in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(height_for_width(100.0, ratio), 0.0, "ratio {ratio}");
+            assert_eq!(height_for_width(2.0, ratio), 0.0, "ratio {ratio}");
         }
-        // Ratios below the floor (taller than 100:1) render at the floor.
-        assert!((height_for_width(100.0, 0.005) - 100.0 / 0.01).abs() < 1e-3);
+    }
+
+    #[test]
+    fn positive_ratios_follow_the_exact_formula() {
+        // Ratio 2.0 at 200 → 100, exactly.
+        assert!((height_for_width(200.0, 2.0) - 100.0).abs() < 1e-6);
+        // Tiny positive ratios are unbounded (no floor): 0.005 at 100 → 20000.
+        // Relative tolerance: f32 rounding at these magnitudes exceeds 1e-3 absolute.
+        let h = height_for_width(100.0, 0.005);
+        assert!((h - 20_000.0).abs() / 20_000.0 < 1e-6, "height {h}");
+        let h = height_for_width(200.0, 0.001);
+        assert!((h - 200_000.0).abs() / 200_000.0 < 1e-6, "height {h}");
+    }
+
+    #[test]
+    fn non_finite_computed_height_is_zero() {
+        // Overflow of the exact formula collapses to 0, never infinity.
+        assert_eq!(height_for_width(100.0, f32::MIN_POSITIVE), 0.0);
+        assert_eq!(height_for_width(f32::MAX, 0.5), 0.0);
+    }
+
+    #[test]
+    fn heights_are_never_nan_or_negative() {
+        let widths = [0.0, 2.0, 100.0, f32::MAX, -50.0, f32::NAN, f32::INFINITY];
+        let ratios = [
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MIN_POSITIVE,
+            0.001,
+            0.01,
+            1.0,
+            2.0,
+            100.0,
+            f32::MAX,
+        ];
+        for width in widths {
+            for ratio in ratios {
+                let h = height_for_width(width, ratio);
+                assert!(
+                    h.is_finite() && h >= 0.0,
+                    "width {width}, ratio {ratio}: height {h}"
+                );
+            }
+        }
     }
 
     #[test]
