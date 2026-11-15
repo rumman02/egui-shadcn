@@ -1022,70 +1022,269 @@ fn theme_radius_full(ui: &egui::Ui) -> u8 {
 }
 
 pub fn typography_demo(ui: &mut egui::Ui) {
-    // Block spacing follows the source recipes' margins: `mt-6` (24px) on
-    // paragraphs/blockquotes, `mt-8` (32px) on h3/h4, `mt-10` (40px) on h2,
-    // `my-6` (24px) on lists. The components themselves do not auto-margin.
-    H1::new("Taxing Laughter: The Joke Tax Chronicles").show(ui);
-    ui.add_space(24.0);
-    P::new("The joke tax is a levy imposed on the punchline economy. When the people discovered the jokes were taxable, laughter became a ledger entry — and humor learned to hide.").show(ui);
-    ui.add_space(40.0);
-    H2::new("The King's Plan").show(ui);
-    ui.add_space(24.0);
-    P::new("The king, seeing how much happier his subjects were, realized the error of his ways and repealed the joke tax.").show(ui);
-    ui.add_space(24.0);
-    Blockquote::new("After the tax was repealed, the court jester's salary doubled, and the kingdom's GDP of giggles soared.").show(ui);
-    ui.add_space(32.0);
-    H3::new("The Joke Tax Chronicles").show(ui);
-    ui.add_space(24.0);
-    P::new("As implemented in the royal decree, the tax collected a flat rate on all punchlines above three words.").show(ui);
-    ui.add_space(32.0);
-    H4::new("Exemptions").show(ui);
-    ui.add_space(24.0);
-    Ul::new(&[
+    // Evidence position (spec §0, binding): NO typography recipe is
+    // snapshot-verified — shadcn/ui ships no typography component and the
+    // docs example files are absent from the snapshot. Every recipe below
+    // is QUOTED (gaps-A + the module table, which agree); sizes/weights
+    // are TAILWIND-DEFAULT pairings; CodeBlock is an INVENTED element
+    // (spec §2.4, OPEN-5 metrics confirmed by the Coordinator). Nova is
+    // silent on every typography slot (VERIFIED, spec §2.3), so one
+    // recipe per element renders under both recipes and both themes.
+    // Gaps between blocks follow the §4.2 caller-applied margins
+    // (QUOTED, OPEN-2): H2 `mt-10` 40px, H3/H4 `mt-8` 32px, P/Blockquote/
+    // lists `mt-6`/`my-6` 24px, TableCaption `mt-4` 16px. Section headers
+    // and readout lines are demo chrome; every other visible rect is the
+    // component. Readouts print the rect the element actually allocated
+    // (`Response.rect`), so S5 can verify geometry from screenshots.
+    ui.label(
+        "Recipes are QUOTED (no snapshot-verified original exists); nova is \
+         silent, so one recipe renders under both recipes and both themes \
+         (spec §§0, 2.3). Gaps follow the §4.2 caller-applied margins \
+         (QUOTED, OPEN-2).",
+    );
+    ui.add_space(12.0);
+
+    // Section 1 — Headings (spec §2.2, QUOTED; D1 tracking renders 0;
+    // D2 H1 renders at 600, requirement 800 frozen).
+    ui.label("1. Headings H1–H4 (spec §2.2, QUOTED; D1/D2 as stated)");
+    ui.add_space(4.0);
+    let h1 = H1::new("Taxing Laughter: The Joke Tax Chronicles").show(ui);
+    let content_left = h1.rect.left();
+    ui.label(format!(
+        "H1: allocated {:.1} × {:.1} px (expected 36px/40px leading, one row)",
+        h1.rect.width(),
+        h1.rect.height()
+    ));
+    ui.add_space(40.0); // H2 `mt-10`
+    let h2 = H2::new("The King's Plan").show(ui);
+    ui.label(format!(
+        "H2: allocated {:.1} × {:.1} px (expected 30px/36px + 8px pb-2 + 1px rule = 45px; rule spans the full width)",
+        h2.rect.width(),
+        h2.rect.height()
+    ));
+    ui.add_space(32.0); // H3 `mt-8`
+    let h3 = H3::new("The Joke Tax Chronicles").show(ui);
+    ui.label(format!(
+        "H3: allocated {:.1} × {:.1} px (expected 24px/32px leading, one row)",
+        h3.rect.width(),
+        h3.rect.height()
+    ));
+    ui.add_space(32.0); // H4 `mt-8`
+    let h4 = H4::new("Exemptions").show(ui);
+    ui.label(format!(
+        "H4: allocated {:.1} × {:.1} px (expected 20px/28px leading, one row)",
+        h4.rect.width(),
+        h4.rect.height()
+    ));
+
+    // Section 2 — P, Lead, Large (spec §2.2, QUOTED).
+    ui.add_space(24.0); // P `mt-6`
+    ui.label("2. Paragraph, Lead, Large (spec §2.2, QUOTED)");
+    ui.add_space(4.0);
+    let p = P::new("The joke tax is a levy imposed on the punchline economy.").show(ui);
+    ui.label(format!(
+        "P: allocated {:.1} × {:.1} px (expected 16px, leading-7 = 28px, one row)",
+        p.rect.width(),
+        p.rect.height()
+    ));
+    ui.add_space(12.0);
+    let lead = Lead::new(
+        "A modal dialog that interrupts the user with important content and expects a response.",
+    )
+    .show(ui);
+    ui.label(format!(
+        "Lead: allocated {:.1} × {:.1} px (expected 20px/28px, muted-foreground)",
+        lead.rect.width(),
+        lead.rect.height()
+    ));
+    ui.add_space(12.0);
+    let large = Large::new("Display a prominent message in a large size.").show(ui);
+    ui.label(format!(
+        "Large: allocated {:.1} × {:.1} px (expected 18px/28px, semibold 600)",
+        large.rect.width(),
+        large.rect.height()
+    ));
+
+    // Section 3 — Small, Muted (spec §2.2, QUOTED).
+    ui.add_space(12.0);
+    ui.label("3. Small, Muted (spec §2.2, QUOTED)");
+    ui.add_space(4.0);
+    let small = Small::new("Email address").show(ui);
+    ui.label(format!(
+        "Small: allocated {:.1} × {:.1} px (expected 14px, medium 500, leading-none = 14px tall)",
+        small.rect.width(),
+        small.rect.height()
+    ));
+    ui.add_space(12.0);
+    let muted = Muted::new("Enter your email to subscribe to the joke tax digest.").show(ui);
+    ui.label(format!(
+        "Muted: allocated {:.1} × {:.1} px (expected 14px/20px, muted-foreground)",
+        muted.rect.width(),
+        muted.rect.height()
+    ));
+
+    // Section 4 — Blockquote (spec §5.2, QUOTED + DERIVED).
+    ui.add_space(24.0); // Blockquote `mt-6`
+    ui.label("4. Blockquote (spec §5.2, QUOTED; bar + offset DERIVED)");
+    ui.add_space(4.0);
+    let bq = Blockquote::new("After the tax was repealed, the jester's salary doubled.").show(ui);
+    ui.label(format!(
+        "Blockquote: allocated {:.1} × {:.1} px; 2px bar at the left edge (x = {:.1}), text starts 26px in (2px bar + 24px pl-6), italic, 16px/24px",
+        bq.rect.width(),
+        bq.rect.height(),
+        bq.rect.left()
+    ));
+
+    // Section 5 — Lists (spec §5.3, QUOTED + DERIVED). Nested lists are
+    // OPEN-4 and are NOT shown.
+    ui.add_space(24.0); // Ul `my-6`
+    ui.label("5. Lists Ul / Ol (spec §5.3, QUOTED; no nesting — OPEN-4)");
+    ui.add_space(4.0);
+    let ul = Ul::new(&[
         "Puns under one second",
         "Knock-knock jokes",
         "Sighs and groans",
     ])
     .show(ui);
-    ui.add_space(24.0);
-    Ol::new(&[
+    ui.label(format!(
+        "Ul: allocated {:.1} × {:.1} px (spec §5.3 breakdown 8 + 3×24 + 2×8 = 96px; rect left offset {:.1} px = the 24px ml-6 indent, applied as an explicit offset; no indent guide line — defects TYP-VIS-01/02/03 fixed in S9, verified by S10)",
+        ul.rect.width(),
+        ul.rect.height(),
+        ul.rect.left() - content_left
+    ));
+    ui.add_space(24.0); // Ol `my-6`
+    let ol = Ol::new(&[
         "File form LOL-1",
         "Attach proof of laughter",
         "Pay within 30 days",
     ])
     .show(ui);
-    ui.add_space(24.0);
-    Lead::new(
-        "A modal dialog that interrupts the user with important content and expects a response.",
-    )
-    .show(ui);
-    ui.add_space(24.0);
-    Large::new("Display a prominent message in a large size.").show(ui);
-    ui.add_space(16.0);
-    Small::new("Email address").show(ui);
-    ui.add_space(8.0);
-    Muted::new("Enter your email to subscribe to the joke tax digest.").show(ui);
-    ui.add_space(24.0);
-    ui.horizontal(|ui| {
+    ui.label(format!(
+        "Ol: allocated {:.1} × {:.1} px (same 96px total as Ul; spec breakdown 8 + 3×24 + 2×8; decimal markers 1. 2. 3.)",
+        ol.rect.width(),
+        ol.rect.height()
+    ));
+
+    // Section 6 — InlineCode (spec §5.4, QUOTED; D7 proposed: renders at
+    // Geist Mono Medium 500, requirement 600 frozen — no 600 mono face
+    // is embedded).
+    ui.add_space(12.0);
+    ui.label("6. InlineCode (spec §5.4, QUOTED; D7: renders at mono 500)");
+    ui.add_space(4.0);
+    let chip = InlineCode::new("Cmd + K").show(ui);
+    ui.label(format!(
+        "Standalone chip: allocated {:.1} × {:.1} px (expected 14px mono, 20px leading + 6.4px padding = 26.4px tall; 4px radius; muted fill)",
+        chip.rect.width(),
+        chip.rect.height()
+    ));
+    ui.add_space(12.0);
+    // E4 composition: the chip inside a line of text. NOTE: a plain
+    // `ui.horizontal` sizes its row to `interact_size.y` (36px) — the
+    // same egui layout artifact the separator/kbd demos documented.
+    // The readout prints BOTH the row rect and the chip rect so S5 can
+    // judge the chip's own allocation (26.4px) against the row.
+    let row = ui.horizontal(|ui| {
         ui.label("Press");
-        InlineCode::new("Cmd + K").show(ui);
-        ui.label("to open the palette. Kingdom GDP figure:");
-        InlineCode::new("GDP_giggles").show(ui);
+        let chip = InlineCode::new("GDP_giggles").show(ui);
+        ui.label("to open the palette.");
+        chip.rect
     });
-    ui.add_space(24.0);
-    CodeBlock::new(
-        "fn levy(punchline: &Punchline) -> Tax {
-    Tax::new(punchline.words()).rate(0.2)
-}",
+    ui.label(format!(
+        "Inline in a text line: row rect {:.1} × {:.1} px (ui.horizontal 36px artifact); chip rect {:.1} × {:.1} px (expected 26.4px tall)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        row.inner.width(),
+        row.inner.height()
+    ));
+
+    // Section 7 — CodeBlock (spec §2.4, INVENTED; OPEN-5 metrics
+    // CONFIRMED by the Coordinator: 16px mono, 24px leading, 400,
+    // `foreground`; fill `muted`, radius 8px, 16px padding).
+    ui.add_space(12.0);
+    ui.label("7. CodeBlock (spec §2.4, INVENTED; OPEN-5 metrics confirmed)");
+    ui.add_space(4.0);
+    let code = CodeBlock::new(
+        "fn levy(punchline: &Punchline) -> Tax {\n    Tax::new(punchline.words()).rate(0.2)\n}",
     )
     .show(ui);
-    ui.add_space(16.0);
-    TableCaption::new("Table 1 — joke revenue by quarter.").show(ui);
-    ui.add_space(8.0);
-    ui.small(
-        "The docs' typography-table composition (striped rows, captions) is \
-         covered by the table demo.",
-    );
+    ui.label(format!(
+        "CodeBlock: allocated {:.1} × {:.1} px (expected 3 rows × 24px + 32px padding = 104px; 16px mono, muted fill, 8px radius)",
+        code.rect.width(),
+        code.rect.height()
+    ));
+
+    // Section 8 — TableCaption in a table context (spec §9; recipe §2.2,
+    // QUOTED). The grid rows are demo chrome (plain labels); only the
+    // caption is the component. Placement is the table's concern.
+    ui.add_space(12.0);
+    ui.label("8. TableCaption in a table context (spec §9; recipe QUOTED)");
+    ui.add_space(4.0);
+    egui::Grid::new("typography_table_caption")
+        .striped(false)
+        .show(ui, |ui| {
+            ui.label("Quarter");
+            ui.label("Joke revenue");
+            ui.end_row();
+            ui.label("Q1");
+            ui.label("12,400 giggles");
+            ui.end_row();
+            ui.label("Q2");
+            ui.label("18,900 giggles");
+            ui.end_row();
+        });
+    ui.add_space(16.0); // TableCaption `mt-4`
+    let caption = TableCaption::new("Table 1 — joke revenue by quarter.").show(ui);
+    ui.label(format!(
+        "TableCaption: allocated {:.1} × {:.1} px (expected 14px/20px, muted-foreground; grid above is demo chrome)",
+        caption.rect.width(),
+        caption.rect.height()
+    ));
+
+    // Section 9 — Long-heading wrap (spec §10 E1; D5: no `text-balance`,
+    // normal greedy wrapping). Width constrained to 420px via
+    // `allocate_ui` (the separator demo's pattern) so the heading wraps
+    // at any window size.
+    ui.add_space(40.0); // H2 `mt-10`
+    ui.label("9. Long H2 wrapping at 420px (spec §10 E1; D5, no text-balance)");
+    ui.add_space(4.0);
+    let wrapped = ui
+        .allocate_ui(egui::Vec2::new(420.0, 1.0), |ui| {
+            H2::new(
+                "The Royal Decree on the Taxation of Punchlines, Jokes, and Other Matters of Mirth",
+            )
+            .show(ui)
+        })
+        .inner;
+    let wrap_rows = (wrapped.rect.height() - 9.0) / 36.0;
+    ui.label(format!(
+        "Wrapped H2: allocated {:.1} × {:.1} px at 420px wide ({:.1} rows × 36px + 8px pb-2 + 1px rule; no truncation, no ellipsis)",
+        wrapped.rect.width(),
+        wrapped.rect.height(),
+        wrap_rows
+    ));
+
+    // Section 10 — Empty elements (spec §10 E2): no source rule is
+    // quoted. Observed behaviour only — the spec defers the ruling and
+    // S5 records what allocates. No panic, no stray chrome expected.
+    ui.add_space(24.0); // P `mt-6`
+    ui.label("10. Empty elements (spec §10 E2 — observed behaviour, spec defers the ruling)");
+    ui.add_space(4.0);
+    let empty_p = P::new("").show(ui);
+    ui.label(format!(
+        "Empty P: allocated {:.1} × {:.1} px",
+        empty_p.rect.width(),
+        empty_p.rect.height()
+    ));
+    ui.add_space(12.0);
+    let empty_h3 = H3::new("").show(ui);
+    ui.label(format!(
+        "Empty H3: allocated {:.1} × {:.1} px",
+        empty_h3.rect.width(),
+        empty_h3.rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("No animation, no keyboard behaviour, no interactive states (spec §§7–8).");
 }
 
 /// Demo chrome for a ratio box: fills the whole box the child `Ui` was
