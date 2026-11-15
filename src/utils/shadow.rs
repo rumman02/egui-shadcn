@@ -52,8 +52,12 @@
 //! [`paint_shadow`] rasterizes the shadow for a (layers, corner radii, dark,
 //! pixels-per-point) key into ONE texture atlas — four corner patches plus
 //! four oriented edge strips — and draws it as nine quads (corners 1:1, edges
-//! stretched, center filled solid). The atlas is size-independent: resizing a
-//! widget reuses the same texture. Entries live in `Context` temp data (never
+//! stretched). The shadow contributes nothing strictly inside the widget
+//! rect: the rasterizers mask the interior after blurring, so the exterior
+//! profile is exactly the unmasked shadow while transparent widgets show the
+//! page background through them (SEL-VIS-01); the center region of the
+//! nine-slice is interior-only and is never painted. The atlas is
+//! size-independent: resizing a widget reuses the same texture. Entries live in `Context` temp data (never
 //! serialized, dropped with the context), bounded to [`MAX_CACHE_ENTRIES`]
 //! with LRU eviction; dropping an entry drops its [`TextureHandle`], which
 //! frees the GPU texture. `shadow-none` paints nothing and touches no cache.
@@ -900,6 +904,34 @@ fn render_corner(
             *dst += a * src * (1.0 - *dst);
         }
     }
+    // Interior mask (SEL-VIS-01): the shadow contributes nothing strictly
+    // inside the widget's rounded rect. Applied AFTER the blur, so the
+    // exterior profile is exactly the unmasked one; only texels whose center
+    // lies strictly inside the unoffset widget rect (SDF < 0) are zeroed.
+    // The widget's 1px border paints over the mask boundary.
+    for j in 0..patch_px {
+        for i in 0..patch_px {
+            let mut px = (i as f32 + 0.5) / scale;
+            let mut py = (j as f32 + 0.5) / scale;
+            if flip_x {
+                px = patch - px;
+            }
+            if flip_y {
+                py = patch - py;
+            }
+            let sx = px - extent;
+            let sy = py - extent;
+            let sdf = sd_round_box(
+                Vec2::new(sx, sy),
+                Vec2::new(BIG, BIG),
+                Vec2::splat(BIG),
+                radius,
+            );
+            if sdf < 0.0 {
+                acc[j * patch_px + i] = 0.0;
+            }
+        }
+    }
     acc
 }
 
@@ -932,27 +964,28 @@ fn edge_profile(
             *dst += a * src * (1.0 - *dst);
         }
     }
-    acc
-}
-
-/// The solid color under the widget: all layers composited at full coverage.
-fn interior_color(layers: &[ShadowLayer], dark: bool) -> Color32 {
-    let mut a = 0.0f32;
-    for layer in layers {
-        let la = layer.resolved_alpha(dark);
-        a += la * (1.0 - a);
+    // Interior mask (SEL-VIS-01): zero the profile strictly inside the
+    // widget edge (t > 0). Applied after the blur, so the exterior profile
+    // (t <= 0) is exactly the unmasked one.
+    for (j, v) in acc.iter_mut().enumerate() {
+        let t = (j as f32 + 0.5) / scale - extent;
+        if t > 0.0 {
+            *v = 0.0;
+        }
     }
-    Color32::from_black_alpha((a * 255.0).round().clamp(0.0, 255.0) as u8)
+    acc
 }
 
 /// Atlas geometry: the patch/extent sizes in points plus the UV rect of each
 /// of the 8 regions (corners NW/NE/SW/SE, strips top/bottom/left/right).
+/// There is no center fill: the center region of the nine-slice always lies
+/// strictly inside the widget rect (see `draw_shadow_atlas`), and the shadow
+/// contributes nothing there (SEL-VIS-01).
 #[derive(Clone, Copy, Debug)]
 struct AtlasGeom {
     extent: f32,
     patch: f32,
     uvs: [Rect; 8],
-    center: Color32,
 }
 
 /// Build the atlas image + geometry for one (layers, radii, dark, ppp) key.
@@ -1040,12 +1073,7 @@ fn rasterize_atlas(
     ];
     (
         ColorImage::new([w, h], pixels),
-        AtlasGeom {
-            extent,
-            patch,
-            uvs,
-            center: interior_color(layers, dark),
-        },
+        AtlasGeom { extent, patch, uvs },
     )
 }
 
@@ -1149,6 +1177,22 @@ fn rasterize_full_rect(
         let a = layer.resolved_alpha(dark);
         for (dst, src) in acc.iter_mut().zip(buf.iter()) {
             *dst += a * src * (1.0 - *dst);
+        }
+    }
+    // Interior mask (SEL-VIS-01): zero accumulated alpha strictly inside the
+    // unoffset widget rect. Applied after the blur, so the exterior profile
+    // is exactly the unmasked one.
+    let widget_center = Vec2::new(width * 0.5, height * 0.5);
+    let widget_half = Vec2::new(width * 0.5, height * 0.5);
+    for j in 0..h {
+        for i in 0..w {
+            let p = Vec2::new(
+                (i as f32 + 0.5) / scale - extent,
+                (j as f32 + 0.5) / scale - extent,
+            );
+            if sd_round_rect(p, widget_center, widget_half, radii) < 0.0 {
+                acc[j * w + i] = 0.0;
+            }
         }
     }
     let pixels = acc
@@ -1448,8 +1492,9 @@ pub fn paint_shadow_resolved(
     );
 }
 
-/// Draw one cached shadow texture. Atlas entries draw as nine quads + center
-/// fill; full-rect entries draw as one quad over the expanded rect.
+/// Draw one cached shadow texture. Atlas entries draw as nine quads;
+/// full-rect entries draw as one quad over the expanded rect. Neither paints
+/// anything strictly inside the widget rect (SEL-VIS-01).
 fn draw_shadow(painter: &Painter, rect: Rect, entry: &CacheEntry) {
     match entry.geom {
         ShadowGeom::FullRect { extent } => {
@@ -1464,11 +1509,18 @@ fn draw_shadow(painter: &Painter, rect: Rect, entry: &CacheEntry) {
     }
 }
 
-/// Draw the nine quads + center fill for one cached atlas. `patch_draw` is
+/// Draw the nine quads for one cached atlas. `patch_draw` is
 /// the patch size clamped to half the expanded rect: for widgets narrower
 /// than twice the corner influence, the corner patches are cropped to their
 /// outer fraction (UV sub-rects) instead of overlapping. In the normal case
 /// `patch_draw == patch` and the draw is exact.
+///
+/// No center fill is painted: the center region always lies strictly inside
+/// the widget rect — `patch_draw >= extent` always holds (`patch >= extent`
+/// and each `(side + 2*extent)/2 >= extent` for non-degenerate rects, and
+/// degenerate rects never reach this function) — and the shadow contributes
+/// nothing inside the widget rect, so the center region is never painted
+/// (SEL-VIS-01).
 fn draw_shadow_atlas(painter: &Painter, rect: Rect, entry: &CacheEntry, geom: AtlasGeom) {
     let e = geom.extent;
     let p = geom.patch;
@@ -1553,14 +1605,8 @@ fn draw_shadow_atlas(painter: &Painter, rect: Rect, entry: &CacheEntry, geom: At
         ),
         sub(geom.uvs[7], false, true, false, false),
     );
-    // Center fill.
-    let center = Rect::from_min_max(
-        egui::pos2(x0 + p_draw, y0 + p_draw),
-        egui::pos2(x1 - p_draw, y1 - p_draw),
-    );
-    if center.width() > 0.0 && center.height() > 0.0 {
-        painter.rect_filled(center, CornerRadius::ZERO, geom.center);
-    }
+    // No center fill: the center region is interior-only (see the function
+    // docs) and the shadow contributes nothing inside the widget rect.
 }
 
 #[cfg(test)]
@@ -1941,55 +1987,199 @@ mod tests {
     }
 
     #[test]
-    fn corner_patch_falls_off_monotonically() {
+    fn corner_patch_falls_off_monotonically_outside_and_transparent_inside() {
         let (image, _) = rasterize_atlas([6.0; 4], ShadowSize::Xs.layers(), false, 1.0);
         // Far outside corner: fully transparent.
         assert_eq!(alpha_at(&image, 0, 0), 0);
-        // Deep inside: the full layer alpha (0.05 * 255 = 12.75 -> 13).
-        assert_eq!(alpha_at(&image, 13, 13), 13);
+        // Deep inside the widget rect: the shadow contributes nothing
+        // (SEL-VIS-01 contract).
+        assert_eq!(alpha_at(&image, 13, 13), 0);
         // Down the middle column of the NW patch: monotone non-decreasing
-        // falloff from outside to inside.
+        // falloff from outside up to the widget edge, then transparent
+        // inside. Column x=7 crosses the rounded corner (radius 6) between
+        // rows 4 and 5 (SDF +0.04 at row 4, -0.85 at row 5).
         let mut prev = 0u8;
-        for y in 0..14 {
+        for y in 0..5 {
             let a = alpha_at(&image, 7, y);
             assert!(a >= prev, "row {y}: {a} < {prev}");
             prev = a;
         }
-        assert!(prev > 0);
+        assert_eq!(prev, 2, "exterior edge texel keeps its pre-mask value");
+        for y in 5..14 {
+            assert_eq!(alpha_at(&image, 7, y), 0, "row {y} must be masked");
+        }
     }
 
     #[test]
-    fn multi_layer_interior_composites() {
-        // shadow-sm: 1 - (1-0.1)(1-0.1) = 0.19 -> 48.
+    fn multi_layer_interior_is_transparent_exterior_keeps_profile() {
+        // shadow-sm used to composite both layers at the inner corner texel
+        // (1 - (1-0.1)(1-0.1) = 0.19 -> 48). The SEL-VIS-01 contract masks
+        // the interior: the shadow contributes nothing inside the widget
+        // rect.
         let (image, _) = rasterize_atlas([6.0; 4], ShadowSize::Sm.layers(), false, 1.0);
         let n = image.size[1];
-        assert!((alpha_at(&image, n - 1, n - 1) as i16 - 48).abs() <= 1);
-        assert_eq!(interior_color(ShadowSize::Sm.layers(), false).a(), 48);
-        assert_eq!(interior_color(ShadowSize::Xs.layers(), false).a(), 13);
-        assert_eq!(interior_color(ShadowSize::None.layers(), false).a(), 0);
+        assert_eq!(alpha_at(&image, n - 1, n - 1), 0);
+        // Far outside corner: still transparent.
+        assert_eq!(alpha_at(&image, 0, 0), 0);
+        // The exterior falloff is pinned exactly by
+        // `edge_profile_interior_masked_exterior_pinned`.
+    }
+
+    #[test]
+    fn edge_profile_interior_masked_exterior_pinned() {
+        // The exterior falloff (t <= 0) is pinned exactly from the pre-mask
+        // rasterization; the interior (t > 0) is zero for every size. The
+        // mask is applied after the blur, so exterior values are identical
+        // to the unmasked computation (SEL-VIS-01).
+        let cases = [
+            (ShadowSize::Xs, vec![0u8, 0, 0, 1]),
+            (ShadowSize::Sm, vec![0, 0, 0, 1, 3, 7]),
+            (ShadowSize::Md, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            (
+                ShadowSize::Lg,
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 1, 1, 1,
+                ],
+            ),
+        ];
+        for (size, exterior) in cases {
+            let layers = size.layers();
+            let extent = shadow_extent(layers);
+            let patch = extent + corner_reach(layers, 6.0);
+            let n = patch.ceil() as usize;
+            let profile = edge_profile(n, 1.0, extent, layers, false, 1, 1.0);
+            let rounded: Vec<u8> = profile
+                .iter()
+                .map(|&a| (a * 255.0).round().clamp(0.0, 255.0) as u8)
+                .collect();
+            assert_eq!(
+                &rounded[..exterior.len()],
+                &exterior[..],
+                "{size:?} exterior"
+            );
+            assert!(
+                rounded[exterior.len()..].iter().all(|&a| a == 0),
+                "{size:?} interior must be masked: {rounded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_contributes_nothing_inside_widget_rect() {
+        // Texture-level contract (SEL-VIS-01): every texel strictly inside
+        // the widget rect is transparent, in all three rasterizers, for
+        // every multi-layer size, in both modes. "Strictly inside" is the
+        // same SDF the mask uses (independently tested by
+        // `sd_round_box_matches_known_points`).
+        for size in [
+            ShadowSize::Xs,
+            ShadowSize::Sm,
+            ShadowSize::Md,
+            ShadowSize::Lg,
+        ] {
+            let layers = size.layers();
+            let extent = shadow_extent(layers);
+            let patch = extent + corner_reach(layers, 6.0);
+            let n = patch.ceil() as usize;
+            for dark in [false, true] {
+                // Corner patches, all four flips.
+                for (fx, fy) in [(false, false), (true, false), (false, true), (true, true)] {
+                    let buf = render_corner(n, patch, 1.0, extent, 6.0, layers, dark, fx, fy);
+                    for j in 0..n {
+                        for i in 0..n {
+                            let mut px = i as f32 + 0.5;
+                            let mut py = j as f32 + 0.5;
+                            if fx {
+                                px = patch - px;
+                            }
+                            if fy {
+                                py = patch - py;
+                            }
+                            let sdf = sd_round_box(
+                                Vec2::new(px - extent, py - extent),
+                                Vec2::splat(4096.0),
+                                Vec2::splat(4096.0),
+                                6.0,
+                            );
+                            if sdf < 0.0 {
+                                assert_eq!(
+                                    buf[j * n + i],
+                                    0.0,
+                                    "{size:?} dark={dark} flip=({fx},{fy}) texel=({i},{j})"
+                                );
+                            }
+                        }
+                    }
+                }
+                // Edge profiles, all four orientations.
+                for (axis, sign) in [(1usize, 1.0f32), (1, -1.0), (0, 1.0), (0, -1.0)] {
+                    let profile = edge_profile(n, 1.0, extent, layers, dark, axis, sign);
+                    for (j, &v) in profile.iter().enumerate() {
+                        let t = (j as f32 + 0.5) - extent;
+                        if t > 0.0 {
+                            assert_eq!(
+                                v, 0.0,
+                                "{size:?} dark={dark} axis={axis} sign={sign} j={j}"
+                            );
+                        }
+                    }
+                }
+            }
+            // Full-rect rasterizer.
+            let (image, _) = rasterize_full_rect(210.0, 72.0, [8.0; 4], layers, false, 1.0);
+            let (w, h) = (image.size[0], image.size[1]);
+            for j in 0..h {
+                for i in 0..w {
+                    let p = Vec2::new(i as f32 + 0.5 - extent, j as f32 + 0.5 - extent);
+                    if sd_round_rect(p, Vec2::new(105.0, 36.0), Vec2::new(105.0, 36.0), [8.0; 4])
+                        < 0.0
+                    {
+                        assert_eq!(
+                            alpha_at(&image, i, j),
+                            0,
+                            "{size:?} full-rect texel=({i},{j})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
     fn larger_blur_falls_off_further() {
-        // The 50%-of-max crossing of the top-edge profile moves outward
-        // (further from the shape edge) as the blur grows.
-        let crossing = |size: ShadowSize| {
+        // The visible exterior tail — how far outside the widget edge the
+        // shadow is still visible (rounded alpha >= 1) — grows with the
+        // blur: shadow-xs fades within half a point of the edge, shadow-2xl
+        // is still visible 21.5pt out. Measured on the exterior (t <= 0)
+        // only: the interior is masked (SEL-VIS-01), so the old
+        // half-of-saturated-max crossing no longer exists. Only the extremes
+        // are ordered: intermediate tails depend on offset/spread as well as
+        // blur (sm 2pt, md 0.5pt, lg 2pt), so they are bounded, not ordered.
+        let tail = |size: ShadowSize| {
             let extent = shadow_extent(size.layers());
             let reach = corner_reach(size.layers(), 6.0);
             let patch = extent + reach;
             let n = patch.ceil() as usize;
             let profile = edge_profile(n, 1.0, extent, size.layers(), false, 1, 1.0);
-            let max = profile.iter().cloned().fold(0.0f32, f32::max);
-            let j = profile.iter().position(|&v| v >= 0.5 * max).unwrap();
-            (j as f32 + 0.5) - extent
+            let first = profile
+                .iter()
+                .position(|&v| (v * 255.0).round() >= 1.0)
+                .unwrap();
+            -((first as f32 + 0.5) - extent)
         };
-        let xs = crossing(ShadowSize::Xs);
-        let md = crossing(ShadowSize::Md);
-        let xxl = crossing(ShadowSize::Xxl);
-        assert!(xs < md, "xs {xs} md {md}");
-        assert!(md < xxl, "md {md} xxl {xxl}");
-        // The xxl crossing sits near its translated edge (oy 25 - spread -12).
-        assert!(xxl > 20.0, "xxl crossing {xxl}");
+        let xs = tail(ShadowSize::Xs);
+        let xxl = tail(ShadowSize::Xxl);
+        assert_eq!(xs, 0.5);
+        assert_eq!(xxl, 21.5);
+        assert!(xs < xxl, "xs {xs} xxl {xxl}");
+        for size in [ShadowSize::Sm, ShadowSize::Md, ShadowSize::Lg] {
+            let t = tail(size);
+            assert!(
+                (xs..=xxl).contains(&t),
+                "{size:?} tail {t} outside [{xs}, {xxl}]"
+            );
+        }
     }
 
     #[test]
@@ -2229,18 +2419,28 @@ mod tests {
             rasterize_full_rect(210.0, 72.0, [8.0; 4], ShadowSize::Xxl.layers(), false, 1.0);
         assert_eq!(extent, 88.0);
         assert_eq!(image.size, [386, 248]);
-        // Deep inside the translated shape (shape center (105, 61) in widget
-        // coords). The shape is only 48pt tall after the -12 spread while
-        // sigma is 25, so even its center never reaches full alpha: the slab
-        // value is (Phi(24.5/25) + Phi(23.5/25) - 1) * 0.25 * 255 = 42.
-        let center_alpha = alpha_at(&image, 193, 149);
-        assert!(
-            (41..=43).contains(&center_alpha),
-            "center alpha {center_alpha}"
-        );
-        // The shape center is the brightest point in the image.
+        // Deep inside the widget rect (shape center (105, 61) in widget
+        // coords): the shadow contributes nothing (SEL-VIS-01 contract).
+        // Pre-mask this texel read 42 (the blurred slab value); it is now
+        // transparent.
+        assert_eq!(alpha_at(&image, 193, 149), 0);
+        // The brightest point sits outside the widget rect, below the card
+        // (the shadow is offset downward): the exterior peak is 39, and
+        // every texel attaining it lies outside the rounded rect.
         let max_alpha = image.pixels.iter().map(|c| c.a()).max().unwrap();
-        assert_eq!(max_alpha, center_alpha);
+        assert_eq!(max_alpha, 39);
+        for j in 0..image.size[1] {
+            for i in 0..image.size[0] {
+                if alpha_at(&image, i, j) == max_alpha {
+                    let p = Vec2::new(i as f32 + 0.5 - extent, j as f32 + 0.5 - extent);
+                    assert!(
+                        sd_round_rect(p, Vec2::new(105.0, 36.0), Vec2::new(105.0, 36.0), [8.0; 4])
+                            >= 0.0,
+                        "max texel ({i},{j}) must be outside the widget rect"
+                    );
+                }
+            }
+        }
         // Far corner: transparent.
         assert_eq!(alpha_at(&image, 0, 0), 0);
         // No vertical step: the row 5pt below the card must vary smoothly
