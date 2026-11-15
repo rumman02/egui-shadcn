@@ -603,6 +603,23 @@ struct ScrollSnapshot {
     offset_y: f32,
     content_h: f32,
     viewport_h: f32,
+    /// Scroll-button visibility on the last rendered frame (`None` until
+    /// the first render), for highlight scroll-follow re-firing
+    /// (SEL-INT-03 cycle 2).
+    last_strips: Option<(bool, bool)>,
+    /// A highlight-change follow-scroll fired on a recent frame and the
+    /// viewport may still be settling: the scroll was computed against
+    /// the pre-change viewport, and a strip flip on a later frame can
+    /// leave the highlighted row clipped. While set, a strip-state
+    /// change re-fires the follow-scroll (the Radix second call site).
+    /// Cleared once a frame renders with BOTH the offset and the strip
+    /// state unchanged — the strip state lags the offset by one frame
+    /// (the layout is computed from last frame's offset), so clearing
+    /// on strips alone would drop the follow on the frame where the
+    /// offset lands but the layout has not caught up yet. Wheel/hover
+    /// scrolling never sets the flag, so it can never trigger a
+    /// snap-back to the highlight.
+    follow_pending: bool,
 }
 
 /// Truncates `text` with an ellipsis to fit `max_width` (the trigger value's
@@ -1519,6 +1536,28 @@ fn render_popup(
     let rows_h = rows_height(entries, nova);
     let layout = popup_layout(rows_h, available, snapshot.offset_y);
 
+    // Highlight scroll-follow re-fire (SEL-INT-03 cycle 2): the one-shot
+    // `scroll_to_rect` is computed against this frame's viewport, but the
+    // scroll it causes can flip the strip state on a later frame — the
+    // up strip appearing shrinks the viewport by 24px — leaving the
+    // highlighted row 20px under the down strip (24px strip minus the
+    // 4px scroll margin), stable until the next focus change. So a
+    // highlight-change follow stays pending, and a strip-state change
+    // while it is pending re-fires the scroll: the Radix second call
+    // site, which re-runs `scrollIntoView` on the active item when
+    // button visibility changes layout. The pending flag is what keeps
+    // wheel/hover scrolling from snapping back to the highlight: those
+    // flip strips too, but with no follow pending. The re-fire
+    // terminates: `scroll_to_rect` is minimal (a no-op once the row is
+    // fully visible), strip flips are monotonic in the offset, and the
+    // pending flag clears once the offset and the strips are both
+    // stable (see the snapshot update below).
+    let strips = (layout.show_up, layout.show_down);
+    let strips_changed = snapshot.last_strips.is_some_and(|prev| prev != strips);
+    let was_pending = snapshot.follow_pending;
+    let prev_offset_y = snapshot.offset_y;
+    let follow = scroll_to_highlight || (was_pending && strips_changed);
+
     // Slide: entering slides 8px from the trigger side
     // (`slide-in-from-top-2` for a bottom popup); the exit animation has
     // no slide (§4.5). The scale (0.95) is omitted (D3).
@@ -1634,12 +1673,21 @@ fn render_popup(
             selected_value,
             highlight,
             open,
-            scroll_to_highlight,
+            follow,
             activated,
         );
         snapshot.offset_y = output.state.clamped_offset().y;
         snapshot.content_h = output.content_size.y;
         snapshot.viewport_h = output.inner_rect.height();
+        snapshot.last_strips = Some(strips);
+        // The follow stays pending while either the offset or the strip
+        // state is still changing: the layout lags the offset by one
+        // frame, so on the frame where the scroll lands the strips have
+        // not flipped yet — clearing on strips alone would miss the
+        // flip. Both stable means the viewport has settled.
+        let offset_changed = (snapshot.offset_y - prev_offset_y).abs() > 0.5;
+        snapshot.follow_pending =
+            scroll_to_highlight || (was_pending && (strips_changed || offset_changed));
         if layout.show_down {
             paint_scroll_button(&mut child, down_id, false, p, nova, corner);
         }
@@ -1846,7 +1894,9 @@ fn paint_item(
         }
     }
     // Highlight scroll-follow (OPEN-7/N3): keep the highlighted row in
-    // view with the 4px popper scroll margin. Gated on a highlight change
+    // view with the 4px popper scroll margin. Gated on a highlight
+    // change — plus a re-fire while a follow is pending and the strip
+    // state changed (SEL-INT-03 cycle 2, computed in `render_popup`) —
     // so wheel exploration is not stomped.
     if scroll_into_view && highlighted {
         ui.scroll_to_rect(rect.expand2(Vec2::new(0.0, SCROLL_MARGIN)), None);
@@ -3037,6 +3087,247 @@ mod tests {
             "offset must not drift once settled"
         );
         assert_eq!(snap2.viewport_h, snap.viewport_h, "viewport must not flip");
+    }
+
+    /// Asserts the highlighted row (uniform-height rows) is fully visible
+    /// with the 4px popper scroll margin, allowing the margin to be
+    /// consumed by the clamp at the content edges (offset 0 / max offset).
+    /// `row_h` is the uniform row height; `idx` the highlighted row index.
+    fn assert_row_fully_visible(snap: ScrollSnapshot, idx: usize, row_h: f32) {
+        let row_top = idx as f32 * row_h;
+        let row_bottom = row_top + row_h;
+        let view_top = snap.offset_y;
+        let view_bottom = snap.offset_y + snap.viewport_h;
+        assert!(
+            view_top <= row_top - SCROLL_MARGIN + 0.5 || view_top <= 0.5,
+            "highlighted row {idx} clipped at the top: view_top {view_top} > row_top {row_top} - margin {SCROLL_MARGIN}"
+        );
+        assert!(
+            row_bottom + SCROLL_MARGIN <= view_bottom + 0.5
+                || view_bottom >= snap.content_h - 0.5,
+            "highlighted row {idx} clipped at the bottom: row_bottom {row_bottom} + margin {SCROLL_MARGIN} > view_bottom {view_bottom} (offset {} + viewport {})",
+            snap.offset_y,
+            snap.viewport_h
+        );
+    }
+
+    #[test]
+    fn first_scroll_down_press_keeps_the_highlighted_row_fully_visible() {
+        // SEL-INT-03 cycle 2: on the Down press where content first
+        // scrolls (the up strip appears), the one-shot `scroll_to_rect`
+        // is computed against the pre-strip viewport; the up strip then
+        // shrinks the viewport by 24px and the highlighted row settles
+        // 20px under the down strip (24px strip minus the 4px margin).
+        // The follow-scroll must re-fire after the strip state settles
+        // so the row is fully visible. Pre-fix this fails by ~24px.
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let mut rect = Rect::ZERO;
+        let show = |ui: &mut Ui, value: &mut Option<String>| {
+            Select::new(value)
+                .id_salt("cyc2down")
+                .options((0..40).map(|i| format!("Option {i}")))
+                .show_seeded(ui)
+        };
+        h.run(|ui| {
+            rect = show(ui, &mut value).trigger.rect;
+        });
+        h.run(|ui| {
+            show(ui, &mut value);
+        });
+        h.click(rect.center(), |ui| {
+            show(ui, &mut value);
+        });
+        assert!(h.state("cyc2down").open);
+        let mut boundary: Option<(usize, ScrollSnapshot)> = None;
+        for _ in 0..40 {
+            h.key(Key::ArrowDown, |ui| {
+                show(ui, &mut value);
+            });
+            for _ in 0..5 {
+                h.run(|ui| {
+                    show(ui, &mut value);
+                });
+            }
+            let snap = h
+                .scroll_snapshot("cyc2down")
+                .expect("scroll snapshot written while open");
+            if snap.offset_y > 0.5 {
+                boundary = Some((h.highlight("cyc2down").expect("highlight set"), snap));
+                break;
+            }
+        }
+        let (idx, snap) = boundary.expect("a Down press must first scroll the viewport");
+        let row_h = snap.content_h / 40.0;
+        assert_row_fully_visible(snap, idx, row_h);
+        // The settled state must be a stable fixed point: no drift, no
+        // viewport flip-flopping over further frames.
+        let (settled_offset, settled_viewport) = (snap.offset_y, snap.viewport_h);
+        for _ in 0..3 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap2 = h.scroll_snapshot("cyc2down").expect("snapshot persists");
+        assert_eq!(snap2.offset_y, settled_offset, "offset must not drift");
+        assert_eq!(snap2.viewport_h, settled_viewport, "viewport must not flip");
+        assert_eq!(h.highlight("cyc2down"), Some(idx), "highlight unchanged");
+    }
+
+    #[test]
+    fn typeahead_jump_across_the_boundary_keeps_the_highlighted_row_visible() {
+        // SEL-INT-03 cycle 2: a typeahead jump landing across the
+        // strip-appearance boundary is the same mechanism as the Down
+        // boundary press — the one-shot scroll is computed against the
+        // pre-strip viewport. Typing "z" jumps from no highlight to the
+        // far-down "Zebra" row in a single highlight change.
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let mut rect = Rect::ZERO;
+        let labels: Vec<String> = (0..40)
+            .map(|i| {
+                if i == 30 {
+                    "Zebra".to_owned()
+                } else {
+                    format!("Option {i}")
+                }
+            })
+            .collect();
+        let show = |ui: &mut Ui, value: &mut Option<String>| {
+            Select::new(value)
+                .id_salt("cyc2ta")
+                .options(labels.clone())
+                .show_seeded(ui)
+        };
+        h.run(|ui| {
+            rect = show(ui, &mut value).trigger.rect;
+        });
+        h.run(|ui| {
+            show(ui, &mut value);
+        });
+        h.click(rect.center(), |ui| {
+            show(ui, &mut value);
+        });
+        assert!(h.state("cyc2ta").open);
+        h.text("z", |ui| {
+            show(ui, &mut value);
+        });
+        for _ in 0..5 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        assert_eq!(h.highlight("cyc2ta"), Some(30), "typeahead jumps to Zebra");
+        let snap = h
+            .scroll_snapshot("cyc2ta")
+            .expect("scroll snapshot written while open");
+        assert!(
+            snap.offset_y > 0.5,
+            "the jump must scroll the viewport: offset {}",
+            snap.offset_y
+        );
+        let row_h = snap.content_h / 40.0;
+        assert_row_fully_visible(snap, 30, row_h);
+        let (settled_offset, settled_viewport) = (snap.offset_y, snap.viewport_h);
+        for _ in 0..3 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap2 = h.scroll_snapshot("cyc2ta").expect("snapshot persists");
+        assert_eq!(snap2.offset_y, settled_offset, "offset must not drift");
+        assert_eq!(snap2.viewport_h, settled_viewport, "viewport must not flip");
+    }
+
+    #[test]
+    fn wheel_scrolling_does_not_snap_back_to_the_highlight() {
+        // SEL-INT-03 cycle 2 guard: the strip-change re-fire must only
+        // run while a highlight-change follow is still settling. Wheel
+        // scrolling flips the strip state too (the up strip appears),
+        // but must NOT yank the viewport back to the highlighted row —
+        // wheel exploration is protected by the change gate, and the
+        // re-fire must preserve that protection.
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let mut rect = Rect::ZERO;
+        let show = |ui: &mut Ui, value: &mut Option<String>| {
+            Select::new(value)
+                .id_salt("cyc2wheel")
+                .options((0..40).map(|i| format!("Option {i}")))
+                .show_seeded(ui)
+        };
+        h.run(|ui| {
+            rect = show(ui, &mut value).trigger.rect;
+        });
+        h.run(|ui| {
+            show(ui, &mut value);
+        });
+        h.click(rect.center(), |ui| {
+            show(ui, &mut value);
+        });
+        assert!(h.state("cyc2wheel").open);
+        for _ in 0..3 {
+            h.key(Key::ArrowDown, |ui| {
+                show(ui, &mut value);
+            });
+        }
+        for _ in 0..5 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        assert_eq!(h.highlight("cyc2wheel"), Some(2), "highlight on row 2");
+        let snap0 = h.scroll_snapshot("cyc2wheel").expect("snapshot");
+        assert!(snap0.offset_y <= 0.5, "no scroll yet: {}", snap0.offset_y);
+        // Wheel down hard over the popup centre, past the strip flip.
+        let centre = h.popup_rect("cyc2wheel").center();
+        for _ in 0..3 {
+            h.events(
+                vec![
+                    egui::Event::PointerMoved(centre),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, -120.0),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                |ui| {
+                    show(ui, &mut value);
+                },
+            );
+            for _ in 0..2 {
+                h.run(|ui| {
+                    show(ui, &mut value);
+                });
+            }
+        }
+        for _ in 0..5 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap = h.scroll_snapshot("cyc2wheel").expect("snapshot");
+        assert_eq!(h.highlight("cyc2wheel"), Some(2), "highlight unchanged");
+        assert!(
+            snap.offset_y > 80.0,
+            "wheel offset must survive (no snap-back to the highlight): {}",
+            snap.offset_y
+        );
+        // And it must not drift back over further frames.
+        let settled = snap.offset_y;
+        for _ in 0..3 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap2 = h.scroll_snapshot("cyc2wheel").expect("snapshot persists");
+        assert!(
+            snap2.offset_y >= settled - 0.5,
+            "offset must not drift back: {} after {settled}",
+            snap2.offset_y
+        );
     }
 
     #[test]
