@@ -511,54 +511,80 @@ impl Ul {
         let theme = ShadcnTheme::of_ui(ui);
         let fg = theme.palette.foreground;
         let marker_kind = self.marker;
-        ui.indent(LIST_INDENT as i8, |ui| {
-            let painter = ui.painter().clone();
-            // `[&>li]:mt-2` selects EVERY direct child, including the
-            // first: the first item sits 8px below the list's top edge,
-            // and consecutive items are 8px apart.
-            ui.add_space(LIST_ITEM_GAP);
-            ui.spacing_mut().item_spacing.y = LIST_ITEM_GAP;
-            for (i, item) in self.items.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    match marker_kind {
-                        ListMarker::Disc => {
-                            // A filled dot on the text mid-line.
-                            let style = TextStyle::new(Self::font(), fg, Some(line_heights::BODY));
-                            let galley = galley_for(ui, item, style, f32::INFINITY);
-                            let h = galley.size().y;
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::new(6.0, h), Sense::hover());
-                            painter.circle_filled(
-                                Pos2::new(rect.center().x, rect.min.y + h * 0.5),
-                                2.5,
-                                fg,
-                            );
-                            ui.label(
-                                egui::RichText::new(item.clone())
-                                    .font(Self::font())
-                                    .line_height(Some(line_heights::BODY))
-                                    .color(fg),
-                            );
-                        }
-                        ListMarker::Decimal => {
-                            ui.label(
-                                egui::RichText::new(format!("{}. ", i + 1))
-                                    .font(Self::font())
-                                    .line_height(Some(line_heights::BODY))
-                                    .color(fg),
-                            );
-                            ui.label(
-                                egui::RichText::new(item.clone())
-                                    .font(Self::font())
-                                    .line_height(Some(line_heights::BODY))
-                                    .color(fg),
-                            );
-                        }
+        // `ml-6`: apply the 24px indent by an explicit offset. Do NOT
+        // use `ui.indent` here: its first argument is an id salt, not
+        // an amount — the actual indent is `spacing().indent` (18px
+        // under the gallery theme), so the 24px constant never
+        // reached the layout (defect TYP-VIS-02), and `indent_dyn`
+        // paints an indent guide line the list recipe does not
+        // contain (defect TYP-VIS-03). This mirrors `indent_dyn`'s
+        // child-Ui construction minus the guide paint.
+        let mut child_rect = ui.available_rect_before_wrap();
+        child_rect.min.x += LIST_INDENT;
+        let mut child_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("typography_list")
+                .max_rect(child_rect),
+        );
+        let painter = child_ui.painter().clone();
+        // `[&>li]:mt-2` selects EVERY direct child, including the
+        // first: the first item sits 8px below the list's top edge,
+        // and consecutive items are 8px apart.
+        child_ui.add_space(LIST_ITEM_GAP);
+        child_ui.spacing_mut().item_spacing.y = LIST_ITEM_GAP;
+        for (i, item) in self.items.iter().enumerate() {
+            // Do NOT use `ui.horizontal` here: it seeds the row
+            // height to `spacing().interact_size.y` (36px under the
+            // crate theme), so each item row allocates 36px instead
+            // of its 24px content (defect TYP-VIS-01, same mechanism
+            // as KBD-VIS-01). Seed the row with zero height instead:
+            // each child's frame is then exactly the child's own
+            // height and the row is the tallest child. Direction
+            // handling mirrors `Ui::horizontal`.
+            let layout = if child_ui.layout().prefer_right_to_left() {
+                egui::Layout::right_to_left(egui::Align::Center)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            let initial_size = Vec2::new(child_ui.available_size_before_wrap().x, 0.0);
+            child_ui.allocate_ui_with_layout(initial_size, layout, |ui| {
+                match marker_kind {
+                    ListMarker::Disc => {
+                        // A filled dot on the text mid-line.
+                        let style = TextStyle::new(Self::font(), fg, Some(line_heights::BODY));
+                        let galley = galley_for(ui, item, style, f32::INFINITY);
+                        let h = galley.size().y;
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(6.0, h), Sense::hover());
+                        painter.circle_filled(
+                            Pos2::new(rect.center().x, rect.min.y + h * 0.5),
+                            2.5,
+                            fg,
+                        );
+                        ui.label(
+                            egui::RichText::new(item.clone())
+                                .font(Self::font())
+                                .line_height(Some(line_heights::BODY))
+                                .color(fg),
+                        );
                     }
-                });
-            }
-        })
-        .response
+                    ListMarker::Decimal => {
+                        ui.label(
+                            egui::RichText::new(format!("{}. ", i + 1))
+                                .font(Self::font())
+                                .line_height(Some(line_heights::BODY))
+                                .color(fg),
+                        );
+                        ui.label(
+                            egui::RichText::new(item.clone())
+                                .font(Self::font())
+                                .line_height(Some(line_heights::BODY))
+                                .color(fg),
+                        );
+                    }
+                }
+            });
+        }
+        ui.allocate_rect(child_ui.min_rect(), Sense::hover())
     }
 }
 
@@ -875,6 +901,7 @@ impl Widget for TableCaption {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Preset;
     use egui::FontFamily;
 
     #[test]
@@ -1021,6 +1048,93 @@ mod tests {
             );
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn list_geometry_under_gallery_theme_spacing() {
+        // Defects TYP-VIS-01/02: under the gallery theme spacing the
+        // list must still allocate 8 + 3×24 + 2×8 = 96px with a real
+        // 24px `ml-6` indent. The installed preset is essential: it
+        // applies `interact_size.y` = 36px (which the old
+        // `ui.horizontal` rows inherited, TYP-VIS-01) while
+        // `spacing().indent` stays 18px (which the old `ui.indent`
+        // call used instead of the 24px constant, TYP-VIS-02).
+        // Default egui spacing would prove less (the typography S1
+        // lesson: a test passing only because the test context uses
+        // default spacing proves nothing).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "typo_list_theme", 400.0, 400.0);
+            assert_eq!(
+                ui.spacing().interact_size.y,
+                crate::theme::tokens::spacing::CONTROL,
+                "the gallery theme spacing must be in effect for this test to discriminate"
+            );
+            assert_eq!(
+                ui.spacing().indent,
+                18.0,
+                "the gallery theme indent must be in effect for this test to discriminate"
+            );
+            let ul = Ul::new(&["a", "b", "c"]).show(&mut ui);
+            // 8 + 3×24 + 2×8 = 96.
+            assert!(
+                (ul.rect.height() - 96.0).abs() < 0.5,
+                "three-item list should be 96px tall, got {}",
+                ul.rect.height()
+            );
+            // The test Ui starts at x=0, so the `ml-6` indent puts
+            // the list rect's left edge at exactly 24px.
+            assert!(
+                (ul.rect.min.x - LIST_INDENT).abs() < 0.5,
+                "list rect should start at the 24px indent, got x={}",
+                ul.rect.min.x
+            );
+            let mut ui = test_ui(ctx, "typo_list_theme_ol", 400.0, 400.0);
+            let ol = Ol::new(&["a", "b", "c"]).show(&mut ui);
+            assert!(
+                (ol.rect.height() - 96.0).abs() < 0.5,
+                "three-item ordered list should be 96px tall, got {}",
+                ol.rect.height()
+            );
+            assert!(
+                (ol.rect.min.x - LIST_INDENT).abs() < 0.5,
+                "ordered list rect should start at the 24px indent, got x={}",
+                ol.rect.min.x
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn list_paints_nothing_left_of_the_indent() {
+        // Defect TYP-VIS-03: the old `ui.indent` call painted an
+        // indent guide vline at `child_rect.min − 0.5 × indent`
+        // (x=9 under the gallery theme). No painted vertex may sit
+        // left of the 24px indent edge (the disc starts at 24px;
+        // the 1px tolerance covers anti-aliasing feathering).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "typo_list_paint", 400.0, 400.0);
+            Ul::new(&["a", "b", "c"]).show(&mut ui);
+        });
+        // Clear before the assertions below: dropping `out` with an
+        // unapplied delta panics, which would abort the test binary
+        // instead of failing this test cleanly.
+        out.textures_delta.clear();
+        let primitives = ctx.tessellate(out.shapes.clone(), out.pixels_per_point);
+        for primitive in &primitives {
+            if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
+                for vertex in &mesh.vertices {
+                    assert!(
+                        vertex.pos.x >= LIST_INDENT - 1.0,
+                        "painted vertex left of the indent at {:?}",
+                        vertex.pos
+                    );
+                }
+            }
+        }
     }
 
     #[test]
