@@ -28,7 +28,8 @@
 //! clock the Phase 1 motion system builds on); the motion system has no
 //! continuous-rotation primitive, so there is no transition API to reuse
 //! here and no timer is hand-rolled. Repaints are requested only while
-//! the spinner is visible. The embedded polyline is drawn as a single
+//! the spinner is visible (spec deviation D3, observable half). The
+//! embedded polyline is drawn as a single
 //! joined path plus a filled disc at each end (egui's open-path
 //! stroking has flat caps; the discs supply the round caps Lucide
 //! specifies). The joined path is what keeps the stroke at its nominal
@@ -37,8 +38,34 @@
 //! feathered quads overlap and accumulate alpha. The path needs one
 //! owned `Vec` of points per frame — egui's path API takes points by
 //! value and offers no borrowed-points variant — so painting allocates
-//! one small `Vec` per visible spinner per frame; that is the only
-//! per-frame allocation (see the SPN-VIS-01 S9 report for the D3 note).
+//! one small `Vec` (97 points, 776 bytes) per visible spinner per
+//! frame; that is the only per-frame allocation. This relaxes the
+//! no-per-frame-allocation half of D3 and is recorded as deviation D4
+//! (D3-amendment), accepted by the coordinator and pending Expert
+//! Reviewer approval: no allocation-free joined-path rendering exists
+//! through the egui 0.37 public API (`PathShape::line` takes
+//! `Vec<Pos2>` by value and `PathShape.points` is owned; the only
+//! `&[Pos2]` entry points are the dashed-line helpers, which produce
+//! per-dash shapes, not a joined path). See the D3 coordinator ruling
+//! note and the SPN-VIS-01 S9 report for the API evidence.
+//!
+//! Reduced motion: the original defines no `prefers-reduced-motion`
+//! behaviour for this component (no `motion-reduce:` class in
+//! `spinner.tsx`, no such rule in the nova stylesheet or
+//! `globals.css`), so the spinner spins at full rate regardless of
+//! motion preference (frozen spec §9.5). This port likewise defines
+//! none — spec deviation D2, recorded so the absence is explicit and
+//! not mistaken for an oversight, pending Expert Reviewer
+//! acknowledgement. If a later wave adds a port-wide reduced-motion
+//! policy, the spinner follows it then.
+//!
+//! OPEN items (frozen spec §11, all stay open): OPEN-1 (exact glyph
+//! path data) and OPEN-2 (the `Loader2` alias) are covered above;
+//! OPEN-3 (`cn()` merge semantics) is implemented at its interim
+//! position, override-replaces-default (see `Spinner::size`); OPEN-4
+//! (whether `tw-animate-css` overrides `--animate-spin`) is
+//! unestablished, and the 1s Tailwind default above stands as the
+//! frozen requirement.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -161,7 +188,8 @@ impl Spinner {
 
     /// Sets the square size in points (the Rust equivalent of a caller
     /// `className="size-*"`; the override replaces the 16px default, per
-    /// the frozen spec's interim position on `cn()` merge semantics).
+    /// the frozen spec's interim position on `cn()` merge semantics,
+    /// spec OPEN-3, which stays open).
     /// The glyph and stroke scale proportionally; the rotation period
     /// stays 1 second.
     pub fn size(mut self, size: f32) -> Self {
