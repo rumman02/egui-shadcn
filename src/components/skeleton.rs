@@ -20,9 +20,18 @@
 //! `globals.css:156`, dark `muted` is `oklch(0.269 0 0)` per
 //! `globals.css:154`).
 //!
-//! **Radius (spec §3.2).** Per-style, from the `.cn-skeleton` rules:
-//! `rounded-md` (8px) for nova/mira/vega, `rounded-xl` (14px) for maia,
-//! `rounded-2xl` (18px) for luma/rhea, `rounded-none` (0px) for lyra.
+//! **Radius (spec §3.2).** Per-style, from the `.cn-skeleton` rules
+//! (px at the snapshot's `--radius: 0.625rem`):
+//!
+//! | Style | Radius class | Radius |
+//! |---|---|---|
+//! | Base (no style) | `rounded-md` | 8px |
+//! | Nova, mira, vega | `rounded-md` | 8px |
+//! | Maia | `rounded-xl` | 14px |
+//! | Luma, rhea | `rounded-2xl` | 18px |
+//! | Lyra | `rounded-none` | 0px |
+//! | Sera | *(silent — base survives)* | 8px |
+//!
 //! Sera is silent on radius, so its 8px comes from the surviving base
 //! `rounded-md` under LAYER (silence keeps the base value) — implemented
 //! as the base default, not as a sera-specific value.
@@ -38,9 +47,15 @@
 //! input clock, so simultaneously visible skeletons pulse in phase; the
 //! spec states no synchronisation requirement (§9).
 //!
+//! **Repaints (audit N9).** A repaint is requested only while the
+//! skeleton is visible and animating, so offscreen or static skeletons
+//! cost no frames (standing performance rule, plan §9).
+//!
 //! **Deviations (spec §10).** D1: no ARIA deviation is needed — the
 //! original defines no ARIA behaviour for skeleton (§7), so egui's lack
-//! of an ARIA tree removes nothing. D3: [`Skeleton::animate`] is a
+//! of an ARIA tree removes nothing. D2 is VOID: the exact cubic-bezier
+//! pulse easing is reproduced (see **Pulse** above), so no easing
+//! substitution exists. D3: [`Skeleton::animate`] is a
 //! Rust-only extension (the original always pulses); it defaults to
 //! pulsing and is labelled as an extension where defined.
 //!
