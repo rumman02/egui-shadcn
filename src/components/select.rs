@@ -574,14 +574,18 @@ struct PopupLayout {
 fn popup_layout(rows_h: f32, available: f32, offset_y: f32) -> PopupLayout {
     let pad = 2.0 * CONTENT_PADDING;
     let scrollable = rows_h > available - pad;
-    // Worst-case viewport (both buttons) for the max-offset estimate; the
-    // per-direction visibility below is stable against the one-button
-    // viewport (a button appearing only shrinks the viewport, which keeps
-    // the list scrollable — see the layout tests).
-    let viewport_both = (available - 2.0 * SCROLL_BUTTON_HEIGHT - pad).max(0.0);
-    let max_offset = (rows_h - viewport_both).max(0.0);
+    // `show_down` is decided against the viewport that results when the down
+    // button is hidden (the one-button viewport): the button shows only while
+    // content remains below that viewport. Deciding against the worst-case
+    // both-buttons viewport instead (SEL-INT-03) kept the button visible in
+    // the 24px band between the two maxima, so the viewport flipped as the
+    // offset was clamped and the highlighted last row settled clipped under
+    // the down strip after End / wrap-to-last. The predicate is a pure
+    // function of the offset (via `show_up` only), so the button state is a
+    // stable fixed point — no frame-to-frame flip-flopping.
     let show_up = scrollable && offset_y > 0.5;
-    let show_down = scrollable && offset_y < max_offset - 0.5;
+    let viewport_no_down = (available - pad - show_up as u8 as f32 * SCROLL_BUTTON_HEIGHT).max(0.0);
+    let show_down = scrollable && offset_y < rows_h - viewport_no_down - 0.5;
     let buttons_h = (show_up as u8 + show_down as u8) as f32 * SCROLL_BUTTON_HEIGHT;
     let viewport_height = rows_h.min(available - buttons_h - pad).max(0.0);
     PopupLayout {
@@ -2414,6 +2418,35 @@ mod tests {
     }
 
     #[test]
+    fn popup_layout_down_button_hides_when_the_last_row_fits() {
+        // SEL-INT-03: `show_down` must be decided against the viewport that
+        // results when the down button is hidden (the one-button viewport),
+        // not the worst-case both-buttons viewport. In the 24px band between
+        // the two maxima the old predicate kept the down button visible even
+        // though the one-button viewport already revealed the last row; the
+        // viewport flipped as the offset was clamped and the highlighted
+        // last row settled 12–24px under the down strip after End /
+        // wrap-to-last, with nothing re-correcting it.
+        // Nova: 40 × 28px rows, available 554 → one-button max offset 598.
+        let nova_bottom = popup_layout(1120.0, 554.0, 598.0);
+        assert!(nova_bottom.show_up && !nova_bottom.show_down);
+        assert_eq!(nova_bottom.viewport_height, 522.0);
+        assert!(598.0 + nova_bottom.viewport_height >= 1120.0 - 0.5);
+        // One pixel above the boundary the down button must still show.
+        let nova_near = popup_layout(1120.0, 554.0, 597.0);
+        assert!(nova_near.show_up && nova_near.show_down);
+        assert_eq!(nova_near.viewport_height, 498.0);
+        // Base: 40 × 32px rows, available 419 → one-button max offset 893.
+        let base_bottom = popup_layout(1280.0, 419.0, 893.0);
+        assert!(base_bottom.show_up && !base_bottom.show_down);
+        assert_eq!(base_bottom.viewport_height, 387.0);
+        assert!(893.0 + base_bottom.viewport_height >= 1280.0 - 0.5);
+        let base_near = popup_layout(1280.0, 419.0, 890.0);
+        assert!(base_near.show_up && base_near.show_down);
+        assert_eq!(base_near.viewport_height, 363.0);
+    }
+
+    #[test]
     fn open_highlight_keeps_the_k1_k2_asymmetry() {
         let e = entries();
         // K2: Enter opens on the first item, even with a selection.
@@ -2624,6 +2657,11 @@ mod tests {
             self.ctx
                 .data_mut(|d| d.get_temp::<Option<usize>>(id))
                 .flatten()
+        }
+
+        fn scroll_snapshot(&self, salt: &str) -> Option<ScrollSnapshot> {
+            let id = Id::unique("select_test_ui").with(salt).with("scroll");
+            self.ctx.data_mut(|d| d.get_temp::<ScrollSnapshot>(id))
         }
 
         fn value(&self, salt: &str) -> Option<String> {
@@ -2909,6 +2947,72 @@ mod tests {
         });
         assert!(!h.state("kb").open, "Enter closes after selecting");
         assert_eq!(value.as_deref(), Some("Beta"), "second item selected");
+    }
+
+    #[test]
+    fn end_key_settles_with_the_last_row_fully_visible() {
+        // SEL-INT-03: after End, the settled scroll offset plus the viewport
+        // height must cover the whole content — the highlighted last row
+        // must be fully visible, not clipped under the down-button strip.
+        // With the worst-case-viewport `show_down` predicate the popup
+        // settled at (max_one_offset, both-buttons viewport), 24px short.
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let mut rect = Rect::ZERO;
+        let show = |ui: &mut Ui, value: &mut Option<String>| {
+            Select::new(value)
+                .id_salt("end03")
+                .options((0..40).map(|i| format!("Option {i}")))
+                .show_seeded(ui)
+        };
+        h.run(|ui| {
+            rect = show(ui, &mut value).trigger.rect;
+        });
+        h.run(|ui| {
+            show(ui, &mut value);
+        });
+        h.click(rect.center(), |ui| {
+            show(ui, &mut value);
+        });
+        assert!(h.state("end03").open);
+        h.key(Key::End, |ui| {
+            show(ui, &mut value);
+        });
+        for _ in 0..5 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        assert_eq!(
+            h.highlight("end03"),
+            Some(39),
+            "End highlights the last item"
+        );
+        let snap = h
+            .scroll_snapshot("end03")
+            .expect("scroll snapshot written while open");
+        assert!(snap.content_h > 0.0 && snap.viewport_h > 0.0);
+        assert!(
+            snap.offset_y + snap.viewport_h >= snap.content_h - 0.5,
+            "settled viewport must cover the content bottom: offset {} + viewport {} < content {}",
+            snap.offset_y,
+            snap.viewport_h,
+            snap.content_h
+        );
+        // The settled state must be a stable fixed point, not a viewport
+        // flip-flopping between frames.
+        let settled = snap.offset_y;
+        for _ in 0..3 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap2 = h.scroll_snapshot("end03").expect("snapshot persists");
+        assert_eq!(
+            snap2.offset_y, settled,
+            "offset must not drift once settled"
+        );
+        assert_eq!(snap2.viewport_h, snap.viewport_h, "viewport must not flip");
     }
 
     #[test]
