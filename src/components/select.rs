@@ -1587,6 +1587,16 @@ fn render_popup(
                 .max_rect(rect)
                 .layout(Layout::top_down(Align::Min)),
         );
+        // The button/band stack must fill the frame rect exactly: the
+        // height model (`popup_layout`) sums pure heights with no gaps,
+        // so the theme's global 8px `item_spacing` must not leak between
+        // the scroll buttons and the viewport band here (SEL-FLK-02).
+        // With the gaps, the down button overflows the frame rect by 8px
+        // per visible gap and its chevron paints below the popup's hit
+        // rect, so clicks on it dismiss the popup as outside clicks once
+        // the up button appears. Same leak class as SEL-VIS-02 (fixed
+        // inside `render_rows`).
+        child.spacing_mut().item_spacing.y = 0.0;
         if layout.show_up {
             paint_scroll_button(&mut child, up_id, true, p, nova, corner);
         }
@@ -3013,6 +3023,94 @@ mod tests {
             "offset must not drift once settled"
         );
         assert_eq!(snap2.viewport_h, snap.viewport_h, "viewport must not flip");
+    }
+
+    #[test]
+    fn scroll_buttons_stay_inside_the_popup_rect() {
+        // SEL-FLK-02: the scroll buttons must paint and hit-test inside
+        // the popup's rect. The theme's 8px `item_spacing` leaked between
+        // the button/band allocations in the popup's outer child UI, so
+        // the down button overflowed the frame rect by 8px per visible
+        // gap; once the up button appeared, the down chevron sat below
+        // the popup rect and clicks on it dismissed the popup as
+        // outside clicks. Drive to a mid-scroll state (both buttons
+        // shown) and pin both the geometry and the click behaviour.
+        let mut h = Harness::new();
+        let mut value: Option<String> = None;
+        let mut rect = Rect::ZERO;
+        let show = |ui: &mut Ui, value: &mut Option<String>| {
+            Select::new(value)
+                .id_salt("flk02")
+                .options((0..40).map(|i| format!("Option {i}")))
+                .show_seeded(ui)
+        };
+        h.run(|ui| {
+            rect = show(ui, &mut value).trigger.rect;
+        });
+        h.run(|ui| {
+            show(ui, &mut value);
+        });
+        h.click(rect.center(), |ui| {
+            show(ui, &mut value);
+        });
+        assert!(h.state("flk02").open);
+        // Arrow past the visible window so the viewport scrolls and both
+        // scroll buttons show.
+        for _ in 0..20 {
+            h.key(Key::ArrowDown, |ui| {
+                show(ui, &mut value);
+            });
+        }
+        for _ in 0..3 {
+            h.run(|ui| {
+                show(ui, &mut value);
+            });
+        }
+        let snap = h
+            .scroll_snapshot("flk02")
+            .expect("scroll snapshot written while open");
+        assert!(
+            snap.offset_y > 0.5,
+            "mid-scroll state must have a nonzero offset (up button shown)"
+        );
+        assert!(
+            snap.offset_y + snap.viewport_h < snap.content_h - 0.5,
+            "mid-scroll state must have content below (down button shown)"
+        );
+        let popup_id = Id::unique("select_test_ui").with("flk02").with("popup");
+        let popup = h.popup_rect("flk02");
+        assert_ne!(popup, Rect::NOTHING, "popup must be on screen");
+        for (name, id) in [
+            ("up", popup_id.with("scroll_up")),
+            ("down", popup_id.with("scroll_down")),
+        ] {
+            let btn = h
+                .ctx
+                .read_response(id)
+                .unwrap_or_else(|| panic!("{name} scroll button must have a response"))
+                .rect;
+            assert!(
+                popup.contains_rect(btn),
+                "{name} scroll button rect {btn:?} must sit inside the popup rect {popup:?}"
+            );
+        }
+        // Clicking the down chevron must neither close the popup nor
+        // select anything: the click lands inside the popup rect, on the
+        // button row outside the viewport.
+        let down_center = h
+            .ctx
+            .read_response(popup_id.with("scroll_down"))
+            .expect("down button response")
+            .rect
+            .center();
+        h.click(down_center, |ui| {
+            show(ui, &mut value);
+        });
+        assert!(
+            h.state("flk02").open,
+            "clicking the down chevron must keep the popup open"
+        );
+        assert_eq!(value, None, "clicking the chevron must not select");
     }
 
     #[test]
