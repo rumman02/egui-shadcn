@@ -512,41 +512,333 @@ pub fn badge_demo(ui: &mut egui::Ui) {
 }
 
 pub fn label_demo(ui: &mut egui::Ui) {
-    ui.label("Plain labels");
-    ui.add_space(4.0);
-    Label::new("Email address").show(ui);
-    ui.add_space(4.0);
-    Label::new("Project name").show(ui);
-
+    // Every section prints the rect the label actually allocated
+    // (Response.rect), so S5/S6 can verify geometry from screenshots.
+    // Rows built with `ui.horizontal` are demo chrome: their 36px row
+    // rect is the egui `interact_size` artifact, never the label's
+    // rect — the printed rects are always the label's own Response
+    // rect. Target controls in section 8 and the nested checkbox in
+    // section 9 are demo chrome; only the labels are under test.
+    ui.label("Label — one class string, content-sized flex row, gap-2 (spec §2).");
+    ui.label("Nova renders identically to base in every established state (LAYER, spec §2.3).");
     ui.add_space(12.0);
-    ui.label("With a 16px icon (gap-2)");
-    ui.add_space(4.0);
-    Label::new("Profile").icon(Icon::User).show(ui);
-    Label::new("Attachments").icon(Icon::Paperclip).show(ui);
 
-    ui.add_space(12.0);
-    ui.label("Bound to a control: click the label to focus the field.");
+    // 1. Text-only (spec §3.1): 14px line box, width = text advance.
+    ui.label("1. Text-only — 14px line box (spec §3.1)");
     ui.add_space(4.0);
-    let id = egui::Id::unique("demo_email_field");
-    let store = egui::Id::unique("demo_email_value");
-    Label::new("Email").for_id(id).show(ui);
-    let mut email: String = ui.ctx().data_mut(|d| {
-        d.get_temp(store)
-            .unwrap_or_else(|| "m@example.com".to_owned())
+    let r = Label::new("Email address").show(ui).rect;
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px (expected: h=14, w=text advance at 14px/500)",
+        r.width(),
+        r.height()
+    ));
+
+    // 2. Icon + text (spec §3.2): the same text is shown bare first, so
+    // the 24px icon+gap delta is measurable from the page itself.
+    ui.add_space(12.0);
+    ui.label("2. Icon + text — leading icon, gap-2 (spec §3.2)");
+    ui.add_space(4.0);
+    let bare = Label::new("Profile").show(ui).rect;
+    let with = Label::new("Profile").icon(Icon::User).show(ui).rect;
+    ui.label(format!(
+        "text-only: {:.1} x {:.1} px; icon+text: {:.1} x {:.1} px; delta: {:.1} px (expected: h=16 tallest child, delta=24 = 16 icon + 8 gap)",
+        bare.width(),
+        bare.height(),
+        with.width(),
+        with.height(),
+        with.width() - bare.width()
+    ));
+
+    // 3. Text + icon (spec §3.2): trailing slot via `.icon_end()`.
+    ui.add_space(12.0);
+    ui.label("3. Text + icon — trailing icon, gap-2 (spec §3.2)");
+    ui.add_space(4.0);
+    let bare = Label::new("Profile").show(ui).rect;
+    let with = Label::new("Profile")
+        .icon_end(Icon::ChevronDown)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "text-only: {:.1} x {:.1} px; text+icon: {:.1} x {:.1} px; delta: {:.1} px (expected: h=16 tallest child, delta=24 = 8 gap + 16 icon)",
+        bare.width(),
+        bare.height(),
+        with.width(),
+        with.height(),
+        with.width() - bare.width()
+    ));
+
+    // 4. Icon + text + icon (spec §3.2): both slots; full §3.2 table
+    // covered across sections 1–4.
+    ui.add_space(12.0);
+    ui.label("4. Icon + text + icon — both slots, gap-2 (spec §3.2)");
+    ui.add_space(4.0);
+    let bare = Label::new("Profile").show(ui).rect;
+    let with = Label::new("Profile")
+        .icon(Icon::User)
+        .icon_end(Icon::ChevronDown)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "text-only: {:.1} x {:.1} px; icon+text+icon: {:.1} x {:.1} px; delta: {:.1} px (expected: h=16 tallest child, delta=48 = 16 + 8 + 8 + 16)",
+        bare.width(),
+        bare.height(),
+        with.width(),
+        with.height(),
+        with.width() - bare.width()
+    ));
+
+    // 5. Icon-only (spec §9): exactly the 16px icon box, no phantom gap.
+    ui.add_space(12.0);
+    ui.label("5. Icon-only — exactly the icon box (spec §9)");
+    ui.add_space(4.0);
+    let r = Label::new("").icon(Icon::User).show(ui).rect;
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px (expected: 16 x 16, no phantom gap; icon size is a builder API decision, spec §3.3)",
+        r.width(),
+        r.height()
+    ));
+
+    // 6. Empty label (spec §9): zero-size, not an error.
+    ui.add_space(12.0);
+    ui.label("6. Empty label — zero-size (spec §9)");
+    ui.add_space(4.0);
+    let r = Label::new("").show(ui).rect;
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px (expected: 0 x 0, no panic)",
+        r.width(),
+        r.height()
+    ));
+
+    // 7. Disabled (D1 PROPOSED deviation, spec §10): 50% element
+    // opacity, instant; geometry identical to the enabled twin.
+    ui.add_space(12.0);
+    ui.label(
+        "7. Disabled — D1 flag (PROPOSED deviation, pending Expert Reviewer approval; spec §10)",
+    );
+    ui.add_space(4.0);
+    let enabled = Label::new("Disabled label").icon(Icon::User).show(ui).rect;
+    let disabled = Label::new("Disabled label")
+        .icon(Icon::User)
+        .disabled(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "enabled: {:.1} x {:.1} px; disabled: {:.1} x {:.1} px; geometry identical: {} (expected: same rect, 50% opacity, instant)",
+        enabled.width(),
+        enabled.height(),
+        disabled.width(),
+        disabled.height(),
+        enabled.size() == disabled.size()
+    ));
+
+    // 8. `for_id` bound labels (spec §7). Each label is bound to its
+    // target via `ui.scope_id().with(salt)`, which matches the target
+    // control's `.id_salt(salt)` (child Uis inherit the parent scope).
+    // OPEN-1 (click activates toggleable controls, or only focuses?)
+    // is UNESTABLISHED: this section exposes the bound pairs for S6
+    // and makes no parity claim about click behaviour. The labels take
+    // NO Tab stop (S1 sense fix; S6 verifies runtime, OPEN-6).
+    // Control state lives in egui temp data (gallery pattern).
+    ui.add_space(12.0);
+    ui.label("8. Bound labels — for_id targets (spec §7; OPEN-1 unestablished, no parity claim)");
+    ui.add_space(4.0);
+    let input_store = egui::Id::unique("label_demo_input_text");
+    let mut input_text: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(input_store))
+        .unwrap_or_else(|| "m@example.com".to_owned());
+    let cb_store = egui::Id::unique("label_demo_checkbox");
+    let mut cb_checked: bool = ui.ctx().data_mut(|d| d.get_temp(cb_store).unwrap_or(false));
+    let radio_store = egui::Id::unique("label_demo_radio");
+    let mut radio_checked: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(radio_store).unwrap_or(false));
+    let sw_store = egui::Id::unique("label_demo_switch");
+    let mut sw_on: bool = ui.ctx().data_mut(|d| d.get_temp(sw_store).unwrap_or(false));
+    let dis_store = egui::Id::unique("label_demo_disabled_cb");
+    let mut dis_checked: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(dis_store).unwrap_or(false));
+
+    // 8a. Text input target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_input");
+            let lr = Label::new("Email").for_id(target).show(ui).rect;
+            let resp = Input::new(&mut input_text)
+                .id_salt("label_demo_input")
+                .show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "input target: label {:.1} x {:.1} px; target focused: {}",
+        lr.width(),
+        lr.height(),
+        focused
+    ));
+    ui.add_space(4.0);
+    // 8b. Checkbox target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_cb");
+            let lr = Label::new("Accept terms").for_id(target).show(ui).rect;
+            let resp = Checkbox::new(&mut cb_checked)
+                .id_salt("label_demo_cb")
+                .show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "checkbox target: label {:.1} x {:.1} px; checked: {}; target focused: {}",
+        lr.width(),
+        lr.height(),
+        cb_checked,
+        focused
+    ));
+    ui.add_space(4.0);
+    // 8c. Radio target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_radio");
+            let lr = Label::new("Option A").for_id(target).show(ui).rect;
+            let resp = RadioGroupItem::new(&mut radio_checked)
+                .id_salt("label_demo_radio")
+                .show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "radio target: label {:.1} x {:.1} px; selected: {}; target focused: {}",
+        lr.width(),
+        lr.height(),
+        radio_checked,
+        focused
+    ));
+    ui.add_space(4.0);
+    // 8d. Switch target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_sw");
+            let lr = Label::new("Notifications").for_id(target).show(ui).rect;
+            let resp = Switch::new(&mut sw_on).id_salt("label_demo_sw").show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "switch target: label {:.1} x {:.1} px; on: {}; target focused: {}",
+        lr.width(),
+        lr.height(),
+        sw_on,
+        focused
+    ));
+    ui.add_space(4.0);
+    // 8e. Button target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_btn");
+            let lr = Label::new("Submit").for_id(target).show(ui).rect;
+            let resp = Button::new("Target button")
+                .id_salt("label_demo_btn")
+                .show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "button target: label {:.1} x {:.1} px; target focused: {}",
+        lr.width(),
+        lr.height(),
+        focused
+    ));
+    ui.add_space(4.0);
+    // 8f. Disabled checkbox target.
+    let (lr, focused) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("label_demo_dis_cb");
+            let lr = Label::new("Disabled option").for_id(target).show(ui).rect;
+            let resp = Checkbox::new(&mut dis_checked)
+                .id_salt("label_demo_dis_cb")
+                .disabled(true)
+                .show(ui);
+            (lr, resp.has_focus())
+        })
+        .inner;
+    ui.label(format!(
+        "disabled checkbox target: label {:.1} x {:.1} px; checked: {}; target focused: {}",
+        lr.width(),
+        lr.height(),
+        dis_checked,
+        focused
+    ));
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(input_store, input_text);
+        d.insert_temp(cb_store, cb_checked);
+        d.insert_temp(radio_store, radio_checked);
+        d.insert_temp(sw_store, sw_on);
+        d.insert_temp(dis_store, dis_checked);
     });
-    let resp = egui::TextEdit::singleline(&mut email)
-        .id_salt(id)
-        .desired_width(280.0)
-        .show(ui);
-    if resp.response.has_focus() {
-        ui.label("(focused via label click)");
-    }
-    ui.ctx().data_mut(|d| d.insert_temp(store, email));
 
+    // 9. `show_with` generic composition (OPEN-5 DECIDED — coordinator
+    // note 2026-11-16): closure widgets render as flex children in DOM
+    // order, one content-sized row, 8px gaps, vertical centering. The
+    // closure runs TWICE (measure pass + real pass); closure content
+    // must be a pure function of its inputs.
     ui.add_space(12.0);
-    ui.label("Disabled");
+    ui.label(
+        "9. show_with composition — closure children as flex children (spec §8, OPEN-5 decided)",
+    );
     ui.add_space(4.0);
-    Label::new("Disabled label").disabled(true).show(ui);
+    let row = Label::new("Status").show_with(ui, |ui| {
+        ui.label("active");
+    });
+    let r = row.response.rect;
+    ui.label(format!(
+        "text + closure label: row {:.1} x {:.1} px (expected: content-sized, 8px gap, children vertically centred)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    // 9b. Nested control: the nested checkbox keeps its own hits; the
+    // label adds no click-sense rect over it (pointer-state forwarding).
+    // No `for_id` here — the nested-is-target case needs an id-salted
+    // control and is S6's construction, not this demo's.
+    let nested_store = egui::Id::unique("label_demo_nested_cb");
+    let mut nested: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(nested_store).unwrap_or(false));
+    let row = Label::new("Accept").show_with(ui, |ui| {
+        ui.checkbox(&mut nested, "");
+    });
+    let r = row.response.rect;
+    ui.ctx().data_mut(|d| d.insert_temp(nested_store, nested));
+    ui.label(format!(
+        "nested checkbox: row {:.1} x {:.1} px; checked: {}; nested control keeps its own hits (expected: content-sized, 8px gap)",
+        r.width(),
+        r.height(),
+        nested
+    ));
+
+    // 10. Long text (spec §9): no `whitespace-nowrap` class exists, so
+    // the original wraps by layout into 14px line boxes. The measured
+    // rect below is the OBSERVED behaviour in a 320px container; S5
+    // judges it against §9. No verdict is stated here.
+    ui.add_space(12.0);
+    ui.label("10. Long text — 320px container (spec §9; observed behaviour, S5 judges)");
+    ui.add_space(4.0);
+    let r = ui
+        .allocate_ui(egui::Vec2::new(320.0, 60.0), |ui| {
+            Label::new(
+                "This is a very long label that exceeds the width of its container by a wide margin",
+            )
+            .show(ui)
+            .rect
+        })
+        .inner;
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px in a 320px container (spec §9: wraps into 14px line boxes)",
+        r.width(),
+        r.height()
+    ));
 }
 
 pub fn separator_demo(ui: &mut egui::Ui) {
