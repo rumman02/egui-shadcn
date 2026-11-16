@@ -66,12 +66,16 @@
 //! is gone. Disabled opacity is instant in both styles (opacity is in
 //! neither transition set).
 //!
-//! Indeterminate (spec §4.4, OPEN-2, D3): the box renders the UNCHECKED
-//! recipe. The icon is UNESTABLISHED — this build renders NO icon for the
-//! indeterminate state (PROVISIONAL, pending the S6 Work B / S4
-//! settlement of OPEN-2). The lucide minus glyph the previous build
-//! rendered was a port invention and has been removed; rendering one
-//! needs deviation approval (D3).
+//! Indeterminate (spec §4.4, OPEN-2 CLOSED by S6 Work B, D3): the box
+//! renders the UNCHECKED recipe, and the Indicator renders the `Check`
+//! icon — the Radix `Presence` rule renders the Indicator whenever the
+//! state is indeterminate, with the consumer's child (the shadcn
+//! `CheckIcon`). The glyph paints in the inherited text colour
+//! (`text-current`): the Root sets no text colour in this state, so it
+//! inherits the ancestor text colour, the theme `foreground`. The lucide
+//! minus glyph the previous build rendered was a port invention and
+//! stays removed (D3 unexercised — no deviation is needed to render the
+//! `CheckIcon`).
 //!
 //! Keyboard/click (spec §7, OPEN-1): ALL Radix interaction semantics are
 //! unestablished (no Radix source in the snapshot). This build uses
@@ -152,8 +156,11 @@ pub(crate) struct CheckboxColors {
     /// checkbox shows NO ring unfocused.
     ring_shown: bool,
     /// Indicator icon color when rendered: `primary-foreground` when
-    /// checked. The unchecked value (`foreground`) is the leg start for
-    /// the nova icon-colour transition; no icon renders unchecked.
+    /// checked, `foreground` when indeterminate (the `text-current`
+    /// glyph inherits the ancestor text colour — the Root sets no text
+    /// colour in the indeterminate state). The unchecked value
+    /// (`foreground`) doubles as the leg start for the nova icon-colour
+    /// transition; no icon renders for a plain unchecked box.
     icon: Color32,
     /// Whether `shadow-xs` paints. Always true: no rule in either recipe
     /// removes the shadow in any state (spec §4.7), including disabled
@@ -254,19 +261,19 @@ pub(crate) fn resolve_checkbox_colors(
 /// Which indicator icon renders, if any.
 ///
 /// Checked renders the Lucide `Check` (`checkbox.tsx:25`). The
-/// indeterminate icon is UNESTABLISHED (spec §4.4, OPEN-2): this build
-/// renders NO icon for the indeterminate state — PROVISIONAL, pending
-/// the S6 Work B / S4 settlement. The minus glyph the previous build
-/// rendered was a port invention (the original supplies only
-/// `CheckIcon`); rendering one needs deviation approval (D3). When both
-/// `checked` and `indeterminate` are set, the checked rendering wins
-/// (spec E5; OPEN-3 proposal, pending coordinator ratification at S8).
+/// indeterminate state ALSO renders the `Check` (spec §4.4, OPEN-2
+/// CLOSED by S6 Work B: the Radix Indicator `Presence` renders whenever
+/// the state is indeterminate, with the consumer's child — the shadcn
+/// `CheckIcon`; the glyph is `text-current`, resolved to the theme
+/// `foreground` by [`resolve_checkbox_colors`]). The minus glyph the
+/// previous build rendered was a port invention (the original supplies
+/// only `CheckIcon`); D3 stays unexercised. When both `checked` and
+/// `indeterminate` are set, the checked rendering wins (spec E5; OPEN-3
+/// ratified at S8).
 fn indicator_icon(checked: bool, indeterminate: bool) -> Option<Icon> {
-    // OPEN-2: no icon renders for the indeterminate state (provisional).
-    // The flag is accepted so the E5 combination stays explicit at the
-    // call site; it alters no rendered slot in this build.
-    let _ = indeterminate;
-    checked.then_some(Icon::Check)
+    // OPEN-2 (settled): the Indicator renders for checked AND
+    // indeterminate; only the plain unchecked box has no icon.
+    (checked || indeterminate).then_some(Icon::Check)
 }
 
 /// Whole-element group fade for `disabled:opacity-50` (spec §4.3): the
@@ -370,13 +377,12 @@ impl<'a> Checkbox<'a> {
     /// owns the tri-state logic, and clicking toggles the bound boolean
     /// (the indeterminate → next-state rule is OPEN-1).
     ///
-    /// PROVISIONAL rendering (spec §4.4, OPEN-2): the box renders the
-    /// unchecked recipe with NO icon. The minus glyph the previous build
-    /// rendered was a port invention and has been removed; whether the
-    /// Radix Indicator renders (and what glyph) in this state is
-    /// unestablished until S6 Work B / S4 settle OPEN-2. When the bound
-    /// boolean is `true`, the checked rendering wins (spec E5; OPEN-3
-    /// proposal, pending coordinator ratification).
+    /// Rendering (spec §4.4, OPEN-2 settled by S6 Work B): the box
+    /// renders the unchecked recipe with the `Check` icon in the
+    /// inherited text colour (`text-current` → theme `foreground`). The
+    /// minus glyph the previous build rendered was a port invention and
+    /// stays removed (D3 unexercised). When the bound boolean is `true`,
+    /// the checked rendering wins (spec E5; OPEN-3 ratified at S8).
     pub fn indeterminate(mut self, indeterminate: bool) -> Self {
         self.indeterminate = indeterminate;
         self
@@ -833,14 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn indicator_icon_provisional_pending_open2() {
-        // PROVISIONAL (spec §4.4, OPEN-2): checked renders `Check`; the
-        // indeterminate state renders NO icon until S6 Work B / S4
-        // settle OPEN-2. The E5 combination (checked + indeterminate)
-        // renders the checked icon (checked wins; OPEN-3 proposal).
+    fn indicator_icon_renders_check_for_indeterminate() {
+        // Settled OPEN-2 (S6 Work B): the Radix Indicator renders the
+        // `CheckIcon` for checked AND indeterminate; only the plain
+        // unchecked box has no icon. The E5 combination (checked +
+        // indeterminate) renders the checked icon (checked wins; OPEN-3
+        // ratified at S8). CHK-VIS-02 regression pin.
         assert_eq!(indicator_icon(true, false), Some(Icon::Check));
         assert_eq!(indicator_icon(false, false), None);
-        assert_eq!(indicator_icon(false, true), None);
+        assert_eq!(indicator_icon(false, true), Some(Icon::Check));
         assert_eq!(indicator_icon(true, true), Some(Icon::Check));
     }
 
@@ -953,10 +960,14 @@ mod tests {
     }
 
     #[test]
-    fn indeterminate_unchecked_renders_like_unchecked() {
-        // Spec §4.4: the indeterminate box renders the unchecked recipe,
-        // and (provisional, OPEN-2) no icon — so the two renders must be
-        // shape-identical.
+    fn indeterminate_adds_only_the_icon_shape() {
+        // Spec §4.4 + settled OPEN-2 (CHK-VIS-02): the indeterminate box
+        // renders the unchecked recipe PLUS the `Check` icon — so the
+        // mixed render must contain every unchecked shape in order, plus
+        // exactly the icon's image shape. The icon colour is the
+        // resolver's unchecked `foreground` value (pinned by the
+        // resolver tests); the capture evidence judges the rendered
+        // colour.
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut checked = false;
@@ -969,10 +980,37 @@ mod tests {
                 .id_salt("ind")
                 .show(ui);
         });
+        let plain_dbg: Vec<String> = plain
+            .shapes
+            .iter()
+            .map(|s| format!("{:?}", s.shape))
+            .collect();
+        let mixed_dbg: Vec<String> = mixed
+            .shapes
+            .iter()
+            .map(|s| format!("{:?}", s.shape))
+            .collect();
+        // Subsequence alignment: every unchecked shape appears in the
+        // mixed render, in order; anything else is an added shape.
+        let mut plain_idx = 0;
+        let mut added: Vec<&String> = Vec::new();
+        for shape in &mixed_dbg {
+            if plain_idx < plain_dbg.len() && shape == &plain_dbg[plain_idx] {
+                plain_idx += 1;
+            } else {
+                added.push(shape);
+            }
+        }
         assert_eq!(
-            format!("{:?}", plain.shapes),
-            format!("{:?}", mixed.shapes),
-            "indeterminate changed the unchecked render"
+            plain_idx,
+            plain_dbg.len(),
+            "indeterminate changed an unchecked shape"
+        );
+        assert_eq!(added.len(), 1, "indeterminate added shapes: {added:?}");
+        assert!(
+            added[0].starts_with("Mesh"),
+            "added shape is not the icon mesh: {}",
+            added[0]
         );
     }
 
