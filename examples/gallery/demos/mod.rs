@@ -731,54 +731,197 @@ pub fn separator_demo(ui: &mut egui::Ui) {
 }
 
 pub fn kbd_demo(ui: &mut egui::Ui) {
-    ui.label("Single keys");
+    // Every section prints the rect the chip actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // The tooltip-content backdrop in section 9 is demo chrome
+    // simulating `bg-foreground`, not component rendering.
+
+    ui.label("1. Single key — 20px height, width per §4 (spec §3.1/§4)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Kbd::new("⌘").show(ui);
-        Kbd::new("⇧").show(ui);
-        Kbd::new("K").show(ui);
-        Kbd::new("Enter").show(ui);
-        Kbd::new("Esc").show(ui);
-    });
+    let rect = Kbd::new("A").show(ui).rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: h=20, w=max(20, text+8))",
+        rect.width(),
+        rect.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("With a 12px icon (gap-1)");
+    ui.label("2. Text key — width grows with the label (spec §4)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Kbd::new("M").icon(Icon::ChevronLeft).show(ui);
-        Kbd::new("M").icon(Icon::ChevronRight).show(ui);
-        Kbd::new("").icon(Icon::ChevronDown).show(ui);
-    });
+    let rect = Kbd::new("Enter").show(ui).rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: h=20, w=max(20, text+8))",
+        rect.width(),
+        rect.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Groups (gap-1)");
+    ui.label("3. Group — 4px gaps, height = tallest child (spec §3.3/§4)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label("Command palette:");
-        KbdGroup::new().show(ui, |ui| {
-            Kbd::new("⌘").show(ui);
-            Kbd::new("K").show(ui);
-        });
+    let group = KbdGroup::new().show(ui, |ui| {
+        let first = Kbd::new("⌘").show(ui).rect;
+        let second = Kbd::new("K").show(ui).rect;
+        (first, second)
     });
-    ui.horizontal(|ui| {
-        ui.label("Undo:");
-        KbdGroup::new().show(ui, |ui| {
-            Kbd::new("⌘").show(ui);
-            Kbd::new("⇧").show(ui);
-            Kbd::new("Z").show(ui);
-        });
-    });
+    // NOTE: the group row rect is the tallest child (20px for standard
+    // chips, spec §3.3). It used to read 36px: plain `ui.horizontal`
+    // seeds its row to `interact_size.y` (defect KBD-VIS-01, fixed by
+    // the S9 content-sized allocation in `KbdGroup::show`). The readout
+    // prints both the row rect and the chip union so the §3.3 claim can
+    // be judged against either.
+    let (first, second) = group.inner;
+    let content = first.union(second);
+    ui.label(format!(
+        "group row rect: {:.0} x {:.0} px; chip union: {:.0} x {:.0} px; chips: {:.0} x {:.0} + {:.0} x {:.0} px; measured gap: {:.0} px (expected: gap 4, group w = chips + 4, content h = tallest child = 20)",
+        group.response.rect.width(),
+        group.response.rect.height(),
+        content.width(),
+        content.height(),
+        first.width(),
+        first.height(),
+        second.width(),
+        second.height(),
+        second.min.x - first.max.x
+    ));
 
     ui.add_space(12.0);
-    ui.label("Inline with text");
+    ui.label("4. Icon + text — every icon and gap counts (spec §4)");
     ui.add_space(4.0);
+    let rect = Kbd::new("M").icon(Icon::ChevronLeft).show(ui).rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: h=20, w=max(20, text+24) = 4 pad + 12 icon + 4 gap + text + 4 pad)",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("5. Multiple icons + text — every icon and gap counts (spec §4)");
+    ui.add_space(4.0);
+    let rect = Kbd::new("M")
+        .icon(Icon::ChevronLeft)
+        .icon(Icon::ChevronRight)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: h=20, w=max(20, text+40))",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("6. Explicit icon sizes — an explicit size always wins (spec §3.2)");
+    ui.add_space(4.0);
+    ui.label("Icon-only chips, so the width arithmetic is exact (4 + icon + 4, 20px floor).");
+    let mut rects = [egui::Rect::NOTHING; 3];
     ui.horizontal(|ui| {
-        ui.label("Press");
-        Kbd::new("Tab").show(ui);
-        ui.label("to move focus, or");
-        Kbd::new("Esc").show(ui);
-        ui.label("to dismiss.");
+        rects[0] = Kbd::new("").icon(Icon::ChevronDown).show(ui).rect;
+        rects[1] = Kbd::new("")
+            .icon(Icon::ChevronDown)
+            .icon_size(16.0)
+            .show(ui)
+            .rect;
+        rects[2] = Kbd::new("")
+            .icon_sized(Icon::ChevronDown, 20.0)
+            .icon_size(16.0)
+            .show(ui)
+            .rect;
     });
+    ui.label(format!(
+        "default 12px icon: {:.0} x {:.0} px (expected 20 x 20); .icon_size(16): {:.0} x {:.0} px (expected 24 x 20); .icon_sized(20) + .icon_size(16): {:.0} x {:.0} px (expected 28 x 20 — explicit size wins)",
+        rects[0].width(),
+        rects[0].height(),
+        rects[1].width(),
+        rects[1].height(),
+        rects[2].width(),
+        rects[2].height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("7. Empty chip — the 20px floor still renders (spec §4/§10)");
+    ui.add_space(4.0);
+    let rect = Kbd::new("").show(ui).rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: 20 x 20, the min-w-5/h-5 floor)",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("8. Icon-only chip — exactly the floor (spec §4/§10)");
+    ui.add_space(4.0);
+    let rect = Kbd::new("").icon(Icon::ChevronDown).show(ui).rect;
+    ui.label(format!(
+        "measured: {:.0} x {:.0} px (expected: 20 x 20 = 4 + 12 + 4)",
+        rect.width(),
+        rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("9. Tooltip context — D1 flag (PROPOSED deviation, pending Expert Reviewer approval; spec §2.4)");
+    ui.add_space(4.0);
+    let theme = ShadcnTheme::of_ui(ui);
+    let (wash, mode_name) = match theme.mode {
+        Mode::Light => ("background/20", "light"),
+        Mode::Dark => ("background/10", "dark"),
+    };
+    ui.label(format!(
+        "Backdrop is demo chrome simulating tooltip content (bg-foreground: dark in light mode, light in dark mode). Chips with .on_dark(true) in {} mode: wash {} + background text; all other slots unchanged.",
+        mode_name, wash
+    ));
+    ui.add_space(4.0);
+    let backdrop = egui::Frame::new()
+        .fill(theme.palette.foreground)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(12));
+    let on_dark_rect = backdrop
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let first = Kbd::new("⌘").on_dark(true).show(ui).rect;
+                Kbd::new("K").on_dark(true).show(ui);
+                first
+            })
+            .inner
+        })
+        .inner;
+    ui.add_space(8.0);
+    ui.label("Same chips with the flag off (default muted values, for contrast):");
+    ui.add_space(4.0);
+    let off_rect = egui::Frame::new()
+        .fill(theme.palette.foreground)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let first = Kbd::new("⌘").show(ui).rect;
+                Kbd::new("K").show(ui);
+                first
+            })
+            .inner
+        })
+        .inner;
+    ui.label(format!(
+        "on_dark(true): {:.0} x {:.0} px; flag off: {:.0} x {:.0} px (geometry unchanged by the flag; only fill/text differ)",
+        on_dark_rect.width(),
+        on_dark_rect.height(),
+        off_rect.width(),
+        off_rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("10. Long key names — full label, no wrap, no truncation (spec §10)");
+    ui.add_space(4.0);
+    let mut rects = [egui::Rect::NOTHING; 2];
+    ui.horizontal(|ui| {
+        rects[0] = Kbd::new("Caps Lock").show(ui).rect;
+        rects[1] = Kbd::new("Backspace").show(ui).rect;
+    });
+    ui.label(format!(
+        "Caps Lock: {:.0} x {:.0} px; Backspace: {:.0} x {:.0} px (expected: h=20, w=max(20, text+8), full label visible)",
+        rects[0].width(),
+        rects[0].height(),
+        rects[1].width(),
+        rects[1].height()
+    ));
 }
 
 pub fn spinner_demo(ui: &mut egui::Ui) {
