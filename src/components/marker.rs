@@ -29,6 +29,9 @@
 //! Settled audit items (spec §§4-5, 11):
 //! - N5 row-height rule: row height = `max(16px, tallest flex item)`.
 //!   `min-h-4` is a FLOOR, not a fixed height — all three variants grow.
+//!   The floor binds on the TOTAL row height (`border-box`): the `border`
+//!   variant totals `max(16px, tallest + 9px)`, so an empty border row is
+//!   16px (MRK-VIS-01 ruling, S5 §3).
 //! - N12 gap rule: `gap-2` = 8px, set explicitly between every pair of
 //!   adjacent flex items, all variants, both recipes.
 //! - M-P2-2: generic composition in the content slot
@@ -106,18 +109,17 @@ pub(crate) fn text_color(theme: &ShadcnTheme) -> Color32 {
     theme.palette.muted_foreground
 }
 
-/// Content-box height from the tallest flex item: `min-h-4` is a FLOOR
-/// (N5, spec §4.1), never a fixed height.
-pub(crate) fn content_height(tallest_item: f32) -> f32 {
-    tallest_item.max(spacing::LG)
-}
-
-/// Total row height for a variant given the content-box height: the `border`
-/// variant adds `pb-2` (8px) + `border-b` (1px) below the content (spec §6).
-pub(crate) fn total_row_height(variant: MarkerVariant, content_h: f32) -> f32 {
+/// Total row height for a variant given the tallest flex item's height
+/// (raw, unfloored): `min-h-4` is a floor on the TOTAL row height, not on
+/// the content box. Under the `border-box` model the snapshot's Tailwind
+/// import imposes (Preflight), the `border` variant's `pb-2` (8px) +
+/// `border-b` (1px) fit INSIDE the 16px minimum when the content is short,
+/// so the empty border row totals 16px (MRK-VIS-01 ruling, S5 §3). For
+/// content heights ≥ 7px this is exactly `content + 9` (spec §6).
+pub(crate) fn total_row_height(variant: MarkerVariant, tallest_item: f32) -> f32 {
     match variant {
-        MarkerVariant::Border => content_h + spacing::SM + RULE_THICKNESS,
-        _ => content_h,
+        MarkerVariant::Border => (tallest_item + spacing::SM + RULE_THICKNESS).max(spacing::LG),
+        _ => tallest_item.max(spacing::LG),
     }
 }
 
@@ -282,14 +284,15 @@ impl Marker {
         self
     }
 
-    /// The minimum row height: `min-h-4` (16px), plus `pb-2` + `border-b`
-    /// (9px) for the `border` variant. The actual row height is
-    /// `max(minimum, tallest flex item)` (N5); this returns only the floor.
+    /// The minimum row height: `min-h-4` (16px) for all variants. Under
+    /// `border-box` the floor binds on the total row height, so the
+    /// `border` variant's `pb-2` + `border-b` (9px) fit inside the 16px
+    /// minimum for short content (MRK-VIS-01 ruling). The actual row
+    /// height is `max(minimum, tallest flex item)` for `default`/
+    /// `separator` and `max(minimum, tallest flex item + 9)` for
+    /// `border` (N5); this returns only the floor.
     pub fn row_height(&self) -> f32 {
-        match self.variant {
-            MarkerVariant::Border => spacing::LG + spacing::SM + RULE_THICKNESS,
-            _ => spacing::LG,
-        }
+        spacing::LG
     }
 
     /// Renders the marker row around its children (use [`MarkerIcon`] and
@@ -312,11 +315,14 @@ impl Marker {
             Some(salt) => ui.scope_id().with(salt).with("marker_measured_content"),
             None => ui.auto_id_with("marker_measured_content"),
         };
+        // No measurement yet: zero size, so the first frame uses the floor
+        // via `total_row_height` (16px for every variant, including
+        // `border` — the floor binds on the total, MRK-VIS-01).
         let stored: Vec2 = ui
             .ctx()
             .data_mut(|data| data.get_temp(row_id))
-            .unwrap_or(Vec2::new(0.0, spacing::LG));
-        let row_h = total_row_height(self.variant, content_height(stored.y));
+            .unwrap_or(Vec2::ZERO);
+        let row_h = total_row_height(self.variant, stored.y);
 
         let (row_rect, response) = ui.allocate_exact_size(Vec2::new(width, row_h), Sense::hover());
 
@@ -694,10 +700,12 @@ mod tests {
             Marker::new().variant(MarkerVariant::Separator).row_height(),
             16.0
         );
-        // border-b pb-2 → 16 + 8 + 1
+        // `min-h-4` constrains the BORDER box (border-box, MRK-VIS-01
+        // ruling): the 8px `pb-2` + 1px `border-b` fit INSIDE the 16px
+        // minimum, so the border floor is 16px, not 25px.
         assert_eq!(
             Marker::new().variant(MarkerVariant::Border).row_height(),
-            25.0
+            16.0
         );
     }
 
@@ -711,11 +719,12 @@ mod tests {
     }
 
     #[test]
-    fn content_height_is_a_floor() {
-        assert_eq!(content_height(0.0), 16.0);
-        assert_eq!(content_height(16.0), 16.0);
-        assert_eq!(content_height(20.0), 20.0);
-        assert_eq!(content_height(40.0), 40.0);
+    fn total_row_height_is_a_floor_on_the_total() {
+        // `min-h-4` floors the TOTAL (border-box), never the content box.
+        assert_eq!(total_row_height(MarkerVariant::Default, 0.0), 16.0);
+        assert_eq!(total_row_height(MarkerVariant::Default, 16.0), 16.0);
+        assert_eq!(total_row_height(MarkerVariant::Default, 20.0), 20.0);
+        assert_eq!(total_row_height(MarkerVariant::Default, 40.0), 40.0);
     }
 
     #[test]
@@ -736,6 +745,59 @@ mod tests {
             "border adds pb-2 + border-b"
         );
         assert_eq!(total_row_height(MarkerVariant::Border, 16.0), 25.0);
+        // Border-box floor (MRK-VIS-01 ruling): `min-h-4` constrains the
+        // total, so content shorter than 7px still totals 16px.
+        assert_eq!(
+            total_row_height(MarkerVariant::Border, 0.0),
+            16.0,
+            "empty border row: padding + rule fit inside the 16px floor"
+        );
+        assert_eq!(total_row_height(MarkerVariant::Border, 6.0), 16.0);
+        assert_eq!(total_row_height(MarkerVariant::Border, 7.0), 16.0);
+        assert_eq!(total_row_height(MarkerVariant::Border, 8.0), 17.0);
+        assert_eq!(total_row_height(MarkerVariant::Default, 0.0), 16.0);
+        assert_eq!(total_row_height(MarkerVariant::Separator, 0.0), 16.0);
+    }
+
+    #[test]
+    fn border_row_heights_follow_border_box_floor() {
+        // Discriminating harness test (MRK-VIS-01): empty = 16px total,
+        // 20px text = 29px, 40px tall content = 49px — settled frames.
+        let mut h = Harness::new();
+        let mut empty_h = 0.0;
+        for _ in 0..3 {
+            let (resp, _) = h.run(|ui| {
+                Marker::new()
+                    .variant(MarkerVariant::Border)
+                    .show(ui, |_| {})
+            });
+            empty_h = resp.response.rect.height();
+        }
+        assert_eq!(empty_h, 16.0, "empty border row totals 16px");
+
+        let mut h = Harness::new();
+        let mut text_h = 0.0;
+        for _ in 0..3 {
+            let (resp, _) = h.run(|ui| {
+                Marker::new()
+                    .variant(MarkerVariant::Border)
+                    .show(ui, |ui| MarkerContent::new("Hello").show(ui))
+            });
+            text_h = resp.response.rect.height();
+        }
+        assert_eq!(text_h, 29.0, "20px content + 8px pb-2 + 1px border");
+
+        let mut h = Harness::new();
+        let mut tall_h = 0.0;
+        for _ in 0..3 {
+            let (resp, _) = h.run(|ui| {
+                Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
+                    ui.allocate_exact_size(Vec2::new(50.0, 40.0), Sense::hover());
+                })
+            });
+            tall_h = resp.response.rect.height();
+        }
+        assert_eq!(tall_h, 49.0, "40px content + 8px pb-2 + 1px border");
     }
 
     #[test]
@@ -1024,10 +1086,13 @@ mod tests {
             }));
         }
         let (row, out) = last.unwrap();
-        assert_eq!(row.height(), 25.0);
+        assert_eq!(row.height(), 16.0, "empty border row totals 16px");
         let segs = line_segments(&out);
         assert_eq!(segs.len(), 1);
-        assert_eq!(segs[0].0[0].y, 24.5);
+        assert_eq!(
+            segs[0].0[0].y, 15.5,
+            "rule is the bottom row of the 16px row"
+        );
     }
 
     #[test]
