@@ -2981,62 +2981,267 @@ pub fn button_group_demo(ui: &mut egui::Ui) {
 }
 
 pub fn input_demo(ui: &mut egui::Ui) {
+    // Every section prints the rect the input actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // Header: recipe position, stated honestly (spec §§0, 3.4, 6, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Input — single-line text field. Active recipe: {recipe} (style: {}, mode: {mode}). Height 32px nova / 36px base; radius 10px nova / 8px base.",
+        theme.style.name()
+    ));
+    ui.label("OPEN-1: focused+invalid precedence is PROVISIONAL (invalid wins). OPEN-2: transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (framework defaults, not snapshot truth). D3 (proposed): 14px text at all widths. D8 (proposed): text + password types only. No hover rule (§4.2) and no active rule (§4.3): hover/press change nothing.");
+
     let store = egui::Id::unique("input_demo_values");
     let mut values: Vec<String> = ui.ctx().data_mut(|d| {
-        d.get_temp::<Vec<String>>(store)
-            .unwrap_or_else(|| vec![String::new(); 6])
+        d.get_temp::<Vec<String>>(store).unwrap_or_else(|| {
+            let mut v = vec![String::new(); 18];
+            v[1] = "Hello, shadcn!".to_owned();
+            v[5] = "not-an-email".to_owned();
+            v[6] = "bad value".to_owned();
+            v[8] = "Disabled value".to_owned();
+            v[10] = "s3cr3t-value".to_owned();
+            v[16] = "Select me".to_owned();
+            v
+        })
     });
 
-    ui.label("Default (w-full)");
-    ui.add_space(4.0);
-    Input::new(&mut values[0]).show(ui);
-
+    // 1. Resting: empty + filled + placeholder (spec §4.1/§4.7).
     ui.add_space(12.0);
-    ui.label("With placeholder and label");
+    ui.label("1. Resting — empty, filled, placeholder (spec §4.1/§4.7; fill transparent light / input/30 dark)");
     ui.add_space(4.0);
-    Label::new("Email").show(ui);
-    Input::new(&mut values[1])
+    let r_empty = Input::new(&mut values[0])
+        .id_salt("s3-resting-empty")
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_filled = Input::new(&mut values[1])
+        .id_salt("s3-resting-filled")
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_ph = Input::new(&mut values[2])
+        .id_salt("s3-resting-placeholder")
         .placeholder("m@example.com")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "measured: empty {:.1} x {:.1} px; filled {:.1} x {:.1} px; placeholder {:.1} x {:.1} px (expected: h=32 nova / 36 base, w = available)",
+        r_empty.width(),
+        r_empty.height(),
+        r_filled.width(),
+        r_filled.height(),
+        r_ph.width(),
+        r_ph.height()
+    ));
+
+    // 2. Focus target (spec §4.4).
+    ui.add_space(12.0);
+    ui.label("2. Focus target — Tab here or click; ring 3px + border ring on focus (spec §4.4; D1: ring on any focus)");
+    ui.add_space(4.0);
+    let resp = Input::new(&mut values[3])
+        .id_salt("s3-focus")
+        .placeholder("Focus me")
         .show(ui);
+    // Label F1 rule: the widget id comes from the control's returned
+    // `Response::id`, never a guessed scope id.
+    let focus_id = resp.id;
+    let focused = ui.ctx().memory(|m| m.has_focus(focus_id));
+    let r_focus = resp.rect;
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; focused: {focused}",
+        r_focus.width(),
+        r_focus.height()
+    ));
 
+    // 3. Invalid (spec §4.5).
     ui.add_space(12.0);
-    ui.label("Password");
+    ui.label("3. Invalid — destructive border both styles; 3px rest ring under NOVA only, none at rest under base (spec §4.5; nova dark border destructive/50, N5)");
     ui.add_space(4.0);
-    Input::new(&mut values[2])
-        .password(true)
-        .width(280.0)
-        .show(ui);
-
-    ui.add_space(12.0);
-    ui.label("Fixed width");
-    ui.add_space(4.0);
-    Input::new(&mut values[3]).width(240.0).show(ui);
-
-    ui.add_space(12.0);
-    ui.label("Disabled");
-    ui.add_space(4.0);
-    Input::new(&mut values[4])
-        .disabled(true)
-        .width(240.0)
-        .placeholder("Disabled field")
-        .show(ui);
-
-    ui.add_space(12.0);
-    ui.label("Invalid (aria-invalid)");
-    ui.add_space(4.0);
-    Input::new(&mut values[5])
+    let r_inv_empty = Input::new(&mut values[4])
+        .id_salt("s3-invalid-empty")
         .invalid(true)
-        .width(240.0)
         .placeholder("Invalid email")
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_inv_filled = Input::new(&mut values[5])
+        .id_salt("s3-invalid-filled")
+        .invalid(true)
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_inv_disabled = Input::new(&mut values[6])
+        .id_salt("s3-invalid-disabled")
+        .invalid(true)
+        .disabled(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "measured: invalid empty {:.1} x {:.1} px; invalid filled {:.1} x {:.1} px; invalid+disabled {:.1} x {:.1} px",
+        r_inv_empty.width(),
+        r_inv_empty.height(),
+        r_inv_filled.width(),
+        r_inv_filled.height(),
+        r_inv_disabled.width(),
+        r_inv_disabled.height()
+    ));
+
+    // 4. Disabled (spec §4.6).
+    ui.add_space(12.0);
+    ui.label("4. Disabled — whole element at 50% (§4.6); the disabled compositing model is an S5 question, not asserted here. Nova adds disabled fills (input/50 light, input/80 dark) before compositing.");
+    ui.add_space(4.0);
+    let r_dis_empty = Input::new(&mut values[7])
+        .id_salt("s3-disabled-empty")
+        .disabled(true)
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_dis_filled = Input::new(&mut values[8])
+        .id_salt("s3-disabled-filled")
+        .disabled(true)
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_dis_ph = Input::new(&mut values[9])
+        .id_salt("s3-disabled-placeholder")
+        .disabled(true)
+        .placeholder("Disabled field")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "measured: disabled empty {:.1} x {:.1} px; disabled filled {:.1} x {:.1} px; disabled placeholder {:.1} x {:.1} px (invalid+disabled is section 3, row 3)",
+        r_dis_empty.width(),
+        r_dis_empty.height(),
+        r_dis_filled.width(),
+        r_dis_filled.height(),
+        r_dis_ph.width(),
+        r_dis_ph.height()
+    ));
+
+    // 5. Password (spec §9; D8).
+    ui.add_space(12.0);
+    ui.label("5. Password — typed value masked; placeholder renders UNMASKED (spec §9; D8: text + password only)");
+    ui.add_space(4.0);
+    let r_pw_filled = Input::new(&mut values[10])
+        .id_salt("s3-password-filled")
+        .password(true)
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_pw_ph = Input::new(&mut values[11])
+        .id_salt("s3-password-placeholder")
+        .password(true)
+        .placeholder("Enter password")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "measured: password filled {:.1} x {:.1} px; password placeholder {:.1} x {:.1} px",
+        r_pw_filled.width(),
+        r_pw_filled.height(),
+        r_pw_ph.width(),
+        r_pw_ph.height()
+    ));
+
+    // 6. Widths (spec §3.3, OPEN-5).
+    ui.add_space(12.0);
+    ui.label("6. Widths — default w-full, explicit .width(240.0), horizontal-layout fallback (spec §3.3, OPEN-5)");
+    ui.add_space(4.0);
+    let r_w_full = Input::new(&mut values[12])
+        .id_salt("s3-width-full")
+        .placeholder("w-full: fills the available width")
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    let r_w_240 = Input::new(&mut values[13])
+        .id_salt("s3-width-240")
+        .width(240.0)
+        .show(ui)
+        .rect;
+    ui.add_space(4.0);
+    // Fallback case: the input sits in a horizontal row, where `w-full`
+    // has no containing block and the 160pt fallback applies (OPEN-5,
+    // `INPUT_FALLBACK_WIDTH`). The row rect is demo chrome:
+    // `ui.horizontal` sizes the row to `interact_size.y` (36px); the
+    // input allocates its own exact rect, printed below.
+    let row = ui.horizontal(|ui| {
+        Input::new(&mut values[14])
+            .id_salt("s3-width-fallback")
+            .show(ui)
+            .rect
+    });
+    let r_w_fb = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "measured: w-full {:.1} x {:.1} px; width(240) {:.1} x {:.1} px; fallback row {:.1} x {:.1} px, input {:.1} x {:.1} px (expected: fallback w=160)",
+        r_w_full.width(),
+        r_w_full.height(),
+        r_w_240.width(),
+        r_w_240.height(),
+        row_rect.width(),
+        row_rect.height(),
+        r_w_fb.width(),
+        r_w_fb.height()
+    ));
+
+    // 7. Hover target (spec §4.2: hover changes nothing).
+    ui.add_space(12.0);
+    ui.label(
+        "7. Hover target — no hover rule: hovering must equal resting, pixel-identical (spec §4.2)",
+    );
+    ui.add_space(4.0);
+    let resp = Input::new(&mut values[15])
+        .id_salt("s3-hover")
+        .placeholder("Hover me")
         .show(ui);
+    let hovered = resp.hovered();
+    let r_hover = resp.rect;
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; hovered: {hovered}",
+        r_hover.width(),
+        r_hover.height()
+    ));
+
+    // 8. Selection target (spec §5, OPEN-6).
+    ui.add_space(12.0);
+    ui.label("8. Selection target — select-all here (Ctrl/Cmd+A); selection bg primary, text primary-foreground (spec §5, OPEN-6 per-widget override)");
+    ui.add_space(4.0);
+    let r_sel = Input::new(&mut values[16])
+        .id_salt("s3-selection")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "selection target: {:.1} x {:.1} px; value: \"{}\"",
+        r_sel.width(),
+        r_sel.height(),
+        values[16]
+    ));
+
+    // 9. Char limit (spec §8.2; S1 documents the unit as Unicode scalars).
+    ui.add_space(12.0);
+    ui.label("9. Char limit — .char_limit(8); counting unit is Unicode scalar values (S1), not HTML maxLength UTF-16 units");
+    ui.add_space(4.0);
+    let r_limit = Input::new(&mut values[17])
+        .id_salt("s3-char-limit")
+        .char_limit(8)
+        .placeholder("Max 8 chars")
+        .show(ui)
+        .rect;
+    let n_chars = values[17].chars().count();
+    ui.label(format!(
+        "char-limit target: {:.1} x {:.1} px; length: {n_chars} / 8 chars",
+        r_limit.width(),
+        r_limit.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Fused inside a ButtonGroup");
-    ui.add_space(4.0);
-    ButtonGroup::new().show(ui, |ui| {
-        Input::new(&mut values[0]).width(200.0).show(ui);
-        Button::new("Subscribe").show(ui);
-    });
+    ui.label("Keyboard: Tab / Shift+Tab move focus; editing keys follow the native matrix (spec §7.1). Undo/redo, word jumps, paste newline-stripping, IME, and Escape are OPEN-10 — S6 observes the TextEdit mapping and reports. No fused/group row on this page: group fusing is the button-group line's page and input-group composition the input-group line's; the Input API exposes no group-position builder (position is auto-detected in show()).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
