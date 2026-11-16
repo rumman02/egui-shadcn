@@ -633,14 +633,18 @@ pub fn label_demo(ui: &mut egui::Ui) {
 
     // 8. `for_id` bound labels (spec §7). Each label is bound to its
     // target via `ui.scope_id().with(salt)`, which matches the target
-    // control's `.id_salt(salt)` (child Uis inherit the parent scope).
-    // OPEN-1 (click activates toggleable controls, or only focuses?)
-    // is UNESTABLISHED: this section exposes the bound pairs for S6
-    // and makes no parity claim about click behaviour. The labels take
-    // NO Tab stop (S1 sense fix; S6 verifies runtime, OPEN-6).
-    // Control state lives in egui temp data (gallery pattern).
+    // control's `.id_salt(salt)` (child Uis inherit the parent scope) —
+    // except the input pair (§8a), which binds the id captured from the
+    // `Input` response: `Input` shows its text edit inside a child
+    // scope, so its widget id is not `ui.scope_id().with(salt)` (S9
+    // finding F1; see `Label::for_id`). OPEN-1 is SETTLED (S6 Work B,
+    // Radix source): a label click fires a click on the labeled control
+    // (activation for checkbox/radio/switch/button; focus for text
+    // inputs) AND focuses it. The labels take NO Tab stop (S1 sense
+    // fix; S6 verifies runtime, OPEN-6). Control state lives in egui
+    // temp data (gallery pattern).
     ui.add_space(12.0);
-    ui.label("8. Bound labels — for_id targets (spec §7; OPEN-1 unestablished, no parity claim)");
+    ui.label("8. Bound labels — for_id targets (spec §7; OPEN-1 settled: click fires + focuses; §8a uses captured-id binding)");
     ui.add_space(4.0);
     let input_store = egui::Id::unique("label_demo_input_text");
     let mut input_text: String = ui
@@ -660,14 +664,23 @@ pub fn label_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp(dis_store).unwrap_or(false));
 
-    // 8a. Text input target.
+    // 8a. Text input target. The binding id is captured from the
+    // `Input` response: its widget id is computed inside a child scope
+    // (see `Label::for_id`), so the label binds the id captured on the
+    // previous pass (`Id::NULL` on the first pass targets no widget).
+    let input_id_store = egui::Id::unique("label_demo_input_id");
     let (lr, focused) = ui
         .horizontal(|ui| {
-            let target = ui.scope_id().with("label_demo_input");
+            let target = ui
+                .ctx()
+                .data_mut(|d| d.get_temp(input_id_store))
+                .unwrap_or(egui::Id::NULL);
             let lr = Label::new("Email").for_id(target).show(ui).rect;
             let resp = Input::new(&mut input_text)
                 .id_salt("label_demo_input")
                 .show(ui);
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(input_id_store, resp.id));
             (lr, resp.has_focus())
         })
         .inner;
