@@ -3085,55 +3085,244 @@ pub fn textarea_demo(ui: &mut egui::Ui) {
 }
 
 pub fn checkbox_demo(ui: &mut egui::Ui) {
+    // Header: recipe position, stated honestly (spec §§0, 6, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Checkbox — one size, no variants. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Box 16px, radius 4px, 1px border, 14px icon box, 3px ring (§3). Transition 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the OPEN-8 interim framework default, not snapshot-verified. OPEN-1 Radix key/click semantics are open for S6 Work B; OPEN-2 indeterminate rendering is PROVISIONAL (no icon); OPEN-4 combined-state precedence is PROVISIONAL.");
+
     let store = egui::Id::unique("checkbox_demo_values");
-    let mut values: [bool; 6] = ui.ctx().data_mut(|d| {
-        d.get_temp(store)
-            .unwrap_or([true, false, false, false, false, false])
+    let mut values: [bool; 13] = ui.ctx().data_mut(|d| {
+        d.get_temp(store).unwrap_or([
+            false, true, false, false, true, false, true, false, false, true, false, false, false,
+        ])
     });
 
-    ui.label("Default");
-    ui.add_space(4.0);
-    Checkbox::new(&mut values[0]).id_salt("cb_demo_1").show(ui);
-
+    // 1. Unchecked + checked, resting (spec §4.1). `ui.horizontal` sizes
+    // the row to `interact_size.y` (36px) — the row rect is demo chrome;
+    // each checkbox allocates its own exact 16px rect, printed below
+    // (separator/kbd S3 precedent: print both the row rect and the
+    // content rects so S5 judges geometry against the content rect).
     ui.add_space(12.0);
-    ui.label("With a bound label (click the text to toggle)");
+    ui.label("1. Unchecked + checked, resting (spec §4.1; box 16px, radius 4px, 1px border)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let id = egui::Id::unique("cb_demo_2");
-        Checkbox::new(&mut values[1]).id_salt("cb_demo_2").show(ui);
-        Label::new("Enable notifications").for_id(id).show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Indeterminate");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Checkbox::new(&mut values[2])
-            .indeterminate(true)
-            .id_salt("cb_demo_3")
+    let row = ui.horizontal(|ui| {
+        let r_off = Checkbox::new(&mut values[0])
+            .id_salt("cb_s3_rest_off")
             .show(ui);
-        ui.label("Select all (mixed state)");
+        let r_on = Checkbox::new(&mut values[1])
+            .id_salt("cb_s3_rest_on")
+            .show(ui);
+        (r_off.rect, r_on.rect)
     });
+    let (off_rect, on_rect) = row.inner;
+    ui.label(format!(
+        "row rect: {:.1} x {:.1} px (36px row height is the ui.horizontal artifact); unchecked: {:.1} x {:.1} px; checked: {:.1} x {:.1} px; checked state: {}",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        off_rect.width(),
+        off_rect.height(),
+        on_rect.width(),
+        on_rect.height(),
+        values[1]
+    ));
 
+    // 2. Focus target (spec §4.2): one checkbox with clear space around
+    // it, so S5/S6 focus captures are unambiguous.
     ui.add_space(12.0);
-    ui.label("Disabled");
+    ui.label("2. Focus target (spec §4.2: border `ring` + 3px `ring/50` ring; ring on any egui focus, D1 proposed)");
+    ui.add_space(8.0);
+    let resp = Checkbox::new(&mut values[2])
+        .id_salt("cb_s3_focus")
+        .show(ui);
+    let focus_rect = resp.rect;
+    let focused = resp.has_focus();
+    ui.add_space(8.0);
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; checked: {}; focused: {}",
+        focus_rect.width(),
+        focus_rect.height(),
+        values[2],
+        focused
+    ));
+
+    // 3. Invalid (spec §4.5): the base/nova split is the judgement —
+    // nova shows the 3px rest ring unfocused, base shows the destructive
+    // border with NO unfocused ring.
+    ui.add_space(12.0);
+    ui.label("3. Invalid (spec §4.5: nova shows the 3px rest ring unfocused + /50 dark border; base shows the destructive border with NO unfocused ring)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Checkbox::new(&mut values[3]).disabled(true).show(ui);
-        Checkbox::new(&mut values[4])
+    let row = ui.horizontal(|ui| {
+        let r_off = Checkbox::new(&mut values[3])
+            .invalid(true)
+            .id_salt("cb_s3_inv_off")
+            .show(ui);
+        let r_on = Checkbox::new(&mut values[4])
+            .invalid(true)
+            .id_salt("cb_s3_inv_on")
+            .show(ui);
+        (r_off.rect, r_on.rect)
+    });
+    let (off_rect, on_rect) = row.inner;
+    ui.label(format!(
+        "row rect: {:.1} x {:.1} px; invalid unchecked: {:.1} x {:.1} px; invalid checked: {:.1} x {:.1} px",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        off_rect.width(),
+        off_rect.height(),
+        on_rect.width(),
+        on_rect.height()
+    ));
+
+    // 4. Disabled (spec §4.3): whole element at 50% incl. the faded
+    // shadow, no focus chrome. The third box is E1 (indeterminate +
+    // disabled): unchecked recipe at 50%, no icon (provisional).
+    ui.add_space(12.0);
+    ui.label("4. Disabled (spec §4.3: whole element at 50% incl. faded shadow, no focus chrome; third box is E1 indeterminate+disabled)");
+    ui.add_space(4.0);
+    let row = ui.horizontal(|ui| {
+        let r_off = Checkbox::new(&mut values[5])
             .disabled(true)
-            .id_salt("cb_demo_5")
+            .id_salt("cb_s3_dis_off")
             .show(ui);
-        ui.label("Disabled unchecked");
+        let r_on = Checkbox::new(&mut values[6])
+            .disabled(true)
+            .id_salt("cb_s3_dis_on")
+            .show(ui);
+        let r_ind = Checkbox::new(&mut values[7])
+            .disabled(true)
+            .indeterminate(true)
+            .id_salt("cb_s3_dis_ind")
+            .show(ui);
+        (r_off.rect, r_on.rect, r_ind.rect)
     });
+    let (off_rect, on_rect, ind_rect) = row.inner;
+    ui.label(format!(
+        "row rect: {:.1} x {:.1} px; disabled unchecked: {:.1} x {:.1} px; disabled checked: {:.1} x {:.1} px; disabled indeterminate (E1): {:.1} x {:.1} px",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        off_rect.width(),
+        off_rect.height(),
+        on_rect.width(),
+        on_rect.height(),
+        ind_rect.width(),
+        ind_rect.height()
+    ));
 
+    // 5. Indeterminate (spec §4.4 / OPEN-2): PROVISIONAL rendering —
+    // unchecked-recipe box, NO icon. The minus glyph was removed as a
+    // port invention (D3); whether the Radix Indicator renders (and
+    // what glyph) awaits S6 Work B / S4 evidence. S5 must NOT judge
+    // this row as parity and must NOT file the missing icon.
     ui.add_space(12.0);
-    ui.label("Invalid");
+    ui.label("5. Indeterminate — PROVISIONAL (spec §4.4 / OPEN-2: unchecked-recipe box, NO icon; pending Radix Indicator evidence, S6 Work B / S4 — NOT parity, do not file the missing icon)");
     ui.add_space(4.0);
-    Checkbox::new(&mut values[5]).invalid(true).show(ui);
+    let row = ui.horizontal(|ui| {
+        let r_ind = Checkbox::new(&mut values[8])
+            .indeterminate(true)
+            .id_salt("cb_s3_ind")
+            .show(ui);
+        let r_e5 = Checkbox::new(&mut values[9])
+            .indeterminate(true)
+            .id_salt("cb_s3_e5")
+            .show(ui);
+        (r_ind.rect, r_e5.rect)
+    });
+    let (ind_rect, e5_rect) = row.inner;
+    ui.label(format!(
+        "PROVISIONAL row rect: {:.1} x {:.1} px; indeterminate unchecked: {:.1} x {:.1} px; E5 indeterminate + checked (renders as checked, OPEN-3 proposal): {:.1} x {:.1} px",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        ind_rect.width(),
+        ind_rect.height(),
+        e5_rect.width(),
+        e5_rect.height()
+    ));
+
+    // 6. Bound label + checkbox pair (spec §7.3, settled label rule).
+    // Captured-id binding (scoped-widget id rule): the label binds the
+    // id captured from the checkbox's returned `Response::id` on this
+    // same pass, so the label's forwarding reaches the checkbox's
+    // actual widget id. The old demo bound a fresh `Id::unique`, which
+    // matched no widget. The second row is the disabled pair: a label
+    // click must do nothing (no toggle, no focus).
+    ui.add_space(12.0);
+    ui.label("6. Bound label + checkbox pair (spec §7.3, settled label rule: label click toggles AND focuses; direct click fires exactly once; disabled pair does nothing)");
+    ui.add_space(4.0);
+    let row = ui.horizontal(|ui| {
+        let resp = Checkbox::new(&mut values[10])
+            .id_salt("cb_s3_label")
+            .show(ui);
+        let lr = Label::new("Enable notifications")
+            .for_id(resp.id)
+            .show(ui)
+            .rect;
+        (resp.rect, lr, resp.has_focus())
+    });
+    let (cb_rect, label_rect, focused) = row.inner;
+    ui.label(format!(
+        "row rect: {:.1} x {:.1} px; checkbox: {:.1} x {:.1} px; label: {:.1} x {:.1} px; checked: {}; checkbox focused: {}",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        cb_rect.width(),
+        cb_rect.height(),
+        label_rect.width(),
+        label_rect.height(),
+        values[10],
+        focused
+    ));
+    ui.add_space(4.0);
+    let row = ui.horizontal(|ui| {
+        let resp = Checkbox::new(&mut values[11])
+            .disabled(true)
+            .id_salt("cb_s3_label_disabled")
+            .show(ui);
+        let lr = Label::new("Disabled option").for_id(resp.id).show(ui).rect;
+        (resp.rect, lr, resp.has_focus())
+    });
+    let (cb_rect, label_rect, focused) = row.inner;
+    ui.label(format!(
+        "disabled pair — row rect: {:.1} x {:.1} px; checkbox: {:.1} x {:.1} px; label: {:.1} x {:.1} px; checked: {}; checkbox focused: {} (label click must do nothing)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        cb_rect.width(),
+        cb_rect.height(),
+        label_rect.width(),
+        label_rect.height(),
+        values[11],
+        focused
+    ));
+
+    // 7. Hover target (spec §4.9): one checkbox with clear space around
+    // it, so S5/S6 hover captures are unambiguous.
+    ui.add_space(12.0);
+    ui.label("7. Hover target (spec §4.9: NO hover rule — hover must equal resting)");
+    ui.add_space(8.0);
+    let resp = Checkbox::new(&mut values[12])
+        .id_salt("cb_s3_hover")
+        .show(ui);
+    let hover_rect = resp.rect;
+    let hovered = resp.hovered();
+    ui.add_space(8.0);
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; checked: {}; hovered: {}",
+        hover_rect.width(),
+        hover_rect.height(),
+        values[12],
+        hovered
+    ));
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab to a checkbox, press Space or Enter to toggle.");
+    ui.label("Keyboard: Tab moves focus (one stop per checkbox expected, OPEN-1). Which keys toggle, keydown-vs-keyup timing, and click-to-focus behaviour are OPEN-1 (Radix, S6 Work B); the current click-sense activation is implementation, not spec truth.");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
