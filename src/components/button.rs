@@ -1725,12 +1725,10 @@ pub(crate) mod group {
         /// `data-slot="button-group"` (a nested group, as a direct child).
         /// First constructed by the S1b wiring step in `button_group.rs`;
         /// exercised by tests meanwhile.
-        #[allow(dead_code)]
         ButtonGroup,
         /// `data-slot="button-group-separator"`.
         /// First constructed by the S1b wiring step in `button_group.rs`;
         /// exercised by tests meanwhile.
-        #[allow(dead_code)]
         ButtonGroupSeparator,
         /// `data-slot="select-trigger"` (Batch F interface).
         /// Not constructed until Batch F wires select triggers; the
@@ -1938,7 +1936,6 @@ pub(crate) mod group {
     ///
     /// First called by the S1b wiring step in `button_group.rs`;
     /// exercised by tests meanwhile.
-    #[allow(dead_code)]
     pub(crate) fn last_slot_child(ui: &Ui, id: Id) -> Option<usize> {
         read_state(ui.ctx(), id).and_then(|state| state.last_slot_child)
     }
@@ -1953,7 +1950,6 @@ pub(crate) mod group {
     ///
     /// First called by the S1b wiring step in `button_group.rs`;
     /// exercised by tests meanwhile.
-    #[allow(dead_code)]
     pub(crate) fn set_last_slot_child(ui: &Ui, id: Id, index: Option<usize>) {
         let ctx = ui.ctx().clone();
         let mut state = read_state(&ctx, id).unwrap_or(GroupState {
@@ -1976,7 +1972,6 @@ pub(crate) mod group {
     ///
     /// First called by the S1b wiring step in `button_group.rs`;
     /// exercised by tests meanwhile.
-    #[allow(dead_code)]
     pub(crate) fn push_stretch_target(ctx: &Context, target: StretchTarget) {
         ctx.data_mut(|d| {
             let mut stack: Vec<StretchTarget> = d.get_temp(stretch_stack_id()).unwrap_or_default();
@@ -1990,7 +1985,6 @@ pub(crate) mod group {
     ///
     /// First called by the S1b wiring step in `button_group.rs`;
     /// exercised by tests meanwhile.
-    #[allow(dead_code)]
     pub(crate) fn pop_stretch_target(ctx: &Context) {
         ctx.data_mut(|d| {
             let mut stack: Vec<StretchTarget> = d.get_temp(stretch_stack_id()).unwrap_or_default();
