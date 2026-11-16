@@ -1440,18 +1440,18 @@ pub fn marker_demo(ui: &mut egui::Ui) {
         row_rect.bottom() - 0.5
     ));
     ui.add_space(4.0);
-    // AMBIGUITY (S1 flag 1; S5 rules): §12 reads "Empty marker: 16px
-    // tall"; §4.1 keeps the border minimum at 25px (16+8+1). Implemented
-    // 25px per §4.1. The readout is the OBSERVED height, not a settled
-    // claim — do not read it as resolving the ambiguity.
-    ui.label("EMPTY border row — AMBIGUITY, S5 rules: §12 \"Empty marker: 16px tall\" vs §4.1 border minimum 25px (16+8+1). Implemented 25px per §4.1 (S1 flag 1).");
+    // Ruled 16px total (S5 ruling, MRK-VIS-01 fixed by S9 7ff3f66):
+    // base `min-h-4` + border `border-b pb-2` under border-box
+    // (Tailwind v4 Preflight) => max(16, content + 9); the 8px padding
+    // + 1px rule fit inside the 16px minimum for empty content.
+    ui.label("EMPTY border row — ruled 16px total: border-box floor max(16, content + 9) (S5 ruling; MRK-VIS-01 fixed by S9 7ff3f66).");
     let row = Marker::new()
         .variant(MarkerVariant::Border)
         .id_salt("s3-empty")
         .show(ui, |_ui| {});
     let row_rect = row.response.rect;
     ui.label(format!(
-        "empty border: row {:.1} x {:.1} px (observed; S5 rules on the §12-vs-§4.1 reading)",
+        "empty border: row {:.1} x {:.1} px (ruled 16px total, border-box floor)",
         row_rect.width(),
         row_rect.height()
     ));
