@@ -1,18 +1,71 @@
 //! shadcn `radio-group.tsx` — mutually exclusive option selector.
 //!
-//! Ported from `apps/v4/registry/new-york-v4/ui/radio-group.tsx`:
-//! `RadioGroup` lays items out in a `grid gap-3`; each `RadioGroupItem` is a
-//! `size-4 rounded-full border border-input shadow-xs` circle whose
-//! indicator is a `size-2 fill-primary` dot (`dark:bg-input/30`), with the
-//! shared focus/invalid/disabled styles.
+//! Rebuilt to the frozen Batch B S0 spec (`~/workspace/batch-b/specs/
+//! radio-group-spec.md`, Coordinator-signed 2026-11-16) plus two binding
+//! coordinator rulings: the N2 / OPEN-5 Option C decision
+//! (`~/workspace/batch-b/reports/radio-group-n2-coordinator-note.md`) and
+//! the narrow `transition-[color,box-shadow]` reading
+//! (`~/workspace/batch-b/reports/transition-color-narrow-reading-coordinator-note.md`).
 //!
-//! Nova recipe deltas: the group gaps at `gap-2`, and the checked item is a
-//! solid primary disc (`data-checked:bg-primary data-checked:border-primary`)
-//! whose indicator dot is `bg-primary-foreground`.
+//! The original is `RadioGroup` + `RadioGroupItem` wrapping Radix
+//! primitives (`radio-group.tsx`, 44 lines). The group recipe is
+//! `grid gap-3` (`radio-group.tsx:15`); the item recipe is
+//! `aspect-square size-4 shrink-0 rounded-full border border-input
+//! text-primary shadow-xs transition-[color,box-shadow] outline-none
+//! focus-visible:border-ring focus-visible:ring-[3px]
+//! focus-visible:ring-ring/50 disabled:cursor-not-allowed
+//! disabled:opacity-50 aria-invalid:border-destructive
+//! aria-invalid:ring-destructive/20 dark:bg-input/30
+//! dark:aria-invalid:ring-destructive/40` (`radio-group.tsx:29`); the
+//! indicator is an 8px `fill-primary` dot (`:34-39`).
 //!
-//! Radix behavior is preserved: clicking an item selects it, Arrow keys move
-//! the selection and focus (no wrap-around; egui spatial navigation), and
-//! Space selects the focused item.
+//! Nova deltas (`.cn-radio-group` / `.cn-radio-group-item`,
+//! `style-nova.css:968-975`): the group gaps at `gap-2` (8px); the checked
+//! item is a solid primary disc (`data-checked:bg-primary
+//! data-checked:border-primary`) whose dot is `bg-primary-foreground`
+//! (`style-nova.css:980-986`); invalid items show a 3px rest ring
+//! (`aria-invalid:ring-3`) and a `destructive/50` border in dark mode;
+//! inside a focused field-label card the ring is suppressed and the
+//! border forced (`group-has-[:focus-visible]/field-label:*` rules).
+//! Under the settled LAYER ruling, everything nova is silent on —
+//! `shadow-xs`, the transition, `outline-none`, the `disabled:*` rules —
+//! keeps its base value.
+//!
+//! Labels (N2, spec §8.3 + coordinator ruling): the original renders NO
+//! labels — callers compose a separate `Label`. The Rust [`RadioGroup`]
+//! API promises visible labels (`.option("...")`), so the group renders
+//! each option's label by composing the frozen [`Label`] component
+//! (Option C, proposed deviation D5): an 8px circle–label gap, 16px
+//! rows, label text per the frozen label spec, and click-forwarding per
+//! the settled label-click rule (a label click fires a click on the
+//! item AND focuses it; direct clicks fire exactly once). The 8px gap /
+//! 16px row values are a documented coordinator invention — the original
+//! states no inline-label rule (OPEN-10, moot for the group renderer).
+//! An empty label string renders the circle only. The standalone
+//! [`RadioGroupItem`] takes no label and is unaffected.
+//!
+//! Animation (spec §6 AS RULED): `transition-[color,box-shadow]` reads
+//! narrowly — the CSS `color` property (text colour) and `box-shadow`
+//! (the ring) animate; border-colour and fill changes SNAP. The ring
+//! fades in/out and eases between colours on the interim 150ms
+//! framework-default timing (OPEN-6); everything else is instant.
+//! Opacity is in neither transition list, so the disabled fade is
+//! instant.
+//!
+//! Keyboard/click (spec §7): the Radix rules are OPEN-1–OPEN-4 —
+//! hypotheses for S6 Work B from Radix source, NOT established by the
+//! snapshot. This build implements the current egui-natural behaviour
+//! (spatial arrow navigation, selection follows focus, Space activates
+//! the focused item, clicks select and never uncheck) and records it as
+//! implementation, not spec truth. There is no Home/End handling and no
+//! arrow wrap-around in this build; whether Radix provides them is for
+//! S6 to settle. Focus-visible modality is proposed deviation D1 (the
+//! ring shows on any focus; egui cannot distinguish keyboard from
+//! pointer focus).
+//!
+//! Focus+invalid border precedence is deliberately NOT frozen by the
+//! spec (§4 precedence note): this build keeps invalid-wins as
+//! explicitly PROVISIONAL; S4/S5 own the cell.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -27,13 +80,36 @@
 //! ```
 
 use crate::components::button::GroupOrientation;
+use crate::components::label::{label_font, Label};
+use crate::theme::tokens::type_scale;
 use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
-use egui::{Color32, CornerRadius, Rect, Response, Sense, Stroke, Ui, Vec2, Widget};
+use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
+use crate::utils::focus::paint_ring;
+use crate::utils::shadow::{
+    paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
+};
+use egui::{
+    Align, Color32, Context, CornerRadius, Id, Layout, Painter, Pos2, Rect, Response, Sense,
+    Stroke, Ui, UiBuilder, Vec2, Widget,
+};
 
 /// `size-4` — the radio item side length.
 pub const RADIO_SIZE: f32 = 16.0;
 /// `size-2` — the selected indicator dot diameter.
 pub const RADIO_DOT_SIZE: f32 = 8.0;
+/// Circle–label gap inside a group row: the frozen D5 invented layout
+/// value (coordinator ruling — the original states no inline-label rule).
+pub const RADIO_LABEL_GAP: f32 = 8.0;
+
+/// `focus-visible:ring-[3px]` / `aria-invalid:ring-3` — the ring band
+/// width (spec §3.5).
+const RING_WIDTH: f32 = 3.0;
+/// Circle radius: `rounded-full` is half the 16px box (spec §3.1). The
+/// theme radius scale does not apply to this component.
+const RADIO_RADIUS: f32 = RADIO_SIZE / 2.0;
+/// Label line box: `text-sm` 14px `leading-none` (frozen label spec §3.1).
+/// The 14px line centres against the 16px row (1px inset top/bottom).
+const LABEL_LINE_H: f32 = type_scale::SM;
 
 /// The gap between items in the group: base `gap-3` (12), nova `gap-2` (8).
 fn gap(style: Style) -> f32 {
@@ -43,10 +119,19 @@ fn gap(style: Style) -> f32 {
     }
 }
 
+/// The §6 transition timing: Tailwind v4 framework defaults (150ms,
+/// `cubic-bezier(0.4, 0, 0.2, 1)`), INTERIM per OPEN-6 — an explicitly
+/// unverified framework-default hypothesis, not snapshot truth. S7
+/// judges timing only after OPEN-6 closes.
+fn interim_spec() -> TransitionSpec {
+    TransitionSpec::default()
+}
+
 /// One selectable option inside a [`RadioGroup`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RadioOption {
-    /// The visible label.
+    /// The visible label, rendered beside the circle (8px gap, 16px row
+    /// — the frozen D5 layout). An empty string renders the circle only.
     pub label: String,
     /// `disabled` — the option cannot be selected.
     pub disabled: bool,
@@ -70,15 +155,34 @@ impl RadioOption {
     }
 }
 
+/// The state inputs to [`resolve_radio_colors`] (one bundle keeps the
+/// resolver signature small and the state-matrix tests readable).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RadioState {
+    checked: bool,
+    invalid: bool,
+    focused: bool,
+    disabled: bool,
+    /// The D6 field-label suppression flag ([`RadioGroup::suppress_focus_indication`]).
+    /// Only meaningful under nova; inert under the base recipe.
+    suppressed: bool,
+}
+
 /// Resolved colors for one radio item state (pure, unit-testable).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RadioColors {
     fill: Color32,
     stroke: Stroke,
-    /// Focus ring color (alpha already applied).
+    /// Focus/invalid ring color at full visibility (alpha already applied).
     ring: Color32,
+    /// Whether the ring is visible per the §4 state table, before the §6
+    /// visibility leg ([`animate_ring`]).
+    ring_shown: bool,
     /// Indicator dot color (`Color32::TRANSPARENT` when unchecked).
     dot: Color32,
+    /// `shadow-xs` paints in every state (spec §2.2 — no rule excludes
+    /// any state, and nova is silent so it survives under LAYER).
+    shadow_shown: bool,
 }
 
 /// Mirrors the base recipe: `border-input dark:bg-input/30`, indicator
@@ -89,49 +193,81 @@ pub(crate) struct RadioColors {
 /// data-checked:border-primary` with a `bg-primary-foreground` dot (solid
 /// disc), `dark:aria-invalid:border-destructive/50`, and
 /// `aria-invalid:aria-checked:border-primary` (a checked item keeps its
-/// primary border even when invalid), plus `focus-visible:border-ring`.
+/// primary border even when invalid), plus `focus-visible:border-ring`
+/// and the invalid rest ring (`aria-invalid:ring-3`).
+///
+/// Precedence (spec §4 note): the focus+invalid border cell is NOT
+/// frozen — this resolver keeps invalid-wins as explicitly PROVISIONAL.
+/// The frozen cells are: invalid+checked (nova, unfocused) keeps the
+/// primary border; focus-visible (valid, any checked state) takes the
+/// `ring` border; suppression (nova) forces the border and kills the
+/// ring unconditionally.
 pub(crate) fn resolve_radio_colors(
     p: &Palette,
     dark: bool,
     style: Style,
-    checked: bool,
-    invalid: bool,
-    focused: bool,
+    state: RadioState,
 ) -> RadioColors {
     let nova = style == Style::Nova;
-    let fill = if nova && checked {
+    let suppressed_nova = state.suppressed && nova;
+    let fill = if nova && state.checked {
         p.primary
     } else if dark {
         color_alpha(p.input, 0.3)
     } else {
         Color32::TRANSPARENT
     };
-    let stroke_color = if nova && checked {
-        // `data-checked:border-primary aria-invalid:aria-checked:border-primary`
-        p.primary
-    } else if invalid {
-        // `aria-invalid:border-destructive` (nova fades the dark border: /50)
-        if nova && dark {
+    let stroke_color = if suppressed_nova {
+        // D6: the field-label card's `group-has-*` rules force the border
+        // (`ring-0` + forced border); suppression wins over invalid and
+        // focus alike (spec §2.4 / §4 last row).
+        if state.checked {
+            p.primary
+        } else {
+            p.input
+        }
+    } else if state.invalid {
+        // PROVISIONAL precedence (spec §4 note): invalid wins over focus.
+        // Only the unfocused cells below are frozen; S4/S5 own the
+        // focus+invalid cell.
+        if nova && state.checked {
+            // `aria-invalid:aria-checked:border-primary` (frozen unfocused).
+            p.primary
+        } else if nova && dark {
+            // `dark:aria-invalid:border-destructive/50` (N5).
             color_alpha(p.destructive, 0.5)
         } else {
+            // `aria-invalid:border-destructive`.
             p.destructive
         }
-    } else if focused {
-        // `focus-visible:border-ring` (invalid wins: handled above)
+    } else if state.focused {
+        // `focus-visible:border-ring` (valid, any checked state — §4 focus row).
         p.ring
+    } else if nova && state.checked {
+        // `data-checked:border-primary`.
+        p.primary
     } else {
         p.input
     };
-    let ring = if invalid {
+    let ring = if state.invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
     } else {
         color_alpha(p.ring, 0.5)
     };
+    // The ring shows on focus (a disabled item cannot take focus, so the
+    // focus leg is gated on `!disabled`) or — nova only — at rest when
+    // invalid (`aria-invalid:ring-3`). The invalid rest ring is a state
+    // rule, not a focus rule, so it shows on a disabled invalid item too
+    // (faded to 50% at paint, spec §4 disabled row: "Ring: as above").
+    // Suppression kills the ring unconditionally under nova.
+    let ring_shown =
+        !suppressed_nova && ((state.focused && !state.disabled) || (state.invalid && nova));
     RadioColors {
         fill,
         stroke: Stroke::new(1.0, stroke_color),
         ring,
-        dot: if checked {
+        ring_shown,
+        dot: if state.checked {
             if nova {
                 p.primary_foreground
             } else {
@@ -140,73 +276,179 @@ pub(crate) fn resolve_radio_colors(
         } else {
             Color32::TRANSPARENT
         },
+        shadow_shown: true,
+    }
+}
+
+/// The animated ring paint color for one item frame (§6 AS RULED: the
+/// `box-shadow` leg animates; border/fill/dot snap and never pass
+/// through this helper).
+///
+/// The ring's visibility fades (`transition_alpha`) and its colour eases
+/// between the focus and invalid endpoints (`transition_color_to`), both
+/// on the interim spec (OPEN-6). Callers invoke this EVERY frame for
+/// every item — even when the ring is hidden and even when the item
+/// rect is off-screen — so the animator state stays fresh: a first call
+/// for an id returns the target immediately (no fade-in on mount), and a
+/// leg only runs when `ring_shown` flips after the id has been driven.
+/// Skipping the call while hidden would make the ring pop in at full
+/// strength on focus.
+///
+/// Returns the fully transparent color when the ring is settled-hidden;
+/// [`paint_radio`] skips the ring then.
+fn animate_ring(ctx: &Context, id: Id, colors: &RadioColors) -> Color32 {
+    let spec = interim_spec();
+    let visibility = transition_alpha(
+        ctx,
+        id.with("ring_visibility"),
+        0.0,
+        1.0,
+        colors.ring_shown,
+        spec,
+    );
+    let colour = transition_color_to(ctx, id.with("ring_colour"), colors.ring, spec);
+    color_alpha(colour.color, visibility.alpha)
+}
+
+/// Paints the item's `shadow-xs` through the LAYER resolution API
+/// (`ShadowSlot::RadioItem` is silent in all 8 style files, so the base
+/// value survives under every style). When disabled, the shadow fades
+/// with the element's target opacity: the layer alphas scale on the
+/// stack (same shape as the button's `paint_outline_shadow`).
+fn paint_radio_shadow(
+    painter: &Painter,
+    rect: Rect,
+    corner: CornerRadius,
+    style: Style,
+    dark: bool,
+    disabled: bool,
+) {
+    if disabled {
+        let layers = resolve_shadow(ShadowSize::Xs, style, ShadowSlot::RadioItem).layers();
+        // Tailwind shadows have at most two layers; the stack buffer covers
+        // every size in the scale.
+        let mut faded = [ShadowLayer {
+            offset: [0.0, 0.0],
+            blur: 0.0,
+            spread: 0.0,
+            alpha: 0.0,
+        }; 2];
+        let n = layers.len().min(2);
+        for (i, layer) in layers.iter().take(2).enumerate() {
+            faded[i] = ShadowLayer {
+                alpha: layer.alpha * 0.5,
+                ..*layer
+            };
+        }
+        paint_shadow_layers(painter, rect, corner, &faded[..n], dark);
+    } else {
+        paint_shadow_resolved(
+            painter,
+            rect,
+            corner,
+            ShadowSize::Xs,
+            style,
+            ShadowSlot::RadioItem,
+            dark,
+        );
     }
 }
 
 /// Paints one radio item on the given rect (shared by group and standalone).
+///
+/// `ring_color` is the animated ring color from [`animate_ring`]
+/// (transparent when the ring is hidden); every other slot paints its
+/// resolved color directly — border, fill, and dot SNAP per the narrow
+/// §6 ruling and never animate.
 pub(crate) fn paint_radio(
     ui: &Ui,
     rect: Rect,
     colors: &RadioColors,
+    ring_color: Color32,
     disabled: bool,
-    focused: bool,
-    radius: u8,
+    dark: bool,
+    style: Style,
 ) {
     if !ui.is_rect_visible(rect) {
         return;
     }
     let painter = ui.painter();
-    let corner = CornerRadius::same(radius);
+    // `rounded-full`: the corner radius is half the 16px box (8px).
+    let corner = CornerRadius::same(8);
 
-    // `shadow-xs`
-    if !disabled {
-        let dark = ShadcnTheme::of_ui(ui).mode.is_dark();
-        let sh = crate::utils::shadow::shadow_xs(dark);
-        painter.add(
-            egui::epaint::RectShape::filled(
-                rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                corner,
-                sh.color,
-            )
-            .with_blur_width(2.0),
-        );
+    if colors.shadow_shown {
+        paint_radio_shadow(painter, rect, corner, style, dark, disabled);
     }
 
+    // `disabled:opacity-50`: one composition point — every painted slot
+    // halves, so no slot double-fades.
     let mut fill = colors.fill;
     let mut stroke = colors.stroke;
     let mut dot = colors.dot;
+    let mut ring = ring_color;
     if disabled {
-        // `disabled:opacity-50`
         fill = color_alpha(fill, 0.5);
         stroke.color = color_alpha(stroke.color, 0.5);
         dot = color_alpha(dot, 0.5);
+        ring = color_alpha(ring, 0.5);
     }
 
     painter.rect_filled(rect, corner, fill);
-    painter.circle_stroke(rect.center(), RADIO_SIZE / 2.0, stroke);
+    // 1px border INSIDE the 16px box (§3.1, border-box): epaint circle
+    // strokes render OUTSIDE the given radius (`PathStroke::outside` in
+    // `tessellate_circle`), so the stroke radius is the outer radius
+    // minus the stroke width (7px), not the box radius (8px).
+    painter.circle_stroke(rect.center(), RADIO_RADIUS - stroke.width, stroke);
 
-    // `size-2 fill-primary` indicator dot.
+    // `size-2` indicator dot. Presence is instant — no animation class
+    // governs the indicator's mount/unmount (spec §6).
     if colors.dot != Color32::TRANSPARENT {
         painter.circle_filled(rect.center(), RADIO_DOT_SIZE / 2.0, dot);
     }
 
-    // `focus-visible:border-ring focus-visible:ring-[3px]
-    // focus-visible:ring-ring/50`
-    if focused && !disabled {
-        let ring_rect = rect.expand2(egui::vec2(1.0, 1.0));
-        crate::utils::focus::paint_ring(painter, ring_rect, colors.ring, 3.0, radius as f32);
+    // 3px ring band starting at the outer edge of the border box, on the
+    // UNEXPANDED rect (`paint_ring` strokes outside; expanding first
+    // would leave a 1px gap between border and ring).
+    if ring.a() > 0 {
+        paint_ring(painter, rect, ring, RING_WIDTH, RADIO_RADIUS);
     }
+}
+
+/// Width of one option label in the frozen label typography: 14px Inter
+/// Medium 500, no wrap (the D5 row never wraps — spec §8.3 ruling).
+fn measure_label_width(ui: &Ui, text: &str) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), label_font(), Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+/// The label's rect inside its row: 8px right of the circle (the frozen
+/// D5 gap), on a 14px line box centred against the 16px row (1px inset
+/// top and bottom).
+fn label_rect_in_row(row_rect: Rect, label_w: f32) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            row_rect.min.x + RADIO_SIZE + RADIO_LABEL_GAP,
+            row_rect.min.y + (RADIO_SIZE - LABEL_LINE_H) / 2.0,
+        ),
+        Vec2::new(label_w, LABEL_LINE_H),
+    )
 }
 
 /// A single radio circle bound to a boolean (`RadioGroupItem`).
 ///
-/// Clicking or pressing Space selects it (radios never uncheck themselves).
-/// For a group of mutually exclusive options prefer [`RadioGroup`].
+/// Clicking selects it (radios never uncheck themselves). Space
+/// activation of the focused item is the current egui-natural behaviour;
+/// the Radix activation rules are OPEN-3 hypotheses (spec §7), not
+/// established truth. For a group of mutually exclusive options prefer
+/// [`RadioGroup`].
 #[derive(Debug)]
 pub struct RadioGroupItem<'a> {
     checked: &'a mut bool,
     disabled: bool,
     invalid: bool,
+    suppress_focus_indication: bool,
     id_salt: Option<String>,
 }
 
@@ -217,11 +459,12 @@ impl<'a> RadioGroupItem<'a> {
             checked,
             disabled: false,
             invalid: false,
+            suppress_focus_indication: false,
             id_salt: None,
         }
     }
 
-    /// Disables the item (`disabled:opacity-50 disabled:pointer-events-none`).
+    /// Disables the item (`disabled:opacity-50 disabled:cursor-not-allowed`).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -230,6 +473,22 @@ impl<'a> RadioGroupItem<'a> {
     /// Marks the item aria-invalid.
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Suppresses the item's own focus indication (ring + border recolor)
+    /// when the item sits inside a FieldLabel choice card that shows the
+    /// focus indication itself. This is the item-side mechanism for the
+    /// nova rules `group-has-[:focus-visible]/field-label:ring-0
+    /// group-has-[:focus-visible]/field-label:not-data-checked:border-input
+    /// group-has-[:focus-visible]/field-label:data-checked:border-primary`
+    /// (`style-nova.css:972-974`; spec §2.4, D6): the composing card sets
+    /// this flag each frame from its own focus-inside state. The field
+    /// line owns the composition contract. Nova-only; a no-op under the
+    /// base recipe. Suppression wins over invalid and focus alike (the
+    /// literal rule reading: `ring-0` + forced border).
+    pub fn suppress_focus_indication(mut self, suppress: bool) -> Self {
+        self.suppress_focus_indication = suppress;
         self
     }
 
@@ -262,22 +521,23 @@ impl<'a> RadioGroupItem<'a> {
             response.mark_changed();
         }
 
-        let checked = *self.checked;
-        let colors = resolve_radio_colors(
-            &p,
-            theme.mode.is_dark(),
-            theme.style,
-            checked,
-            self.invalid,
-            response.has_focus(),
-        );
+        let state = RadioState {
+            checked: *self.checked,
+            invalid: self.invalid,
+            focused: response.has_focus(),
+            disabled: self.disabled,
+            suppressed: self.suppress_focus_indication,
+        };
+        let colors = resolve_radio_colors(&p, theme.mode.is_dark(), theme.style, state);
+        let ring = animate_ring(ui.ctx(), id, &colors);
         paint_radio(
             ui,
             rect,
             &colors,
+            ring,
             self.disabled,
-            response.has_focus(),
-            theme.radius.md_u8(),
+            theme.mode.is_dark(),
+            theme.style,
         );
 
         response
@@ -291,6 +551,10 @@ impl Widget for RadioGroupItem<'_> {
 }
 
 /// A shadcn radio group. See the [module docs](self) for an example.
+///
+/// Each option renders its label beside its circle (the frozen D5
+/// layout: 8px gap, 16px rows, label per the frozen label spec); an
+/// empty label string renders the circle only.
 #[derive(Debug)]
 pub struct RadioGroup<'a> {
     selected: &'a mut Option<usize>,
@@ -298,11 +562,14 @@ pub struct RadioGroup<'a> {
     orientation: GroupOrientation,
     disabled: bool,
     invalid: bool,
+    suppress_focus_indication: bool,
     id_salt: Option<String>,
 }
 
 impl<'a> RadioGroup<'a> {
     /// Creates a group bound to the selected index (`None` = no selection).
+    /// An out-of-range index selects nothing (Rust-only edge case, spec
+    /// §9 — no original analogue); the value itself is left untouched.
     pub fn new(selected: &'a mut Option<usize>) -> Self {
         Self {
             selected,
@@ -310,11 +577,13 @@ impl<'a> RadioGroup<'a> {
             orientation: GroupOrientation::Vertical,
             disabled: false,
             invalid: false,
+            suppress_focus_indication: false,
             id_salt: None,
         }
     }
 
-    /// Adds an enabled option (`RadioGroupItem` with a label).
+    /// Adds an enabled option (`RadioGroupItem` with a label, rendered
+    /// beside the circle per the frozen D5 layout).
     pub fn option(mut self, label: impl Into<String>) -> Self {
         self.options.push(RadioOption::new(label));
         self
@@ -334,7 +603,9 @@ impl<'a> RadioGroup<'a> {
     }
 
     /// Sets the layout orientation (`grid` is vertical by default; the group
-    /// can also lay items out in a row).
+    /// can also lay items out in a row). Horizontal layout is a Rust
+    /// extension (spec §8.5, D4); the gap rule (12px base / 8px nova)
+    /// applies unchanged.
     pub fn orientation(mut self, orientation: GroupOrientation) -> Self {
         self.orientation = orientation;
         self
@@ -352,6 +623,17 @@ impl<'a> RadioGroup<'a> {
         self
     }
 
+    /// Suppresses every item's own focus indication (ring + border
+    /// recolor) when the group sits inside a FieldLabel choice card that
+    /// shows the focus indication itself. See
+    /// [`RadioGroupItem::suppress_focus_indication`] for the mechanism;
+    /// the field line owns the composition contract. Nova-only; a no-op
+    /// under the base recipe.
+    pub fn suppress_focus_indication(mut self, suppress: bool) -> Self {
+        self.suppress_focus_indication = suppress;
+        self
+    }
+
     /// Sets a stable id salt (used to derive per-item focus ids for the
     /// roving-focus behavior).
     pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
@@ -364,7 +646,6 @@ impl<'a> RadioGroup<'a> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let dark = theme.mode.is_dark();
-        let radius = theme.radius.md_u8();
 
         let group_id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -377,6 +658,7 @@ impl<'a> RadioGroup<'a> {
             orientation,
             disabled,
             invalid,
+            suppress_focus_indication,
             id_salt: _,
         } = self;
 
@@ -384,9 +666,9 @@ impl<'a> RadioGroup<'a> {
             p: &p,
             dark,
             style: theme.style,
-            radius,
             disabled,
             invalid,
+            suppressed: suppress_focus_indication,
         };
         let mut run_items = |ui: &mut Ui| {
             render_items(ui, group_id, selected, &options, &style);
@@ -396,10 +678,19 @@ impl<'a> RadioGroup<'a> {
                 ui.spacing_mut().item_spacing.y = gap(theme.style);
                 run_items(ui);
             }),
-            GroupOrientation::Horizontal => ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap(theme.style);
-                run_items(ui);
-            }),
+            // NOT `ui.horizontal`: it seeds a 20px `interact_size.y`
+            // frame (`horizontal_with_main_wrap_dyn`), which inflates
+            // the group's response rect to 36px tall. A plain
+            // `scope_builder` with a left-to-right layout — the same
+            // shape `ui.vertical` uses — keeps the group exactly 16px
+            // tall.
+            GroupOrientation::Horizontal => ui.scope_builder(
+                UiBuilder::new().layout(Layout::left_to_right(Align::Min)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = gap(theme.style);
+                    run_items(ui);
+                },
+            ),
         }
     }
 }
@@ -409,9 +700,9 @@ struct ItemStyle<'a> {
     p: &'a Palette,
     dark: bool,
     style: Style,
-    radius: u8,
     disabled: bool,
     invalid: bool,
+    suppressed: bool,
 }
 
 fn render_items(
@@ -425,43 +716,82 @@ fn render_items(
         p,
         dark,
         style,
-        radius,
         disabled,
         invalid,
+        suppressed,
     } = *style;
     let mut responses: Vec<Response> = Vec::with_capacity(options.len());
     for (i, option) in options.iter().enumerate() {
+        let item_disabled = disabled || option.disabled;
+        let item_id = group_id.with(i);
+        // Row layout (frozen D5): a 16px row; the label, when present,
+        // sits 8px right of the circle on a centred 14px line box. The
+        // text is measured first so the row allocates its exact size —
+        // no measure pass, no centred-parent trap.
+        let has_label = !option.label.is_empty();
+        let label_w = if has_label {
+            measure_label_width(ui, &option.label)
+        } else {
+            0.0
+        };
+        let row_width = RADIO_SIZE
+            + if has_label {
+                RADIO_LABEL_GAP + label_w
+            } else {
+                0.0
+            };
+        let (_, row_rect) = ui.allocate_space(Vec2::new(row_width, RADIO_SIZE));
+        let circle_rect = Rect::from_min_size(row_rect.min, Vec2::splat(RADIO_SIZE));
+
+        // The label runs BEFORE the circle interact (label-then-control
+        // order): the Label's deferred click-forwarding pushes its
+        // synthetic Space pair into this pass, and the circle's
+        // `interact` below must run after it to see the fake click. The
+        // label lives in a child Ui at its exact rect so the row keeps
+        // its 16px height (a `ui.horizontal` row would allocate 36px).
+        if has_label {
+            let label_rect = label_rect_in_row(row_rect, label_w);
+            let mut child = ui.new_child(UiBuilder::new().max_rect(label_rect).id_salt(item_id));
+            Label::new(option.label.as_str())
+                .for_id(item_id)
+                .disabled(item_disabled)
+                .show(&mut child);
+        }
+
         // Disabled items are not focusable (`Sense::hover`), so egui's
         // built-in spatial Arrow-key navigation skips them automatically.
-        let sense = if disabled || option.disabled {
+        let sense = if item_disabled {
             Sense::hover()
         } else {
             Sense::click()
         };
-        let (_, rect) = ui.allocate_space(Vec2::splat(RADIO_SIZE));
-        let response = ui.interact(rect, group_id.with(i), sense);
+        let response = ui.interact(circle_rect, item_id, sense);
         let is_selected = *selected == Some(i);
-        let colors =
-            resolve_radio_colors(p, dark, style, is_selected, invalid, response.has_focus());
-        paint_radio(
-            ui,
-            rect,
-            &colors,
-            disabled || option.disabled,
-            response.has_focus(),
-            radius,
-        );
+        let state = RadioState {
+            checked: is_selected,
+            invalid,
+            focused: response.has_focus(),
+            disabled: item_disabled,
+            suppressed,
+        };
+        let colors = resolve_radio_colors(p, dark, style, state);
+        // The ring animator runs every frame, even when the ring is
+        // hidden (see `animate_ring`).
+        let ring = animate_ring(ui.ctx(), item_id, &colors);
+        paint_radio(ui, circle_rect, &colors, ring, item_disabled, dark, style);
 
         // Clicking selects (radios never uncheck).
-        if response.clicked() && !disabled && !option.disabled && *selected != Some(i) {
+        if response.clicked() && !item_disabled && *selected != Some(i) {
             *selected = Some(i);
         }
         responses.push(response);
     }
 
-    // Roving focus, mirroring Radix's `RovingFocusGroup`: focus movement is
-    // left to egui's spatial Arrow-key navigation (Up/Down/Left/Right, no
-    // wrap-around); whichever item holds focus becomes the selection.
+    // Selection follows focus (IMPLEMENTATION behaviour, an OPEN-1
+    // hypothesis — S6 Work B settles whether Radix moves selection with
+    // focus): focus movement is left to egui's spatial Arrow-key
+    // navigation (Up/Down/Left/Right, no wrap-around); whichever item
+    // holds focus becomes the selection.
     let focused_now = responses.iter().position(|r| r.has_focus());
     let last_focused: Option<usize> = ui
         .ctx()
@@ -489,6 +819,22 @@ mod tests {
         Preset::default().build(mode).palette
     }
 
+    fn state(
+        checked: bool,
+        invalid: bool,
+        focused: bool,
+        disabled: bool,
+        suppressed: bool,
+    ) -> RadioState {
+        RadioState {
+            checked,
+            invalid,
+            focused,
+            disabled,
+            suppressed,
+        }
+    }
+
     fn key_input(key: Key) -> egui::RawInput {
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
@@ -501,25 +847,87 @@ mod tests {
         input
     }
 
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        ctx
+    }
+
+    /// One headless pass over a fixed Ui (label S9 harness pattern). The
+    /// Ui id and rect are fixed within a test so widget ids are stable
+    /// across passes.
+    fn run_ui(ctx: &egui::Context, input: egui::RawInput, mut f: impl FnMut(&mut Ui)) {
+        let mut output = ctx.run_ui(input, |ctx| {
+            let mut ui = Ui::new(
+                ctx.clone(),
+                Id::unique("radio_s1_test"),
+                UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+            );
+            f(&mut ui);
+        });
+        // No renderer consumes the texture uploads in a headless test;
+        // dropping an unapplied delta panics, so clear it explicitly.
+        output.textures_delta.clear();
+    }
+
+    fn click_event(pos: Pos2, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn checked_item_shows_primary_dot() {
         let p = palette(Mode::Light);
         // Base: transparent fill, `fill-primary` dot, `border-input`.
-        let c = resolve_radio_colors(&p, false, Style::Vega, true, false, false);
+        let c = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(true, false, false, false, false),
+        );
         assert_eq!(c.dot, p.primary);
         assert_eq!(c.stroke.color, p.input);
         assert_eq!(c.fill, Color32::TRANSPARENT);
-        let u = resolve_radio_colors(&p, false, Style::Vega, false, false, false);
+        let u = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, false, false, false, false),
+        );
         assert_eq!(u.dot, Color32::TRANSPARENT);
-        let d = resolve_radio_colors(&palette(Mode::Dark), true, Style::Vega, false, false, false);
-        assert_eq!(d.fill, color_alpha(palette(Mode::Dark).input, 0.3));
+        let dark_p = palette(Mode::Dark);
+        let d = resolve_radio_colors(
+            &dark_p,
+            true,
+            Style::Vega,
+            state(false, false, false, false, false),
+        );
+        assert_eq!(d.fill, color_alpha(dark_p.input, 0.3));
         // Nova: solid primary disc with a `primary-foreground` dot.
-        let n = resolve_radio_colors(&p, false, Style::Nova, true, false, false);
+        let n = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(true, false, false, false, false),
+        );
         assert_eq!(n.fill, p.primary);
         assert_eq!(n.stroke.color, p.primary);
         assert_eq!(n.dot, p.primary_foreground);
         let dp = palette(Mode::Dark);
-        let nd = resolve_radio_colors(&dp, true, Style::Nova, true, false, false);
+        let nd = resolve_radio_colors(
+            &dp,
+            true,
+            Style::Nova,
+            state(true, false, false, false, false),
+        );
         assert_eq!(nd.fill, dp.primary);
         assert_eq!(nd.dot, dp.primary_foreground);
     }
@@ -527,29 +935,94 @@ mod tests {
     #[test]
     fn focused_border_uses_ring() {
         let p = palette(Mode::Light);
-        let f = resolve_radio_colors(&p, false, Style::Vega, false, false, true);
+        let f = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, false, true, false, false),
+        );
         assert_eq!(f.stroke.color, p.ring);
-        let nf = resolve_radio_colors(&p, false, Style::Nova, false, false, true);
+        let nf = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(false, false, true, false, false),
+        );
         assert_eq!(nf.stroke.color, p.ring);
-        // Invalid wins over focus: `aria-invalid:border-destructive`.
-        let fi = resolve_radio_colors(&p, false, Style::Nova, false, true, true);
+        // Focus-visible takes the `ring` border for ANY checked state
+        // (§4 focus row); fill and dot stay per the checked row.
+        let cf = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(true, false, true, false, false),
+        );
+        assert_eq!(cf.stroke.color, p.ring);
+        assert_eq!(cf.fill, p.primary);
+        assert_eq!(cf.dot, p.primary_foreground);
+        let cf_base = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(true, false, true, false, false),
+        );
+        assert_eq!(cf_base.stroke.color, p.ring);
+        assert_eq!(cf_base.dot, p.primary);
+    }
+
+    #[test]
+    fn invalid_wins_over_focus_is_provisional_pending_spec_decision() {
+        // Spec §4 precedence note: the focus+invalid border cell is NOT
+        // frozen. This test pins the CURRENT resolution (invalid wins)
+        // and its provisional status; S4/S5 own the cell, and if they
+        // settle otherwise this test — and only this test — changes.
+        let p = palette(Mode::Light);
+        let fi = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(false, true, true, false, false),
+        );
         assert_eq!(fi.stroke.color, p.destructive);
+        let dark = palette(Mode::Dark);
+        let dn = resolve_radio_colors(
+            &dark,
+            true,
+            Style::Nova,
+            state(false, true, true, false, false),
+        );
+        assert_eq!(dn.stroke.color, color_alpha(dark.destructive, 0.5));
     }
 
     #[test]
     fn nova_invalid_checked_keeps_primary() {
         let p = palette(Mode::Light);
-        // Nova `aria-invalid:aria-checked:border-primary`.
-        let ic = resolve_radio_colors(&p, false, Style::Nova, true, true, false);
+        // Nova `aria-invalid:aria-checked:border-primary` (frozen unfocused cell).
+        let ic = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(true, true, false, false, false),
+        );
         assert_eq!(ic.stroke.color, p.primary);
         assert_eq!(ic.fill, p.primary);
         assert_eq!(ic.dot, p.primary_foreground);
         // Base fades nothing: a checked invalid item still gets the
         // destructive border (`aria-invalid:border-destructive`).
-        let bc = resolve_radio_colors(&p, false, Style::Vega, true, true, false);
+        let bc = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(true, true, false, false, false),
+        );
         assert_eq!(bc.stroke.color, p.destructive);
         let dark = palette(Mode::Dark);
-        let dn = resolve_radio_colors(&dark, true, Style::Nova, false, true, false);
+        let dn = resolve_radio_colors(
+            &dark,
+            true,
+            Style::Nova,
+            state(false, true, false, false, false),
+        );
         // `dark:aria-invalid:border-destructive/50`
         assert_eq!(dn.stroke.color, color_alpha(dark.destructive, 0.5));
     }
@@ -557,12 +1030,142 @@ mod tests {
     #[test]
     fn invalid_item_uses_destructive() {
         let p = palette(Mode::Light);
-        let c = resolve_radio_colors(&p, false, Style::Vega, false, true, false);
+        let c = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, true, false, false, false),
+        );
         assert_eq!(c.stroke.color, p.destructive);
         assert_eq!(c.ring, color_alpha(p.destructive, 0.2));
         let dark = palette(Mode::Dark);
-        let c = resolve_radio_colors(&dark, true, Style::Vega, false, true, false);
+        let c = resolve_radio_colors(
+            &dark,
+            true,
+            Style::Vega,
+            state(false, true, false, false, false),
+        );
         assert_eq!(c.ring, color_alpha(dark.destructive, 0.4));
+    }
+
+    #[test]
+    fn ring_visibility_matrix() {
+        let p = palette(Mode::Light);
+        let dark_p = palette(Mode::Dark);
+        // Base invalid at rest: no ring (colour set, no width class).
+        let base_rest = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, true, false, false, false),
+        );
+        assert!(!base_rest.ring_shown);
+        // Nova invalid at rest: the 3px rest ring (`aria-invalid:ring-3`).
+        let nova_rest = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(false, true, false, false, false),
+        );
+        assert!(nova_rest.ring_shown);
+        assert_eq!(nova_rest.ring, color_alpha(p.destructive, 0.2));
+        let nova_rest_dark = resolve_radio_colors(
+            &dark_p,
+            true,
+            Style::Nova,
+            state(false, true, false, false, false),
+        );
+        assert!(nova_rest_dark.ring_shown);
+        assert_eq!(nova_rest_dark.ring, color_alpha(dark_p.destructive, 0.4));
+        // Focus shows the ring in both styles (valid).
+        for style in [Style::Vega, Style::Nova] {
+            let f = resolve_radio_colors(&p, false, style, state(false, false, true, false, false));
+            assert!(f.ring_shown);
+            assert_eq!(f.ring, color_alpha(p.ring, 0.5));
+        }
+        // A disabled item cannot take focus: no focus ring.
+        let df = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, false, true, true, false),
+        );
+        assert!(!df.ring_shown);
+        // ...but the nova invalid rest ring is a state rule, so it shows
+        // on a disabled invalid item too (faded to 50% at paint).
+        let di = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(false, true, false, true, false),
+        );
+        assert!(di.ring_shown);
+    }
+
+    #[test]
+    fn suppression_forces_border_and_kills_ring_nova_only() {
+        let p = palette(Mode::Light);
+        // Nova + suppression: border forced by checked state, ring gone —
+        // even when focused and invalid.
+        let s = resolve_radio_colors(
+            &p,
+            false,
+            Style::Nova,
+            state(false, true, true, false, true),
+        );
+        assert_eq!(s.stroke.color, p.input);
+        assert!(!s.ring_shown);
+        let sc = resolve_radio_colors(&p, false, Style::Nova, state(true, true, true, false, true));
+        assert_eq!(sc.stroke.color, p.primary);
+        assert_eq!(sc.fill, p.primary);
+        assert!(!sc.ring_shown);
+        // Base + suppression: inert — identical to unsuppressed.
+        let b = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, true, true, false, true),
+        );
+        let b0 = resolve_radio_colors(
+            &p,
+            false,
+            Style::Vega,
+            state(false, true, true, false, false),
+        );
+        assert_eq!(b.stroke.color, b0.stroke.color);
+        assert_eq!(b.ring_shown, b0.ring_shown);
+        assert_eq!(b.fill, b0.fill);
+    }
+
+    #[test]
+    fn shadow_shown_in_every_state() {
+        // `shadow-xs` paints in all states (spec §2.2) under both styles.
+        let light = palette(Mode::Light);
+        let dark_p = palette(Mode::Dark);
+        for style in [Style::Vega, Style::Nova] {
+            for (dark, p) in [(false, &light), (true, &dark_p)] {
+                for checked in [false, true] {
+                    for invalid in [false, true] {
+                        for focused in [false, true] {
+                            for disabled in [false, true] {
+                                for suppressed in [false, true] {
+                                    let c = resolve_radio_colors(
+                                        p,
+                                        dark,
+                                        style,
+                                        state(checked, invalid, focused, disabled, suppressed),
+                                    );
+                                    assert!(
+                                        c.shadow_shown,
+                                        "shadow must show: {style:?} dark={dark} checked={checked} invalid={invalid} focused={focused} disabled={disabled} suppressed={suppressed}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -573,7 +1176,280 @@ mod tests {
     }
 
     #[test]
+    fn label_row_geometry_gap_height_and_centring() {
+        // The frozen D5 invented layout: 8px circle–label gap, 16px row,
+        // 14px label line box centred (1px inset top and bottom).
+        assert_eq!(RADIO_LABEL_GAP, 8.0);
+        assert_eq!(RADIO_SIZE, 16.0);
+        assert_eq!(LABEL_LINE_H, 14.0);
+        let row = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(100.0, RADIO_SIZE));
+        let lr = label_rect_in_row(row, 50.0);
+        assert_eq!(lr.min.x, 10.0 + RADIO_SIZE + RADIO_LABEL_GAP);
+        assert_eq!(lr.min.y, 21.0);
+        assert_eq!(lr.size(), Vec2::new(50.0, LABEL_LINE_H));
+    }
+
+    #[test]
+    fn option_labels_use_frozen_label_typography_and_colour() {
+        // The D5 composition renders labels with the frozen label spec's
+        // exact helpers: 14px Inter Medium 500, `foreground`, 50% when
+        // disabled. The wiring (the Label widget is actually shown) is
+        // proven by the rect and click tests; this pins the contract.
+        assert_eq!(label_font(), crate::theme::fonts::medium(14.0));
+        assert_eq!(label_font().size, 14.0);
+        let p = palette(Mode::Light);
+        assert_eq!(
+            crate::components::label::text_color(&p, false),
+            p.foreground
+        );
+        assert_eq!(
+            crate::components::label::text_color(&p, true),
+            color_alpha(p.foreground, 0.5)
+        );
+    }
+
+    #[test]
+    fn group_rect_matches_rows_and_gaps() {
+        // Two labeled options, vertical, nova default: height is
+        // 16 + 8 + 16 (rows + gap); width is the widest row
+        // (16 + 8 + label width).
+        let ctx = test_ctx();
+        let mut selected = None;
+        let mut rect = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            rect = RadioGroup::new(&mut selected)
+                .id_salt("geom")
+                .option("Alpha")
+                .option("Beta")
+                .show(ui)
+                .response
+                .rect;
+        });
+        assert_eq!(rect.height(), 40.0);
+        let mut widest = 0.0f32;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            widest = measure_label_width(ui, "Alpha").max(measure_label_width(ui, "Beta"));
+        });
+        assert_eq!(rect.width(), RADIO_SIZE + RADIO_LABEL_GAP + widest);
+    }
+
+    #[test]
+    fn empty_label_renders_circle_only() {
+        // An empty label string: zero-width label, no gap — the row is
+        // exactly the 16px circle.
+        let ctx = test_ctx();
+        let mut selected = None;
+        let mut rect = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            rect = RadioGroup::new(&mut selected)
+                .id_salt("empty_label")
+                .option("")
+                .show(ui)
+                .response
+                .rect;
+        });
+        assert_eq!(rect.size(), Vec2::splat(RADIO_SIZE));
+    }
+
+    #[test]
+    fn horizontal_group_gaps_match_style() {
+        // Empty labels isolate the gap: two options in a row, nova
+        // default → width 16 + 8 + 16, height 16.
+        let ctx = test_ctx();
+        let mut selected = None;
+        let mut rect = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            rect = RadioGroup::new(&mut selected)
+                .id_salt("hgap")
+                .orientation(GroupOrientation::Horizontal)
+                .option("")
+                .option("")
+                .show(ui)
+                .response
+                .rect;
+        });
+        assert_eq!(rect.size(), Vec2::new(40.0, RADIO_SIZE));
+    }
+
+    #[test]
+    fn out_of_range_selection_renders_no_dot() {
+        // Rust-only edge case (spec §9): an out-of-range index selects
+        // nothing — no dot anywhere, no panic, value untouched.
+        let ctx = test_ctx();
+        let mut selected = Some(99);
+        let mut dots = 0usize;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = Ui::new(
+                ctx.clone(),
+                Id::unique("radio_oor_test"),
+                UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            RadioGroup::new(&mut selected)
+                .id_salt("oor")
+                .option("A")
+                .option("B")
+                .show(&mut ui);
+        });
+        for s in &output.shapes {
+            if let egui::Shape::Circle(cs) = &s.shape {
+                if cs.stroke.is_empty() && cs.fill != Color32::TRANSPARENT {
+                    dots += 1;
+                }
+            }
+        }
+        output.textures_delta.clear();
+        assert_eq!(dots, 0, "no dot may render for an out-of-range index");
+        assert_eq!(selected, Some(99));
+    }
+
+    #[test]
+    fn label_click_selects_and_focuses_item() {
+        // The settled label-click rule (§7.3): a label click fires a
+        // click on the item AND focuses it — via the Label widget's
+        // deferred forwarding, exactly as the label line verified it.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(None);
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_label_click").with(0usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_label_click")
+                .option("Alpha")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        assert!(!ctx.memory(|m| m.has_focus(item_id.get())));
+
+        // Click the centre of row 0's label: x = 24 + half the label
+        // width, y = 8 (the 14px line box centres on the 16px row).
+        let rect = group_rect.get();
+        let center = Pos2::new(
+            rect.min.x
+                + RADIO_SIZE
+                + RADIO_LABEL_GAP
+                + (rect.width() - RADIO_SIZE - RADIO_LABEL_GAP) / 2.0,
+            rect.min.y + RADIO_SIZE / 2.0,
+        );
+        run_ui(&ctx, click_event(center, true), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, click_event(center, false), |ui| {
+            render(ui);
+        });
+        // Deferred pass: no click in flight, the forwarded focus +
+        // synthetic Space reach the item.
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "label click must focus the item"
+        );
+        assert_eq!(
+            *selected.borrow(),
+            Some(0),
+            "label click must select the item"
+        );
+    }
+
+    #[test]
+    fn direct_click_selects_exactly_once() {
+        // A direct click on a circle selects it; no stale forwarded
+        // click bounces the selection back on later passes (the
+        // label/circle rects are disjoint, so each click fires once).
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(1));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+
+        let render = |ui: &mut Ui| {
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_direct_click")
+                .option("A")
+                .option("Longer label")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        // Click the centre of row 0's circle.
+        let rect = group_rect.get();
+        let center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        run_ui(&ctx, click_event(center, true), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, click_event(center, false), |ui| {
+            render(ui);
+        });
+        assert_eq!(*selected.borrow(), Some(0));
+        // Settle passes: the selection stays — no second activation.
+        for _ in 0..3 {
+            run_ui(&ctx, egui::RawInput::default(), |ui| {
+                render(ui);
+            });
+        }
+        assert_eq!(*selected.borrow(), Some(0));
+    }
+
+    #[test]
+    fn disabled_label_and_circle_clicks_do_nothing() {
+        // A disabled option: neither its label nor its circle responds
+        // to clicks — no selection, no focus.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(None);
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_disabled_click").with(0usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_disabled_click")
+                .option_disabled("Unavailable")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        let rect = group_rect.get();
+        let label_center = Pos2::new(
+            rect.min.x
+                + RADIO_SIZE
+                + RADIO_LABEL_GAP
+                + (rect.width() - RADIO_SIZE - RADIO_LABEL_GAP) / 2.0,
+            rect.min.y + RADIO_SIZE / 2.0,
+        );
+        let circle_center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        for center in [label_center, circle_center] {
+            run_ui(&ctx, click_event(center, true), |ui| {
+                render(ui);
+            });
+            run_ui(&ctx, click_event(center, false), |ui| {
+                render(ui);
+            });
+            run_ui(&ctx, egui::RawInput::default(), |ui| {
+                render(ui);
+            });
+        }
+        assert_eq!(*selected.borrow(), None);
+        assert!(!ctx.memory(|m| m.has_focus(item_id.get())));
+    }
+
+    #[test]
     fn arrows_move_selection_and_focus() {
+        // IMPLEMENTATION behaviour (OPEN-1 hypothesis, not Radix truth):
+        // egui spatial navigation moves focus; selection follows focus.
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut selected = Some(0);
@@ -666,6 +1542,7 @@ mod tests {
             .orientation(GroupOrientation::Horizontal)
             .disabled(true)
             .invalid(true)
+            .suppress_focus_indication(true)
             .id_salt("g");
         assert_eq!(group.options.len(), 4);
         assert!(group.options[1].disabled);
@@ -673,15 +1550,18 @@ mod tests {
         assert_eq!(group.orientation, GroupOrientation::Horizontal);
         assert!(group.disabled);
         assert!(group.invalid);
+        assert!(group.suppress_focus_indication);
         assert_eq!(group.id_salt.as_deref(), Some("g"));
 
         let mut checked = false;
         let item = RadioGroupItem::new(&mut checked)
             .disabled(true)
             .invalid(true)
+            .suppress_focus_indication(true)
             .id_salt("item");
         assert!(item.disabled);
         assert!(item.invalid);
+        assert!(item.suppress_focus_indication);
         assert_eq!(item.id_salt.as_deref(), Some("item"));
     }
 
@@ -702,5 +1582,144 @@ mod tests {
         });
         out.textures_delta.clear();
         assert_eq!(rect.size(), Vec2::splat(RADIO_SIZE));
+    }
+
+    // --- Controlled-time animation tests (badge pin-test pattern). ---
+    //
+    // One frame at `time`, returning the painted shapes. The texture
+    // delta is cleared before the output is dropped (epaint panics on
+    // dropped unapplied deltas).
+
+    fn run_item_frame(
+        ctx: &egui::Context,
+        time: f64,
+        checked: &mut bool,
+        id_salt: &str,
+    ) -> Vec<egui::Shape> {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0));
+        let input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("radio_anim_test"),
+                egui::UiBuilder::new().max_rect(screen),
+            );
+            RadioGroupItem::new(&mut *checked).id_salt(id_salt).show(ui);
+        });
+        let shapes = out.shapes.iter().map(|s| s.shape.clone()).collect();
+        out.textures_delta.clear();
+        shapes
+    }
+
+    /// The fill rect: the `RectShape` with an empty stroke (the ring
+    /// carries the stroke; the shadow paints meshes).
+    fn fill_rect_color(shapes: &[egui::Shape]) -> Option<Color32> {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Rect(rs) if rs.stroke.is_empty() => Some(rs.fill),
+            _ => None,
+        })
+    }
+
+    /// The ring: the `RectShape` carrying a stroke.
+    fn ring_stroke(shapes: &[egui::Shape]) -> Option<Stroke> {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Rect(rs) if !rs.stroke.is_empty() => Some(rs.stroke),
+            _ => None,
+        })
+    }
+
+    /// The indicator dot: the filled circle (the border circle carries
+    /// the stroke instead).
+    fn dot_fill(shapes: &[egui::Shape]) -> Option<Color32> {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Circle(cs) if cs.stroke.is_empty() => Some(cs.fill),
+            _ => None,
+        })
+    }
+
+    /// The border: the stroked circle.
+    fn border_stroke(shapes: &[egui::Shape]) -> Option<Stroke> {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Circle(cs) if !cs.stroke.is_empty() => Some(cs.stroke),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn checked_change_snaps_fill_dot_and_border() {
+        // Narrow §6 reading: border-colour and fill are NOT in the
+        // `transition-[color,box-shadow]` list, so a checked change
+        // lands on the endpoints in the very first frame — no leg.
+        let ctx = test_ctx(); // nova default: the checked disc is opaque.
+        let mut checked = false;
+        let mut t = 0.0;
+        for _ in 0..5 {
+            let _ = run_item_frame(&ctx, t, &mut checked, "snap");
+            t += 0.05;
+        }
+        checked = true;
+        let first = run_item_frame(&ctx, t, &mut checked, "snap");
+        let mut settled = vec![];
+        for _ in 0..5 {
+            settled = run_item_frame(&ctx, t + 0.3, &mut checked, "snap");
+            t += 0.05;
+        }
+        assert_eq!(fill_rect_color(&first), fill_rect_color(&settled));
+        assert_eq!(dot_fill(&first), dot_fill(&settled));
+        assert_eq!(border_stroke(&first), border_stroke(&settled));
+        // Discrimination: the endpoints are the nova checked values.
+        let p = palette(Mode::Light);
+        assert_eq!(fill_rect_color(&settled), Some(p.primary));
+        assert_eq!(dot_fill(&settled), Some(p.primary_foreground));
+        assert_eq!(border_stroke(&settled).map(|s| s.color), Some(p.primary));
+    }
+
+    #[test]
+    fn ring_fades_on_focus_change() {
+        // The `box-shadow` leg DOES animate (§6): the ring fades in over
+        // the interim 150ms leg when focus arrives — no pop-in, no snap.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_anim_test").with("ringfade");
+        // Settle unfocused: no ring shape at all.
+        let mut t = 0.0;
+        let mut shapes = vec![];
+        for _ in 0..5 {
+            shapes = run_item_frame(&ctx, t, &mut checked, "ringfade");
+            t += 0.05;
+        }
+        assert_eq!(ring_stroke(&shapes), None, "no ring while unfocused");
+        // Focus arrives: the leg starts at alpha 0 on the focus frame...
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        let focus_frame = run_item_frame(&ctx, t, &mut checked, "ringfade");
+        assert_eq!(
+            ring_stroke(&focus_frame),
+            None,
+            "leg starts at alpha 0 (no pop-in)"
+        );
+        // ...runs through an intermediate alpha mid-leg (75ms into the
+        // 150ms leg)...
+        let mid = run_item_frame(&ctx, t + 0.075, &mut checked, "ringfade");
+        let mid_alpha = ring_stroke(&mid).map(|s| s.color.a()).unwrap_or(0);
+        // ...and lands exactly on the settled ring colour.
+        let mut settled = vec![];
+        for _ in 0..5 {
+            settled = run_item_frame(&ctx, t + 0.3, &mut checked, "ringfade");
+            t += 0.05;
+        }
+        let full_alpha = ring_stroke(&settled).map(|s| s.color.a()).unwrap_or(0);
+        let p = palette(Mode::Light);
+        assert_eq!(
+            ring_stroke(&settled).map(|s| s.color),
+            Some(color_alpha(p.ring, 0.5))
+        );
+        assert!(
+            mid_alpha > 0 && mid_alpha < full_alpha,
+            "mid-leg alpha {mid_alpha} must be strictly between 0 and {full_alpha}"
+        );
     }
 }
