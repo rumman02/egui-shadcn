@@ -34,6 +34,17 @@
 //! recipe (spec §2.3) and NO disabled state in the original (spec §5.5; the
 //! Rust `.disabled()` builder is a documented extension, spec §11 D4).
 //!
+//! Spec §11 states D1–D3 as LIMITATION notes (no deviation requested) and D4
+//! as a NOTE: no visual deviation from the original is proposed — every
+//! span-badge behaviour in the spec is expressible in egui. D1–D4 are
+//! referred to the Expert Reviewer at the wave pack (S8 gate); no approval
+//! is claimed here.
+//!
+//! Empty badge (§4/§10): §4's width rule extrapolates to 16px for an empty
+//! badge, but §10 states 18px explicitly (padding + border); the S1
+//! implementation follows §10, and S5 measured 18px in all 4 configs. This
+//! is recorded as a confirmation of the §10 statement, not a deviation.
+//!
 //! OPEN items (spec §12, all left open): O1 transition duration/easing — the
 //! Phase 1 motion defaults (150ms + cubic-bezier(0.4, 0, 0.2, 1)) are used as
 //! the INTERIM position, labelled as such; O2 `data-icon` source — the icon
