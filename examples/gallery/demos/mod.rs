@@ -3353,88 +3353,482 @@ pub fn slider_demo(ui: &mut egui::Ui) {
 }
 
 pub fn toggle_demo(ui: &mut egui::Ui) {
+    // Every section prints the rect the toggle actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // Header: recipe position, stated honestly (spec §§0, 2.4, 3, 4, 6, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    let gap = if nova { 4 } else { 8 };
+    ui.label(format!(
+        "Toggle — pressed-state button. Active recipe: {recipe} (style: {}, mode: {mode}). Heights 32/28/36px nova, 36/32/40px base (default/sm/lg).",
+        theme.style.name()
+    ));
+    ui.label("S-1: outline shadow-xs paints under ALL styles incl. nova. N16: the .icon_inline_start builder (§3) is an S1 PROPOSAL pending S8 ratification — no trigger is inferred. OPEN-3 (pressed+hover) and OPEN-4 (invalid+focus) precedences are PROVISIONAL as built. Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-5); property sets per ruling 6 (base: text+ring animate, fill/border snap; nova: transition-all). Hover fill/text per §4.2 only. Keyboard = egui-natural behaviour; Radix mechanics are OPEN-1/OPEN-2 for S6 Work B.");
+
+    // Index layout: 0-7 §1 variants, 8-11 §2 gap, 12-17 §3 icon-inline,
+    // 18 §4 focus, 19-22 §5 invalid, 23-27 §6 disabled, 28 §7 hover,
+    // 29-30 §8 pressed+hover. Pressed rows start pressed.
     let store = egui::Id::unique("toggle_demo_values");
-    let mut values: [bool; 3] = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(store).unwrap_or([true, false, false]));
-
-    ui.label("Default variant (on / off)");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Toggle::new(&mut values[0]).text("Bold").show(ui);
-        Toggle::new(&mut values[1]).text("Italic").show(ui);
-        Toggle::new(&mut values[2]).text("Underline").show(ui);
+    let mut values: [bool; 31] = ui.ctx().data_mut(|d| {
+        d.get_temp(store).unwrap_or([
+            false, true, false, true, false, true, false, true, false, false, false, false, false,
+            false, false, false, false, false, false, false, true, false, true, false, true, false,
+            true, true, false, true, true,
+        ])
     });
 
+    // 1. Variants: default + outline, unpressed/pressed, default + sm
+    // sizes (spec §2/§3.1). Outline rows expose S-1 (shadow under both
+    // styles). One toggle per line: no `ui.horizontal` rows, so no
+    // 36px interact-size row artifact pollutes the rects.
     ui.add_space(12.0);
-    ui.label("Outline variant");
+    ui.label("1. Variants — default + outline, unpressed/pressed, default + sm sizes (spec §2/§3.1; outline shadow-xs under BOTH styles, S-1)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Toggle::new(&mut values[0])
-            .variant(ToggleVariant::Outline)
-            .text("Bold")
-            .show(ui);
-        Toggle::new(&mut values[1])
-            .variant(ToggleVariant::Outline)
-            .text("Italic")
-            .show(ui);
-        Toggle::new(&mut values[2])
-            .variant(ToggleVariant::Outline)
-            .text("Underline")
-            .show(ui);
-    });
+    let r = Toggle::new(&mut values[0])
+        .id_salt("s3-v1-default")
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[1])
+        .id_salt("s3-v1-default-pressed")
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default pressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[2])
+        .id_salt("s3-v1-default-sm")
+        .size(ToggleSize::Sm)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default sm unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[3])
+        .id_salt("s3-v1-default-sm-pressed")
+        .size(ToggleSize::Sm)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default sm pressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[4])
+        .id_salt("s3-v1-outline")
+        .variant(ToggleVariant::Outline)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "outline unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[5])
+        .id_salt("s3-v1-outline-pressed")
+        .variant(ToggleVariant::Outline)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "outline pressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[6])
+        .id_salt("s3-v1-outline-sm")
+        .variant(ToggleVariant::Outline)
+        .size(ToggleSize::Sm)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "outline sm unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[7])
+        .id_salt("s3-v1-outline-sm-pressed")
+        .variant(ToggleVariant::Outline)
+        .size(ToggleSize::Sm)
+        .text("Bold")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "outline sm pressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 2. Icon + text gap (N6, spec §3.2): one gap value (8px base /
+    // 4px nova) in width math AND paint. The rects below let S5 check
+    // the width arithmetic; the painted gap itself is S5's pixel job.
+    // Icon-only + empty-content boxes exercise §3.4 (width = min-width
+    // floor, fixed height, still focusable/toggleable).
+    ui.add_space(12.0);
+    ui.label(format!(
+        "2. Icon + text gap (N6) — gap {gap}px in this recipe (8px base / 4px nova); icon-only + empty-content boxes (spec §3.2/§3.4)"
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[8])
+        .id_salt("s3-gap-default")
+        .icon(Icon::Sparkles)
+        .text("Starred")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "icon+text default: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[9])
+        .id_salt("s3-gap-sm")
+        .size(ToggleSize::Sm)
+        .icon(Icon::Sparkles)
+        .text("Starred")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "icon+text sm: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[10])
+        .id_salt("s3-gap-icon-only")
+        .icon(Icon::Search)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "icon-only: {:.1} x {:.1} px (expected: 36 wide both styles — base: 32 content < 36 floor; nova: 10+16+10 = 36)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[11])
+        .id_salt("s3-gap-empty")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "empty content: {:.1} x {:.1} px (expected: min-width x height, still focusable/toggleable)",
+        r.width(),
+        r.height()
+    ));
+
+    // 3. Icon-inline padding (N16, spec §3.3). The padding VALUES are
+    // frozen; the `.icon_inline_start` trigger is the S1 PROPOSAL
+    // (OPEN-6 stays OPEN, no trigger inferred). Each pair shows the
+    // same icon+text toggle with the builder on vs off: under nova the
+    // builder-on toggle is narrower (left padding 8 vs 10 default/lg,
+    // 6 vs 10 sm); under base both are identical.
+    ui.add_space(12.0);
+    ui.label("3. Icon-inline padding (N16) — .icon_inline_start(true) is an S1 PROPOSAL pending S8 ratification; padding values frozen (nova 8px default/lg, 6px sm on the icon side; base: no adjustment)");
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[12])
+        .id_salt("s3-n16-default-on")
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .icon_inline_start(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start default, builder ON: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[13])
+        .id_salt("s3-n16-default-off")
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start default, builder OFF: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[14])
+        .id_salt("s3-n16-sm-on")
+        .size(ToggleSize::Sm)
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .icon_inline_start(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start sm, builder ON: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[15])
+        .id_salt("s3-n16-sm-off")
+        .size(ToggleSize::Sm)
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start sm, builder OFF: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[16])
+        .id_salt("s3-n16-lg-on")
+        .size(ToggleSize::Lg)
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .icon_inline_start(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start lg, builder ON: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[17])
+        .id_salt("s3-n16-lg-off")
+        .size(ToggleSize::Lg)
+        .icon(Icon::ChevronLeft)
+        .text("Previous")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "inline-start lg, builder OFF: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 4. Focus target (spec §4.4). Label F1 rule: the widget id comes
+    // from the control's returned `Response::id`, never a guessed
+    // scope id.
+    ui.add_space(12.0);
+    ui.label("4. Focus target — Tab here or click; ring 3px + border ring on focus (spec §4.4; D1: ring on any focus)");
+    ui.add_space(4.0);
+    let resp = Toggle::new(&mut values[18])
+        .id_salt("s3-focus")
+        .variant(ToggleVariant::Outline)
+        .text("Focus me")
+        .show(ui);
+    let focus_id = resp.id;
+    let focused = ui.ctx().memory(|m| m.has_focus(focus_id));
+    let r_focus = resp.rect;
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; focused: {focused}",
+        r_focus.width(),
+        r_focus.height()
+    ));
+
+    // 5. Invalid (spec §4.5): full-alpha `destructive` border on the
+    // outline variant ONLY (the default variant has no border width,
+    // so no visible invalid border), NO rest ring in either style
+    // (N5 does NOT apply to toggle). OPEN-4 precedence is PROVISIONAL
+    // (invalid wins over focus, as built).
+    ui.add_space(12.0);
+    ui.label("5. Invalid — full destructive border, outline only, NO rest ring in either style (spec §4.5; N5 does NOT apply); OPEN-4 precedence PROVISIONAL (invalid wins)");
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[19])
+        .id_salt("s3-invalid-default")
+        .invalid(true)
+        .text("Invalid")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid default unpressed: {:.1} x {:.1} px (no visible border — borderless variant)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[20])
+        .id_salt("s3-invalid-default-pressed")
+        .invalid(true)
+        .text("Invalid")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid default pressed: {:.1} x {:.1} px (pressed fill + no border)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[21])
+        .id_salt("s3-invalid-outline")
+        .variant(ToggleVariant::Outline)
+        .invalid(true)
+        .text("Invalid")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid outline unpressed: {:.1} x {:.1} px (destructive border, no ring at rest)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[22])
+        .id_salt("s3-invalid-outline-pressed")
+        .variant(ToggleVariant::Outline)
+        .invalid(true)
+        .text("Invalid")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid outline pressed: {:.1} x {:.1} px (pressed fill + destructive border, no ring at rest)",
+        r.width(),
+        r.height()
+    ));
+
+    // 6. Disabled (spec §4.6): whole-element 50% group fade. The
+    // compositing model is an S5 question — judge the rendered
+    // composite per ruling 7, not per-slot alphas.
+    ui.add_space(12.0);
+    ui.label("6. Disabled — whole-element 50% group fade (spec §4.6); compositing model is an S5 question (judge the rendered composite, ruling 7)");
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[23])
+        .id_salt("s3-disabled-default")
+        .disabled(true)
+        .text("Disabled")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled default unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[24])
+        .id_salt("s3-disabled-default-pressed")
+        .disabled(true)
+        .text("Disabled")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled default pressed: {:.1} x {:.1} px (pressed fill at 50%)",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[25])
+        .id_salt("s3-disabled-outline")
+        .variant(ToggleVariant::Outline)
+        .disabled(true)
+        .text("Disabled")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled outline unpressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[26])
+        .id_salt("s3-disabled-outline-pressed")
+        .variant(ToggleVariant::Outline)
+        .disabled(true)
+        .text("Disabled")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled outline pressed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[27])
+        .id_salt("s3-disabled-invalid-outline")
+        .variant(ToggleVariant::Outline)
+        .disabled(true)
+        .invalid(true)
+        .text("Disabled")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled + invalid outline pressed: {:.1} x {:.1} px (invalid chrome at 50%)",
+        r.width(),
+        r.height()
+    ));
+
+    // 7. Hover target (spec §4.2). S5/S6: park the pointer and settle
+    // before capturing — egui paints a cursor preview while the
+    // pointer moves, so hover captures need a SETTLED pointer.
+    ui.add_space(12.0);
+    ui.label("7. Hover target — hover fill/text per §4.2; park the pointer and settle before capturing (settled-pointer captures)");
+    ui.add_space(4.0);
+    let resp = Toggle::new(&mut values[28])
+        .id_salt("s3-hover")
+        .variant(ToggleVariant::Outline)
+        .text("Hover me")
+        .show(ui);
+    let hovered = resp.hovered();
+    let r_hover = resp.rect;
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; hovered: {hovered}",
+        r_hover.width(),
+        r_hover.height()
+    ));
+
+    // 8. Pressed + hover precedence (OPEN-3, PROVISIONAL: pressed wins,
+    // as built). Pressed toggles for the S6 hover-while-pressed
+    // checks; S5/S6 judge the rendered result against the OPEN-3
+    // decision, not against this demo text.
+    ui.add_space(12.0);
+    ui.label("8. Pressed + hover — pressed toggles for hover-while-pressed checks; OPEN-3 precedence PROVISIONAL (pressed wins)");
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[29])
+        .id_salt("s3-pressed-hover-default")
+        .text("Pressed")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "pressed default: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Toggle::new(&mut values[30])
+        .id_salt("s3-pressed-hover-outline")
+        .variant(ToggleVariant::Outline)
+        .text("Pressed")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "pressed outline: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Sizes");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Toggle::new(&mut values[0])
-            .size(ToggleSize::Sm)
-            .text("Small")
-            .show(ui);
-        Toggle::new(&mut values[0]).text("Default").show(ui);
-        Toggle::new(&mut values[0])
-            .size(ToggleSize::Lg)
-            .text("Large")
-            .show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("With icons");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Toggle::new(&mut values[0])
-            .variant(ToggleVariant::Outline)
-            .icon(Icon::Search)
-            .show(ui);
-        Toggle::new(&mut values[1])
-            .icon(Icon::Sparkles)
-            .text("Starred")
-            .show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Disabled and invalid");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Toggle::new(&mut values[2])
-            .disabled(true)
-            .text("Disabled")
-            .show(ui);
-        Toggle::new(&mut values[2])
-            .variant(ToggleVariant::Outline)
-            .disabled(true)
-            .text("Disabled outline")
-            .show(ui);
-        Toggle::new(&mut values[2])
-            .variant(ToggleVariant::Outline)
-            .invalid(true)
-            .text("Invalid")
-            .show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Keyboard: Tab to a toggle, press Space or Enter to press it.");
+    ui.label("Provisional: OPEN-3 pressed-wins, OPEN-4 invalid-wins, N16 trigger mapping (S1 proposal). Interim: OPEN-5 timing. Deviations D1 (focus-visible modality) and D2 (no ARIA tree) PROPOSED. No field compositions and no toggle-group rows on this page — fused/group behaviour belongs to the toggle-group page (FG-3 ring queueing is verified by toggle-group S5).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
