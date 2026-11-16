@@ -771,7 +771,11 @@ fn paint_text_shadow(
 /// renders the spec's default vertical rule; `Vertical` renders the
 /// horizontal rule that is the normal choice inside a vertical group
 /// (spec §6). A rule parallel to its group axis (the §14 mismatch
-/// compositions) is not expressible through this API.
+/// compositions) IS expressible through this API via a mixed orientation
+/// call — the horizontal rule inside a horizontal group, or the default
+/// vertical rule inside a vertical group — and renders with zero length
+/// per D8 (see the module docs). D8's interpretation of the rendered
+/// length stays PROPOSED for the Expert Reviewer.
 #[derive(Clone, Debug)]
 pub struct ButtonGroupSeparator {
     rule: SeparatorOrientation,
