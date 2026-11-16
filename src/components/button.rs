@@ -1564,18 +1564,34 @@ pub(crate) fn fuse_radius(
 /// button-group spec §3.1) while keeping the top/trailing/bottom edges
 /// and the top/bottom rows continuous across the shared edge.
 ///
-/// The omission is done with a clip, not an overpaint: the ring is the
-/// same `rect_stroke` shape, clipped to exclude the leading 1px column
-/// (horizontal groups) or row (vertical groups), and the two leading
-/// corner cells are painted back as solid stroke-color squares. The
-/// leading corners are square for non-first children ([`fuse_radius`]),
-/// so the corner cells are exact 1px squares and the clipped ring plus
-/// the cells tile the full ring with no overlap and no gap, at any
-/// fractional alignment (both share the same boundary). A clip is exact
-/// for translucent fills (hover `primary/80`, `primary/90`; the 50%
-/// disabled fade), where overpainting with the fill color would
-/// double-blend. First/only children take the plain `rect_stroke` path,
-/// byte-identical to standalone buttons.
+/// The omission is done with clips, not an overpaint: the ring is the
+/// same `rect_stroke` shape, painted three times through three disjoint
+/// clips — once clipped to exclude the leading 1px column (horizontal
+/// groups) or row (vertical groups), and once more clipped to each of
+/// the two leading corner cells. The three clips tile the ring exactly:
+/// they share only zero-area boundaries, and the renderer's scissor
+/// conversion rounds every clip edge (egui-wgpu 0.37 `ScissorRect`),
+/// so a boundary shared by two clips rounds to the same integer edge
+/// and no pixel is painted twice — exact for translucent strokes (the
+/// 50% disabled fade), where overpainting would double-blend. First/only
+/// children take the plain `rect_stroke` path, byte-identical to
+/// standalone buttons.
+///
+/// The corner cells MUST be painted as clipped copies of the ring
+/// shape, never as 1×1 fill rects: a 1×1 `rect_filled` does not
+/// rasterize in egui 0.37 (BTG-VIS-01 corner-cell failure, S9b §5).
+/// `tessellate_rect` turns a fill-only rect ≤ 2px wide into a line
+/// segment (epaint 0.37.0 `tessellator.rs`, "Approximate thin
+/// rectangles with line segments"), and `tessellate_line_segment`
+/// shrinks a 1px segment by a quarter-pixel per end and rounds both
+/// ends to the same pixel center — a zero-length segment that renders
+/// nothing. A stroked ring shape never takes that branch (it requires
+/// an empty stroke), and the clip rect only culls and scissors: the
+/// tessellated mesh is the full ring, so each corner pixel renders
+/// exactly as it does in the unclipped ring. The leading corners are
+/// square for non-first children ([`fuse_radius`]), and the trailing
+/// corners keep their radius (including FG-2's forced corners) because
+/// the shape is identical in all three paintings.
 fn paint_fused_stroke(
     painter: &Painter,
     rect: Rect,
@@ -1588,7 +1604,7 @@ fn paint_fused_stroke(
         painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
         return;
     }
-    let (clip, cells) = match orientation {
+    let (clip, corners) = match orientation {
         GroupOrientation::Horizontal => (
             Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
             [
@@ -1616,8 +1632,15 @@ fn paint_fused_stroke(
         stroke,
         egui::epaint::StrokeKind::Inside,
     );
-    for cell in cells {
-        painter.rect_filled(cell, CornerRadius::ZERO, stroke.color);
+    // Corner pixels: the identical ring, clipped to each leading corner
+    // cell. See the doc comment — 1×1 fill rects do not rasterize.
+    for corner_clip in corners {
+        painter.with_clip_rect(corner_clip).rect_stroke(
+            rect,
+            corner,
+            stroke,
+            egui::epaint::StrokeKind::Inside,
+        );
     }
 }
 
@@ -4110,7 +4133,8 @@ mod tests {
         // Base recipe, horizontal group, two Outline buttons: the second
         // (Last) member's fill and stroke must cover its full layout
         // rect, with the stroke clipped to exclude the leading column
-        // and the two leading corner cells painted back.
+        // and the identical ring painted again through each leading
+        // corner clip (no 1x1 fill rects — they do not rasterize).
         let ctx = egui::Context::default();
         Preset {
             style: BASE_STYLE,
@@ -4144,13 +4168,22 @@ mod tests {
 
     fn inspect_fused_horizontal(shapes: &[(Rect, &egui::epaint::RectShape)], rects: [Rect; 2]) {
         let [first, last] = rects;
-        // Fills: the two button fills (large rects, no stroke) plus the
-        // two 1x1 corner cells of the Last member.
+        // Fills: exactly the two button fills (large rects, no stroke).
+        // The old 1x1 corner cells must be ABSENT: no 1x1 fill anywhere.
         let fills: Vec<&egui::epaint::RectShape> = shapes
             .iter()
             .map(|(_, rs)| *rs)
             .filter(|rs| rs.fill != Color32::TRANSPARENT && rs.stroke == Stroke::NONE)
             .collect();
+        let tiny_fills: Vec<&&egui::epaint::RectShape> = fills
+            .iter()
+            .filter(|rs| approx_eq(rs.rect.width(), 1.0) && approx_eq(rs.rect.height(), 1.0))
+            .collect();
+        assert_eq!(
+            tiny_fills.len(),
+            0,
+            "no 1x1 corner-cell fills may remain: {tiny_fills:?}"
+        );
         let big_fills: Vec<&&egui::epaint::RectShape> = fills
             .iter()
             .filter(|rs| rs.rect.width() > 2.0 && rs.rect.height() > 2.0)
@@ -4167,13 +4200,19 @@ mod tests {
             big_fills[0].rect
         );
 
-        // Strokes: exactly two 1px rings, each on its full layout rect.
+        // Strokes: the First ring plus THREE Last rings — the main
+        // clipped ring and the identical ring through each corner
+        // clip — all on the full layout rect.
         let strokes: Vec<(Rect, &egui::epaint::RectShape)> = shapes
             .iter()
             .copied()
             .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
             .collect();
-        assert_eq!(strokes.len(), 2, "expected two border rings");
+        assert_eq!(
+            strokes.len(),
+            4,
+            "expected one First ring + three Last rings"
+        );
         let (first_clip, first_ring) = strokes[0];
         let (last_clip, last_ring) = strokes[1];
         assert!(
@@ -4201,25 +4240,34 @@ mod tests {
             "Last ring clip {last_clip:?} must span the full height of {last:?}"
         );
 
-        // Corner cells: exactly two 1x1 fills at the Last member's
-        // leading corners, in the ring's stroke color.
-        let cells: Vec<&&egui::epaint::RectShape> = fills
-            .iter()
-            .filter(|rs| approx_eq(rs.rect.width(), 1.0) && approx_eq(rs.rect.height(), 1.0))
-            .collect();
-        assert_eq!(cells.len(), 2, "expected exactly two corner cells");
-        let stroke_color = last_ring.stroke.color;
-        for cell in &cells {
+        // Corner rings: the identical ring shape, clipped to each
+        // leading corner cell. Same rect, corner radius, and stroke as
+        // the main ring; clips exactly the two 1x1 corner regions.
+        let expected_corners = [
+            Rect::from_min_max(last.min, Pos2::new(last.min.x + 1.0, last.min.y + 1.0)),
+            Rect::from_min_max(
+                Pos2::new(last.min.x, last.max.y - 1.0),
+                Pos2::new(last.min.x + 1.0, last.max.y),
+            ),
+        ];
+        for (i, expected) in expected_corners.iter().enumerate() {
+            let (corner_clip, corner_ring) = strokes[2 + i];
+            assert!(
+                rect_approx_eq(corner_ring.rect, last),
+                "corner ring {i} {:?} must sit on the layout rect {last:?}",
+                corner_ring.rect
+            );
             assert_eq!(
-                cell.fill, stroke_color,
-                "corner cell must use the stroke color"
+                corner_ring.corner_radius, last_ring.corner_radius,
+                "corner ring {i} must keep the fused corner radius"
+            );
+            assert_eq!(
+                corner_ring.stroke, last_ring.stroke,
+                "corner ring {i} must use the ring stroke"
             );
             assert!(
-                approx_eq(cell.rect.min.x, last.min.x)
-                    && (approx_eq(cell.rect.min.y, last.min.y)
-                        || approx_eq(cell.rect.min.y, last.max.y - 1.0)),
-                "corner cell {:?} must sit on a leading corner of {last:?}",
-                cell.rect
+                rect_approx_eq(corner_clip, *expected),
+                "corner ring {i} clip {corner_clip:?} must equal the corner cell {expected:?}"
             );
         }
     }
@@ -4227,8 +4275,8 @@ mod tests {
     #[test]
     fn vertical_non_first_member_omits_the_top_edge() {
         // Base recipe, vertical group: the Last member's ring is
-        // clipped to exclude the top row, with corner cells at the
-        // top-left and top-right corners.
+        // clipped to exclude the top row, with the identical ring
+        // painted again through each top corner clip (no 1x1 fills).
         let ctx = egui::Context::default();
         Preset {
             style: BASE_STYLE,
@@ -4261,7 +4309,11 @@ mod tests {
             .copied()
             .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
             .collect();
-        assert_eq!(strokes.len(), 2, "expected two border rings");
+        assert_eq!(
+            strokes.len(),
+            4,
+            "expected one First ring + three Last rings"
+        );
         let (last_clip, last_ring) = strokes[1];
         assert!(
             rect_approx_eq(last_ring.rect, last_rect),
@@ -4276,25 +4328,45 @@ mod tests {
             last_clip.min.x <= last_rect.min.x + 0.01 && last_clip.max.x >= last_rect.max.x - 0.01,
             "Last ring clip {last_clip:?} must span the full width of {last_rect:?}"
         );
-        let cells: Vec<&egui::epaint::RectShape> = shapes
-            .iter()
-            .map(|(_, rs)| *rs)
-            .filter(|rs| {
-                rs.stroke == Stroke::NONE
-                    && approx_eq(rs.rect.width(), 1.0)
-                    && approx_eq(rs.rect.height(), 1.0)
-            })
-            .collect();
-        assert_eq!(cells.len(), 2, "expected exactly two corner cells");
-        for cell in &cells {
+        // Corner rings: the identical ring, clipped to each top corner
+        // cell. Same rect, corner radius, and stroke as the main ring.
+        let expected_corners = [
+            Rect::from_min_max(
+                last_rect.min,
+                Pos2::new(last_rect.min.x + 1.0, last_rect.min.y + 1.0),
+            ),
+            Rect::from_min_max(
+                Pos2::new(last_rect.max.x - 1.0, last_rect.min.y),
+                Pos2::new(last_rect.max.x, last_rect.min.y + 1.0),
+            ),
+        ];
+        for (i, expected) in expected_corners.iter().enumerate() {
+            let (corner_clip, corner_ring) = strokes[2 + i];
             assert!(
-                approx_eq(cell.rect.min.y, last_rect.min.y)
-                    && (approx_eq(cell.rect.min.x, last_rect.min.x)
-                        || approx_eq(cell.rect.min.x, last_rect.max.x - 1.0)),
-                "corner cell {:?} must sit on a top corner of {last_rect:?}",
-                cell.rect
+                rect_approx_eq(corner_ring.rect, last_rect),
+                "corner ring {i} {:?} must sit on the layout rect {last_rect:?}",
+                corner_ring.rect
+            );
+            assert_eq!(
+                corner_ring.corner_radius, last_ring.corner_radius,
+                "corner ring {i} must keep the fused corner radius"
+            );
+            assert_eq!(
+                corner_ring.stroke, last_ring.stroke,
+                "corner ring {i} must use the ring stroke"
+            );
+            assert!(
+                rect_approx_eq(corner_clip, *expected),
+                "corner ring {i} clip {corner_clip:?} must equal the corner cell {expected:?}"
             );
         }
+        // The old 1x1 corner-cell fills must be absent.
+        let cells = shapes.iter().filter(|(_, rs)| {
+            rs.stroke == Stroke::NONE
+                && approx_eq(rs.rect.width(), 1.0)
+                && approx_eq(rs.rect.height(), 1.0)
+        });
+        assert_eq!(cells.count(), 0, "no 1x1 corner-cell fills may remain");
     }
 
     #[test]
@@ -4356,7 +4428,11 @@ mod tests {
             .copied()
             .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
             .collect();
-        assert_eq!(strokes.len(), 2, "expected two border rings");
+        assert_eq!(
+            strokes.len(),
+            4,
+            "expected one First ring + three Last rings"
+        );
         let (last_clip, last_ring) = strokes[1];
         assert!(
             rect_approx_eq(last_ring.rect, last),
@@ -4367,6 +4443,40 @@ mod tests {
             approx_eq(last_clip.min.x, last.min.x + 1.0),
             "Last ring clip {last_clip:?} must exclude the leading column of {last:?}"
         );
+        // Corner rings: the identical ring through each leading corner
+        // clip, same rect/stroke as the main ring. The transparent nova
+        // stroke renders nothing, but the construction must be the same
+        // for every variant.
+        let expected_corners = [
+            Rect::from_min_max(last.min, Pos2::new(last.min.x + 1.0, last.min.y + 1.0)),
+            Rect::from_min_max(
+                Pos2::new(last.min.x, last.max.y - 1.0),
+                Pos2::new(last.min.x + 1.0, last.max.y),
+            ),
+        ];
+        for (i, expected) in expected_corners.iter().enumerate() {
+            let (corner_clip, corner_ring) = strokes[2 + i];
+            assert!(
+                rect_approx_eq(corner_ring.rect, last),
+                "corner ring {i} {:?} must sit on the layout rect {last:?}",
+                corner_ring.rect
+            );
+            assert_eq!(
+                corner_ring.stroke, last_ring.stroke,
+                "corner ring {i} must use the ring stroke"
+            );
+            assert!(
+                rect_approx_eq(corner_clip, *expected),
+                "corner ring {i} clip {corner_clip:?} must equal the corner cell {expected:?}"
+            );
+        }
+        // The old 1x1 corner-cell fills must be absent.
+        let cells = shapes.iter().filter(|(_, rs)| {
+            rs.stroke == Stroke::NONE
+                && approx_eq(rs.rect.width(), 1.0)
+                && approx_eq(rs.rect.height(), 1.0)
+        });
+        assert_eq!(cells.count(), 0, "no 1x1 corner-cell fills may remain");
     }
 
     #[test]
