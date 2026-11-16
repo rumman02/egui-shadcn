@@ -1051,4 +1051,97 @@ mod tests {
         assert!(b.invalid);
         assert_eq!(b.id_salt.as_deref(), Some("b"));
     }
+
+    #[test]
+    fn theme_switch_animates_fill_through_an_intermediate() {
+        // Regression pin for BDG-FLK-01 (LIMITATION ruling; Batch A Expert
+        // Reviewer decision C6: ADOPT). A theme switch must animate the
+        // badge fill over the §7 transition, not snap. The live harness
+        // cannot resolve the 150ms leg (frame starvation), so this test
+        // drives real frames with a controlled clock and inspects the
+        // painted fill rect — the only harness-resolvable proof the
+        // animator path works.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx); // light mode
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0));
+        // Runs one frame at `time`, returning the painted badge fill. The
+        // texture delta is cleared before the output is dropped (epaint
+        // panics on dropped unapplied deltas).
+        let run_frame = |ctx: &egui::Context, time: f64| {
+            let input = egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("badge_theme_anim_test"),
+                    egui::UiBuilder::new().max_rect(screen),
+                );
+                Badge::new("Default").id_salt("diag").show(ui);
+            });
+            let mut fills = vec![];
+            for s in &out.shapes {
+                if let egui::Shape::Rect(rs) = &s.shape {
+                    if rs.fill.a() > 0 {
+                        fills.push(rs.fill);
+                    }
+                }
+            }
+            out.textures_delta.clear();
+            assert_eq!(
+                fills.len(),
+                1,
+                "expected exactly one painted fill rect, got {fills:?} ({} shapes)",
+                out.shapes.len()
+            );
+            fills[0]
+        };
+        // Settle in light mode.
+        let mut t = 0.0;
+        let mut light_fill = Color32::TRANSPARENT;
+        for _ in 0..10 {
+            light_fill = run_frame(&ctx, t);
+            t += 0.05;
+        }
+        // Switch theme mid-stream, exactly as the gallery toggle does.
+        ShadcnTheme::set_mode(&ctx, Mode::Dark);
+        // The switch frame itself starts the leg at progress 0 (old colour).
+        let switch_frame = run_frame(&ctx, t);
+        assert_eq!(
+            switch_frame, light_fill,
+            "switch frame must still show the old endpoint (leg starts, no snap)"
+        );
+        // Mid-leg frame: 75ms after the switch frame (leg = 150ms).
+        let mid = run_frame(&ctx, t + 0.075);
+        // Settle in dark mode and read the dark endpoint from paint.
+        let mut dark_fill = Color32::TRANSPARENT;
+        for _ in 0..10 {
+            dark_fill = run_frame(&ctx, t + 0.3);
+            t += 0.05;
+        }
+        assert_ne!(
+            light_fill, dark_fill,
+            "endpoints must differ for this test to discriminate"
+        );
+        assert_ne!(
+            mid, light_fill,
+            "mid-leg fill snapped back to the light endpoint"
+        );
+        assert_ne!(
+            mid, dark_fill,
+            "mid-leg fill already at the dark endpoint: snap, not a leg"
+        );
+        // Genuine intermediateness: the mid-leg red channel lies strictly
+        // between the endpoints' (both endpoints are near-achromatic).
+        let (lo, hi) = (
+            light_fill.r().min(dark_fill.r()),
+            light_fill.r().max(dark_fill.r()),
+        );
+        assert!(
+            mid.r() > lo && mid.r() < hi,
+            "mid-leg fill {mid:?} is not between light {light_fill:?} and dark {dark_fill:?}"
+        );
+    }
 }
