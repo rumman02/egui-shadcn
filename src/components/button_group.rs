@@ -401,33 +401,81 @@ fn pop_measure_frame(ctx: &Context) -> bool {
     })
 }
 
-/// Group-aware chrome shared by [`ButtonGroupText`]: fused corners +
-/// removed leading border. Mirrors [`Button`][crate::components::Button]'s
-/// own draw-rect inset: a non-first child draws 1px inward on the shared
-/// edge, so the previous member's trailing border is the single shared
-/// 1px line (spec §3.1). Corners come from [`fuse_radius`], the single
-/// source of truth for fusing.
+/// Group-aware chrome shared by [`ButtonGroupText`]: fused corners on
+/// the FULL border box. Mirrors [`Button`][crate::components::Button]'s
+/// post-BTG-VIS-01 paint: a non-first child fills from the shared edge
+/// itself, and border removal is achieved by the fused-stroke painter
+/// omitting the leading edge of the ring — NOT by insetting the draw
+/// rect (the old inset left the shared column painted by neither
+/// member). Corners come from [`fuse_radius`], the single source of
+/// truth for fusing.
 pub(crate) fn group_adjustments(
     orientation: GroupOrientation,
     position: GroupPosition,
     base_corner: CornerRadius,
     rect: egui::Rect,
 ) -> (CornerRadius, egui::Rect) {
-    let corner = fuse_radius(base_corner, orientation, position);
-    let draw_rect = match orientation {
-        GroupOrientation::Horizontal
-            if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-        {
-            egui::Rect::from_min_max(rect.min + Vec2::new(1.0, 0.0), rect.max)
-        }
-        GroupOrientation::Vertical
-            if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-        {
-            egui::Rect::from_min_max(rect.min + Vec2::new(0.0, 1.0), rect.max)
-        }
-        _ => rect,
+    (fuse_radius(base_corner, orientation, position), rect)
+}
+
+/// Paints a Text slot's border ring with the leading edge omitted for
+/// non-first children (spec §3.1 border removal), mirroring the
+/// foundation fusing fix in [`Button`][crate::components::Button]
+/// (`paint_fused_stroke`, BTG-VIS-01): the full `Inside` ring is
+/// painted through a clip that excludes the leading 1px column
+/// (horizontal groups) or row (vertical groups), and the two leading
+/// corner cells are painted back as solid stroke-color 1px squares, so
+/// the top/bottom rows stay continuous across the shared edge. Leading
+/// corners are square for non-first children ([`fuse_radius`]), so the
+/// corner cells are exact 1px squares and the clipped ring plus the
+/// cells tile with no overlap or gap at any fractional alignment (both
+/// share the same boundary). A clip is exact in all states — including
+/// the 50% disabled fade, where overpainting with the fill color would
+/// double-blend. First/only children take the plain `rect_stroke`
+/// path, identical to a standalone slot.
+fn paint_text_fused_stroke(
+    painter: &egui::Painter,
+    rect: Rect,
+    corner: CornerRadius,
+    stroke: Stroke,
+    orientation: GroupOrientation,
+    position: GroupPosition,
+) {
+    if !matches!(position, GroupPosition::Middle | GroupPosition::Last) {
+        painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+        return;
+    }
+    let (clip, cells) = match orientation {
+        GroupOrientation::Horizontal => (
+            Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x, rect.max.y - 1.0),
+                    Pos2::new(rect.min.x + 1.0, rect.max.y),
+                ),
+            ],
+        ),
+        GroupOrientation::Vertical => (
+            Rect::from_min_max(Pos2::new(rect.min.x, rect.min.y + 1.0), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - 1.0, rect.min.y),
+                    Pos2::new(rect.max.x, rect.min.y + 1.0),
+                ),
+            ],
+        ),
     };
-    (corner, draw_rect)
+    painter.with_clip_rect(clip).rect_stroke(
+        rect,
+        corner,
+        stroke,
+        egui::epaint::StrokeKind::Inside,
+    );
+    for cell in cells {
+        painter.rect_filled(cell, CornerRadius::ZERO, stroke.color);
+    }
 }
 
 /// Resolved colors for [`ButtonGroupText`] (pure, testable).
@@ -596,7 +644,7 @@ impl ButtonGroupText {
             // outline button's shadow.
             paint_text_shadow(painter, rect, corner, theme.style, dark, self.disabled);
             painter.rect_filled(draw_rect, corner, fill);
-            painter.rect_stroke(draw_rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+            paint_text_fused_stroke(painter, draw_rect, corner, stroke, orientation, position);
 
             // Content: [start icon] gap [text] gap [end icon], starting
             // at the leading padding edge of the border box,
@@ -964,8 +1012,9 @@ mod tests {
         (a.min - b.min).length() < 0.01 && (a.max - b.max).length() < 0.01
     }
 
-    /// The draw rect a group member paints on: the 1px shared-edge inset
-    /// for non-first positions, the full rect for first/only.
+    /// The rect a group member paints on: the full border box at every
+    /// position (BTG-VIS-01: no shared-edge inset; border removal is the
+    /// stroke painter's job).
     fn draw_rect_for(rect: Rect, position: GroupPosition) -> Rect {
         group_adjustments(
             GroupOrientation::Horizontal,
@@ -1051,71 +1100,211 @@ mod tests {
     fn group_adjustments_fuse_every_position() {
         let base = CornerRadius::same(8);
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 36.0));
-        // (orientation, position, (nw, ne, sw, se), draw-rect min offset)
+        // (orientation, position, (nw, ne, sw, se)); the draw rect is the
+        // FULL border box at every position (BTG-VIS-01: border removal
+        // is the stroke painter's job, not a draw-rect inset).
         let cases = [
             (
                 GroupOrientation::Horizontal,
                 GroupPosition::Only,
                 (8, 8, 8, 8),
-                (0.0, 0.0),
             ),
             (
                 GroupOrientation::Horizontal,
                 GroupPosition::First,
                 (8, 0, 8, 0),
-                (0.0, 0.0),
             ),
             (
                 GroupOrientation::Horizontal,
                 GroupPosition::Middle,
                 (0, 0, 0, 0),
-                (1.0, 0.0),
             ),
             (
                 GroupOrientation::Horizontal,
                 GroupPosition::Last,
                 (0, 8, 0, 8),
-                (1.0, 0.0),
             ),
             (
                 GroupOrientation::Vertical,
                 GroupPosition::Only,
                 (8, 8, 8, 8),
-                (0.0, 0.0),
             ),
             (
                 GroupOrientation::Vertical,
                 GroupPosition::First,
                 (8, 8, 0, 0),
-                (0.0, 0.0),
             ),
             (
                 GroupOrientation::Vertical,
                 GroupPosition::Middle,
                 (0, 0, 0, 0),
-                (0.0, 1.0),
             ),
             (
                 GroupOrientation::Vertical,
                 GroupPosition::Last,
                 (0, 0, 8, 8),
-                (0.0, 1.0),
             ),
         ];
-        for (orientation, position, corners, offset) in cases {
+        for (orientation, position, corners) in cases {
             let (corner, draw) = group_adjustments(orientation, position, base, rect);
             assert_eq!(
                 (corner.nw, corner.ne, corner.sw, corner.se),
                 corners,
                 "{orientation:?} {position:?}"
             );
-            assert_eq!(
-                draw.min,
-                rect.min + Vec2::new(offset.0, offset.1),
-                "{orientation:?} {position:?}"
-            );
-            assert_eq!(draw.max, rect.max, "{orientation:?} {position:?}");
+            assert_eq!(draw, rect, "{orientation:?} {position:?}");
         }
+    }
+
+    #[test]
+    fn text_mirror_paints_full_rect_and_omits_leading_edge_horizontal() {
+        // BTG-VIS-01 mirror (horizontal): a non-first Text fills the
+        // full border box and its ring omits the leading edge — the
+        // stroke shape sits on the full rect with a clip that starts
+        // exactly 1px in, plus two 1px corner cells. On unfixed code
+        // the fill and stroke sit on the inset rect and there are no
+        // cells, so every assertion here fails.
+        let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .show(ui, |ui| {
+                    Button::new("A").show(ui);
+                    ButtonGroupText::new("text").show(ui).rect
+                })
+                .inner
+        });
+        let p = palette(Mode::Light);
+        let (fill, _, stroke) = text_colors(&p);
+        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        assert_eq!(fills, 1, "one muted fill on the full Text rect");
+        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert!(
+            (clip.min.x - (text_rect.min.x + 1.0)).abs() < 0.01
+                && (clip.min.y - text_rect.min.y).abs() < 0.01,
+            "stroke clip starts exactly 1px in: {clip:?} vs {text_rect:?}"
+        );
+        assert!(
+            (clip.max - text_rect.max).length() < 0.01,
+            "stroke clip ends at the rect max: {clip:?} vs {text_rect:?}"
+        );
+        assert_eq!(cells.len(), 2, "two leading corner cells");
+        let expected = [
+            Rect::from_min_max(
+                text_rect.min,
+                Pos2::new(text_rect.min.x + 1.0, text_rect.min.y + 1.0),
+            ),
+            Rect::from_min_max(
+                Pos2::new(text_rect.min.x, text_rect.max.y - 1.0),
+                Pos2::new(text_rect.min.x + 1.0, text_rect.max.y),
+            ),
+        ];
+        for cell in expected {
+            assert!(
+                cells.iter().any(|c| same_rect(*c, cell)),
+                "corner cell at {cell:?} among {cells:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_mirror_paints_full_rect_and_omits_leading_edge_vertical() {
+        // BTG-VIS-01 mirror (vertical): the clip excludes the top row
+        // and the corner cells sit at the top-left/top-right.
+        let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .orientation(GroupOrientation::Vertical)
+                .show(ui, |ui| {
+                    Button::new("A").show(ui);
+                    ButtonGroupText::new("text").show(ui).rect
+                })
+                .inner
+        });
+        let p = palette(Mode::Light);
+        let (fill, _, stroke) = text_colors(&p);
+        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        assert_eq!(fills, 1, "one muted fill on the full Text rect");
+        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert!(
+            (clip.min.x - text_rect.min.x).abs() < 0.01
+                && (clip.min.y - (text_rect.min.y + 1.0)).abs() < 0.01,
+            "stroke clip starts exactly 1px in: {clip:?} vs {text_rect:?}"
+        );
+        assert!(
+            (clip.max - text_rect.max).length() < 0.01,
+            "stroke clip ends at the rect max: {clip:?} vs {text_rect:?}"
+        );
+        assert_eq!(cells.len(), 2, "two leading corner cells");
+        let expected = [
+            Rect::from_min_max(
+                text_rect.min,
+                Pos2::new(text_rect.min.x + 1.0, text_rect.min.y + 1.0),
+            ),
+            Rect::from_min_max(
+                Pos2::new(text_rect.max.x - 1.0, text_rect.min.y),
+                Pos2::new(text_rect.max.x, text_rect.min.y + 1.0),
+            ),
+        ];
+        for cell in expected {
+            assert!(
+                cells.iter().any(|c| same_rect(*c, cell)),
+                "corner cell at {cell:?} among {cells:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_text_slot_paint_is_unchanged() {
+        // A standalone Text (Only) takes the plain `rect_stroke` path:
+        // one fill + one unclipped ring on the full rect, zero corner
+        // cells. Pins the plain path the mirror must not disturb.
+        let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 1, |ui| {
+            ButtonGroupText::new("text").show(ui).rect
+        });
+        let p = palette(Mode::Light);
+        let (fill, _, stroke) = text_colors(&p);
+        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        assert_eq!(fills, 1, "one muted fill on the full Text rect");
+        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert!(
+            clip.min.x <= text_rect.min.x + 0.01 && clip.min.y <= text_rect.min.y + 0.01,
+            "standalone ring unclipped: {clip:?} vs {text_rect:?}"
+        );
+        assert!(cells.is_empty(), "no corner cells standalone");
+    }
+
+    /// Text paint shapes on `target`: (muted fills, stroke clip rect,
+    /// 1px corner cells). Corner cells are 1x1 stroke-color fills with
+    /// zero corner radius.
+    fn text_paint_shapes(
+        out: &egui::FullOutput,
+        target: Rect,
+        fill: Color32,
+        stroke: Stroke,
+    ) -> (usize, Option<Rect>, Vec<Rect>) {
+        let mut fills = 0;
+        let mut stroke_clip = None;
+        let mut cells = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rs) = &clipped.shape {
+                if same_rect(rs.rect, target) && rs.fill == fill && rs.stroke == Stroke::NONE {
+                    fills += 1;
+                }
+                if same_rect(rs.rect, target)
+                    && rs.fill == Color32::TRANSPARENT
+                    && rs.stroke.width == 1.0
+                {
+                    stroke_clip = Some(clipped.clip_rect);
+                }
+                if rs.fill == stroke.color
+                    && rs.stroke == Stroke::NONE
+                    && rs.corner_radius == CornerRadius::ZERO
+                    && (rs.rect.width() - 1.0).abs() < 0.01
+                    && (rs.rect.height() - 1.0).abs() < 0.01
+                {
+                    cells.push(rs.rect);
+                }
+            }
+        }
+        (fills, stroke_clip, cells)
     }
 
     #[test]
