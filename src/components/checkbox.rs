@@ -107,7 +107,7 @@
 
 use crate::components::attachment::mix;
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
 use crate::utils::animation::{
     transition_alpha, transition_color_to, transition_progress, Easing, TransitionSpec,
 };
@@ -267,6 +267,36 @@ fn indicator_icon(checked: bool, indeterminate: bool) -> Option<Icon> {
     // call site; it alters no rendered slot in this build.
     let _ = indeterminate;
     checked.then_some(Icon::Check)
+}
+
+/// Whole-element group fade for `disabled:opacity-50` (spec §4.3): the
+/// enabled chrome composites at 50% over `backdrop` (the theme page
+/// background — exact on the gallery page, where the panel fill is
+/// `p.background`; on other backdrops the overlap pixels use the theme
+/// background as the fade target, a recorded limitation, same as the
+/// toggle S1 precedent).
+///
+/// Per-slot alpha halving would double-fade the overlap pixels (a halved
+/// stroke over a halved fill reads 25% at the border band — the CHK-VIS-01
+/// defect). Instead: the fill fades by halving its alpha (it paints over
+/// the backdrop alone, where halving IS the group fade), while the stroke
+/// and icon colours are pre-composited OPAQUE against the backdrop:
+/// `0.5 * composite + 0.5 * backdrop`, where `composite` is the enabled
+/// stroke/icon colour over the enabled fill over the backdrop.
+/// Anti-aliased edge pixels stay exact under this scheme: coverage `c`
+/// over the faded fill yields the group fade of the enabled pixel.
+/// Returns `(fill, stroke_color, icon_color)`.
+fn disabled_group_fade(
+    fill: Color32,
+    stroke_color: Color32,
+    icon_color: Color32,
+    backdrop: Color32,
+) -> (Color32, Color32, Color32) {
+    let faded_fill = color_alpha(fill, 0.5);
+    let fill_composite = blend(backdrop, fill);
+    let stroke = mix(backdrop, blend(fill_composite, stroke_color), 0.5);
+    let icon = mix(backdrop, blend(fill_composite, icon_color), 0.5);
+    (faded_fill, stroke, icon)
 }
 
 /// Paints the checkbox's `shadow-xs` through the LAYER resolution API
@@ -499,13 +529,16 @@ impl<'a> Checkbox<'a> {
             .alpha;
             if self.disabled {
                 // `disabled:opacity-50` — the WHOLE element composites at
-                // 50% (spec §4.3), applied instantly: opacity is in
-                // neither style's transition set. `color_alpha`
-                // multiplies, so the dark unchecked fill goes 30% → 15%
-                // effective, as CSS compositing requires.
-                fill = color_alpha(fill, 0.5);
-                stroke_color = color_alpha(stroke_color, 0.5);
-                icon_color = color_alpha(icon_color, 0.5);
+                // 50% (spec §4.3, CSS `opacity` semantics), applied
+                // instantly: opacity is in neither style's transition
+                // set. Group fade via [`disabled_group_fade`], NOT
+                // per-slot halving: halving each slot double-fades the
+                // overlap pixels (CHK-VIS-01). The ring keeps halving:
+                // it paints over the backdrop alone, where halving IS
+                // the group fade (the shadow halo beneath it is
+                // sub-1-level).
+                (fill, stroke_color, icon_color) =
+                    disabled_group_fade(fill, stroke_color, icon_color, p.background);
                 ring_color = color_alpha(ring_color, 0.5);
             }
             let corner = CornerRadius::same(CHECKBOX_RADIUS);
@@ -944,10 +977,73 @@ mod tests {
     }
 
     #[test]
-    fn disabled_halves_border_and_fill() {
-        // Spec §4.3: the whole element composites at 50% — the border
-        // halves, and the dark unchecked fill goes 30% → 15% effective
-        // (multiplied alphas, not a separate token value).
+    fn disabled_group_fade_matches_css_opacity() {
+        // CHK-VIS-01: the disabled element composites as a GROUP at 50%
+        // over the backdrop (spec §4.3, CSS `opacity` semantics). The
+        // fill halves (it paints over the backdrop alone); the stroke
+        // and icon pre-composite OPAQUE: 0.5 * (slot over fill over
+        // backdrop) + 0.5 * backdrop. Hand-computed literals below
+        // (premultiplied `mix` rounds halves away from zero, so
+        // 252.5 -> 253 and 16.5 -> 17 — within the ±1 differential
+        // tolerance the captures are judged by).
+        let white = Color32::WHITE;
+        let dark_bg = Color32::from_rgb(10, 10, 10);
+        // Light checked: fill/stroke primary (23), icon
+        // primary-foreground (250) over white.
+        let (fill, stroke, icon) = disabled_group_fade(
+            Color32::from_rgb(23, 23, 23),
+            Color32::from_rgb(23, 23, 23),
+            Color32::from_rgb(250, 250, 250),
+            white,
+        );
+        assert_eq!(fill, color_alpha(Color32::from_rgb(23, 23, 23), 0.5));
+        assert_eq!(stroke, Color32::from_rgb(139, 139, 139));
+        assert_eq!(icon, Color32::from_rgb(253, 253, 253));
+        // Dark checked: fill/stroke primary (229), icon
+        // primary-foreground (23) over (10).
+        let (fill, stroke, icon) = disabled_group_fade(
+            Color32::from_rgb(229, 229, 229),
+            Color32::from_rgb(229, 229, 229),
+            Color32::from_rgb(23, 23, 23),
+            dark_bg,
+        );
+        assert_eq!(fill, color_alpha(Color32::from_rgb(229, 229, 229), 0.5));
+        assert_eq!(stroke, Color32::from_rgb(120, 120, 120));
+        assert_eq!(icon, Color32::from_rgb(17, 17, 17));
+        // Light unchecked: transparent fill, opaque `input` (229) stroke.
+        let (fill, stroke, _) = disabled_group_fade(
+            Color32::TRANSPARENT,
+            Color32::from_rgb(229, 229, 229),
+            Color32::from_rgb(10, 10, 10),
+            white,
+        );
+        assert_eq!(fill, Color32::TRANSPARENT);
+        assert_eq!(stroke, Color32::from_rgb(242, 242, 242));
+        // Dark unchecked: `input/30` fill (white 15% at 30% ->
+        // premultiplied (11,11,11,11)) under a white-15% `input`
+        // stroke (premultiplied (38,38,38,38)) over (10): the enabled
+        // border composite is (56), so the group fade is (33).
+        let (fill, stroke, _) = disabled_group_fade(
+            Color32::from_rgba_premultiplied(11, 11, 11, 11),
+            Color32::from_rgba_premultiplied(38, 38, 38, 38),
+            Color32::from_rgb(250, 250, 250),
+            dark_bg,
+        );
+        assert_eq!(
+            fill,
+            color_alpha(Color32::from_rgba_premultiplied(11, 11, 11, 11), 0.5)
+        );
+        assert_eq!(stroke, Color32::from_rgb(33, 33, 33));
+    }
+
+    #[test]
+    fn disabled_paint_uses_group_fade() {
+        // Spec §4.3 (CHK-VIS-01): the RENDERED disabled stroke is the
+        // opaque group-fade precomposite, not a halved alpha — while the
+        // fill still halves (it paints over the backdrop alone). The
+        // fade applies AFTER the animators, whose targets are identical
+        // in the enabled/disabled passes, so single-pass comparisons
+        // are stable.
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let p = palette(Mode::Light);
@@ -970,7 +1066,21 @@ mod tests {
                 .color
         };
         assert_eq!(stroke_of(&enabled), p.input);
-        assert_eq!(stroke_of(&disabled), color_alpha(p.input, 0.5));
+        // Group fade of the (229) border over white: opaque (242).
+        assert_eq!(stroke_of(&disabled), Color32::from_rgb(242, 242, 242));
+
+        // Light checked, fresh context: the disabled border-over-fill
+        // reads the opaque group fade (139), not the per-slot (81).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = true;
+        let disabled = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("dis_chk")
+                .show(ui);
+        });
+        assert_eq!(stroke_of(&disabled), Color32::from_rgb(139, 139, 139));
 
         let ctx = egui::Context::default();
         Preset::default().build(Mode::Dark).install(&ctx);
@@ -997,6 +1107,9 @@ mod tests {
             fill_of(&disabled),
             color_alpha(color_alpha(dark.input, 0.3), 0.5)
         );
+        // Dark unchecked border: group fade of the (56) composite over
+        // (10) is opaque (33).
+        assert_eq!(stroke_of(&disabled), Color32::from_rgb(33, 33, 33));
     }
 
     #[test]
