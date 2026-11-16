@@ -445,70 +445,224 @@ pub fn button_demo(ui: &mut egui::Ui) {
 }
 
 pub fn badge_demo(ui: &mut egui::Ui) {
-    ui.label("Variants");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Badge::new("Badge").show(ui);
-        Badge::new("Secondary")
-            .variant(BadgeVariant::Secondary)
-            .show(ui);
-        Badge::new("Destructive")
-            .variant(BadgeVariant::Destructive)
-            .show(ui);
-        Badge::new("Outline")
-            .variant(BadgeVariant::Outline)
-            .show(ui);
-        Badge::new("Ghost").variant(BadgeVariant::Ghost).show(ui);
-        Badge::new("Link").variant(BadgeVariant::Link).show(ui);
-    });
+    // Header: recipe position, stated honestly (spec §§0, 3.1, 7).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Badge — 6 variants, one size. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Heights: nova h-5 = 20px fixed; base content-derived 22px with text (O5 derivation: 16px line box + 4px padding + 2px border). Transitions 150ms + cubic-bezier(0.4, 0, 0.2, 1) are O1 interim values, not snapshot-verified. No variant paints a shadow in either recipe (§2.3).");
 
+    // 1. All 6 variants, label-only (spec §2). The row rect is demo chrome:
+    // `ui.horizontal` sizes the row to `interact_size.y` (36px); each badge
+    // allocates its own exact rect, printed below.
     ui.add_space(12.0);
-    ui.label("Inline with text");
+    ui.label("1. All 6 variants, label-only (spec §2; height 20px nova / 22px base)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label("Build status:");
-        Badge::new("Passing").show(ui);
-        ui.label("Version:");
-        Badge::new("v2.0.0")
-            .variant(BadgeVariant::Secondary)
-            .show(ui);
-        ui.label("Coverage:");
-        Badge::new("98%").variant(BadgeVariant::Outline).show(ui);
+    let row = ui.horizontal(|ui| {
+        [
+            ("Default", Badge::new("Default").show(ui).rect),
+            (
+                "Secondary",
+                Badge::new("Secondary")
+                    .variant(BadgeVariant::Secondary)
+                    .show(ui)
+                    .rect,
+            ),
+            (
+                "Destructive",
+                Badge::new("Destructive")
+                    .variant(BadgeVariant::Destructive)
+                    .show(ui)
+                    .rect,
+            ),
+            (
+                "Outline",
+                Badge::new("Outline")
+                    .variant(BadgeVariant::Outline)
+                    .show(ui)
+                    .rect,
+            ),
+            (
+                "Ghost",
+                Badge::new("Ghost")
+                    .variant(BadgeVariant::Ghost)
+                    .show(ui)
+                    .rect,
+            ),
+            (
+                "Link",
+                Badge::new("Link").variant(BadgeVariant::Link).show(ui).rect,
+            ),
+        ]
     });
+    ui.label(format!(
+        "row rect: {:.1} x {:.1} px (36px-tall horizontal row: demo layout, not the component)",
+        row.response.rect.width(),
+        row.response.rect.height()
+    ));
+    let mut summary = String::from("allocated:");
+    for (name, rect) in row.inner {
+        summary.push_str(&format!(
+            " {name} {:.1}x{:.1};",
+            rect.width(),
+            rect.height()
+        ));
+    }
+    ui.label(summary);
 
+    // 2. Icons (spec §4). One label ("New") throughout, so the text width T
+    // is identical in every case: T = label-only width − 16 (8px padding per
+    // side). Expected widths follow the §4 tables for the active recipe.
     ui.add_space(12.0);
-    ui.label("With icons (12px, gap-1)");
+    ui.label("2. Icons — 12px icons, 4px gap (spec §4; 6px icon-side padding under nova only)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Badge::new("New").icon_start(Icon::Plus).show(ui);
-        Badge::new("Notification")
-            .variant(BadgeVariant::Secondary)
-            .icon_end(Icon::X)
-            .show(ui);
-        Badge::new("Failed")
-            .variant(BadgeVariant::Destructive)
-            .icon_start(Icon::CircleAlert)
-            .show(ui);
-        Badge::new("Open")
-            .variant(BadgeVariant::Outline)
-            .icon_start(Icon::Plus)
-            .icon_end(Icon::ArrowRight)
-            .show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Disabled");
+    let label_only = Badge::new("New").show(ui).rect;
+    let t = label_only.width() - 16.0;
+    ui.label(format!(
+        "label-only \"New\": {:.1} x {:.1} px (T + 16, so T = {:.1}px)",
+        label_only.width(),
+        label_only.height(),
+        t
+    ));
+    let (one_icon, two_icons, icon_only) = if nova {
+        (t + 30.0, t + 44.0, 26.0)
+    } else {
+        (t + 32.0, t + 48.0, 28.0)
+    };
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Badge::new("Disabled").disabled(true).show(ui);
-        Badge::new("Disabled outline")
-            .variant(BadgeVariant::Outline)
-            .disabled(true)
-            .show(ui);
-    });
+    let r = Badge::new("New").icon_start(Icon::Plus).show(ui).rect;
+    ui.label(format!(
+        "leading icon: {:.1} x {:.1} px (expected {:.1} under {recipe})",
+        r.width(),
+        r.height(),
+        one_icon
+    ));
+    ui.add_space(4.0);
+    let r = Badge::new("New").icon_end(Icon::X).show(ui).rect;
+    ui.label(format!(
+        "trailing icon: {:.1} x {:.1} px (expected {:.1} under {recipe})",
+        r.width(),
+        r.height(),
+        one_icon
+    ));
+    ui.add_space(4.0);
+    let r = Badge::new("New")
+        .icon_start(Icon::Plus)
+        .icon_end(Icon::ArrowRight)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "two icons: {:.1} x {:.1} px (expected {:.1} under {recipe})",
+        r.width(),
+        r.height(),
+        two_icons
+    ));
+    ui.add_space(4.0);
+    let r = Badge::new("").icon_start(Icon::CircleAlert).show(ui).rect;
+    ui.label(format!(
+        "icon-only: {:.1} x {:.1} px (expected {:.1} under {recipe}; nova 26px assumes one flagged side — O2)",
+        r.width(),
+        r.height(),
+        icon_only
+    ));
 
+    // 3. Long text (spec §10).
     ui.add_space(12.0);
-    ui.label("Hover the ghost and link badges (nova: muted fill / underline).");
+    ui.label("3. Long text — grows to fit, never wraps, no truncation (spec §10)");
+    ui.add_space(4.0);
+    let r = Badge::new("This is a very long badge label that must not wrap or truncate")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "allocated: {:.1} x {:.1} px (width = T + 16, single row)",
+        r.width(),
+        r.height()
+    ));
+
+    // 4. Empty badge (spec §10 vs §4).
+    ui.add_space(12.0);
+    ui.label("4. Empty badge — no label, no icon (spec §10)");
+    ui.add_space(4.0);
+    let r = Badge::new("").show(ui).rect;
+    ui.label(format!(
+        "allocated: {:.1} x {:.1} px (§10 states 18px wide, padding + border; the §4 rule extrapolates to 16px — S1 implements §10; S5 confirms)",
+        r.width(),
+        r.height()
+    ));
+
+    // 5. Invalid (spec §5.6).
+    ui.add_space(12.0);
+    ui.label("5. Invalid — .invalid(true): destructive border, fill/text unchanged, no ring invented (spec §5.6, O6)");
+    ui.add_space(4.0);
+    let r = Badge::new("Invalid").invalid(true).show(ui).rect;
+    ui.label(format!(
+        "default + invalid: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = Badge::new("Invalid outline")
+        .variant(BadgeVariant::Outline)
+        .invalid(true)
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "outline + invalid: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 6. Disabled extension (spec §5.5, D4).
+    ui.add_space(12.0);
+    ui.label("6. Disabled extension — .disabled(true) is a D4 Rust extension; the original defines no disabled state (§5.5), so S5 must not judge it as parity");
+    ui.add_space(4.0);
+    let r = Badge::new("Disabled").disabled(true).show(ui).rect;
+    ui.label(format!(
+        "allocated: {:.1} x {:.1} px (fades to 50% opacity, hover suppressed)",
+        r.width(),
+        r.height()
+    ));
+
+    // 7. Hover targets (spec §5.2): the only span badges whose hover changes
+    // anything under nova. Generous space around each so S5/S6 hover captures
+    // isolate one badge; explicit id salts keep the transition animators
+    // anchored. Rect origins are printed for hover targeting.
+    ui.add_space(12.0);
+    ui.label("7. Hover targets — nova span-hover cases only: ghost (muted fill + muted-foreground text) and link (underline) (spec §5.2)");
+    ui.add_space(8.0);
+    let r = Badge::new("Ghost hover")
+        .variant(BadgeVariant::Ghost)
+        .id_salt("demo_hover_ghost")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "ghost: {:.1} x {:.1} px at ({:.1}, {:.1})",
+        r.width(),
+        r.height(),
+        r.min.x,
+        r.min.y
+    ));
+    ui.add_space(16.0);
+    let r = Badge::new("Link hover")
+        .variant(BadgeVariant::Link)
+        .id_salt("demo_hover_link")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "link: {:.1} x {:.1} px at ({:.1}, {:.1})",
+        r.width(),
+        r.height(),
+        r.min.x,
+        r.min.y
+    ));
 }
 
 pub fn label_demo(ui: &mut egui::Ui) {
