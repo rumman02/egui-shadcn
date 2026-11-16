@@ -28,6 +28,15 @@
 //! spec §4: every icon counts its full width and every gap between adjacent
 //! items counts; see [`chip_width`].
 //!
+//! Group layout (spec §3.3): [`KbdGroup::show`] measures its content
+//! before allocating, so the group presents its true content-sized box to
+//! its parent and every child centres within the tallest-child row. The
+//! content closure runs TWICE: once invisibly to measure the tallest
+//! child, once for real. The measuring pass is invisible (hence disabled),
+//! so no callbacks can double-fire; `Kbd` children are stateless paints
+//! and are unaffected. Callers must not rely on the closure running
+//! exactly once. The closure bound is `FnMut`, not `FnOnce`.
+//!
 //! Tooltip context (spec §2.4, SETTLED): inside tooltip content the chip
 //! uses a translucent wash of the `background` token instead of `muted` —
 //! `background/20` + `background` text in light mode, `background/10` +
