@@ -2536,129 +2536,448 @@ pub fn marker_demo(ui: &mut egui::Ui) {
 }
 
 pub fn button_group_demo(ui: &mut egui::Ui) {
-    ui.label("Horizontal (fused corners and borders)");
-    ui.add_space(4.0);
-    ButtonGroup::new().show(ui, |ui| {
-        Button::new("Day").show(ui);
-        Button::new("Month").show(ui);
-        Button::new("Year").show(ui);
-    });
+    // Every section prints the rects the group and its members actually
+    // allocated (`Response.rect`), so S5/S6 can verify geometry from
+    // screenshots. Rects are returned by the group closure (only the real
+    // pass's return value is kept); the closure carries no side effects —
+    // it runs 2-3x per frame (measure + real passes). All groups carry
+    // explicit id_salts so ids are stable regardless of layout order.
+    // Spec references are to the frozen button-group spec. The D8
+    // mismatch cases (section 8) and the empty Text (section 6) are
+    // OBSERVED-ONLY. OPEN-5 (input child in a constrained parent) and
+    // O6/D5 (select triggers, Batch F) are NOT exercised by this demo.
 
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            Button::new("Outline left")
-                .variant(ButtonVariant::Outline)
-                .show(ui);
-            Button::new("Outline right")
-                .variant(ButtonVariant::Outline)
-                .show(ui);
-        });
-    });
-
-    ui.add_space(8.0);
-    ui.label("With separators");
+    ui.label("1. Horizontal fused trio — shared 1px borders, zero gap (spec §§3.1, 8)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            Button::new("")
+    let trio = ButtonGroup::new().id_salt("s1_trio").show(ui, |ui| {
+        let a = Button::new("Day").show(ui).rect;
+        let b = Button::new("Month").show(ui).rect;
+        let c = Button::new("Year").show(ui).rect;
+        (a, b, c)
+    });
+    let (a, b, c) = trio.inner;
+    let g = trio.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; buttons: {:.1} x {:.1} + {:.1} x {:.1} + {:.1} x {:.1} px; shared edges: {:.1} / {:.1} px (expected: 0 / 0)",
+        g.min.x, g.min.y, g.width(), g.height(),
+        a.width(), a.height(), b.width(), b.height(), c.width(), c.height(),
+        b.min.x - a.max.x, c.min.x - b.max.x
+    ));
+
+    ui.add_space(12.0);
+    ui.label("2. Vertical group — text buttons stretch to the widest member, icon button keeps its fixed size (spec §5, FG-1)");
+    ui.add_space(4.0);
+    let vert = ButtonGroup::new()
+        .orientation(GroupOrientation::Vertical)
+        .id_salt("s2_vertical")
+        .show(ui, |ui| {
+            let a = Button::new("Cut").show(ui).rect;
+            let b = Button::new("Copy a longer label").show(ui).rect;
+            let c = Button::new("Paste").show(ui).rect;
+            let icon = Button::new("")
                 .size(ButtonSize::Icon)
-                .variant(ButtonVariant::Outline)
-                .icon_start(Icon::ChevronLeft)
-                .show(ui);
-            ButtonGroupSeparator::new().show(ui);
-            Button::new("")
-                .size(ButtonSize::Icon)
-                .variant(ButtonVariant::Outline)
                 .icon_start(Icon::MoreHorizontal)
-                .show(ui);
-            ButtonGroupSeparator::new().show(ui);
-            Button::new("")
-                .size(ButtonSize::Icon)
-                .variant(ButtonVariant::Outline)
-                .icon_start(Icon::ChevronRight)
-                .show(ui);
+                .show(ui)
+                .rect;
+            (a, b, c, icon)
         });
-    });
+    let (a, b, c, icon) = vert.inner;
+    let g = vert.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; text buttons: {:.1} / {:.1} / {:.1} px wide; icon button: {:.1} x {:.1} px (fixed square, cross-start aligned); shared edges: {:.1} / {:.1} / {:.1} px (expected: 0 / 0 / 0)",
+        g.min.x, g.min.y, g.width(), g.height(),
+        a.width(), b.width(), c.width(), icon.width(), icon.height(),
+        b.min.y - a.max.y, c.min.y - b.max.y, icon.min.y - c.max.y
+    ));
 
     ui.add_space(12.0);
-    ui.label("With a text slot");
+    ui.label("3. Trailing non-slot child — the button is the last slot-carrying child though Text follows it (spec §3.2, FG-2)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            ButtonGroupText::new("https://example.com")
-                .icon_start(Icon::Paperclip)
-                .show(ui);
-            Button::new("")
-                .size(ButtonSize::Icon)
-                .variant(ButtonVariant::Outline)
-                .icon_start(Icon::Copy)
-                .show(ui);
-        });
+    let fg2 = ButtonGroup::new().id_salt("s3_fg2").show(ui, |ui| {
+        let btn = Button::new("Action").show(ui).rect;
+        let text = ButtonGroupText::new("https://example.com").show(ui).rect;
+        (btn, text)
     });
-
-    ui.add_space(12.0);
-    ui.label("Nested group (outer gap-2, items stretch to the tallest member)");
-    ui.add_space(4.0);
-    ButtonGroup::new().gap(spacing::SM).show(ui, |ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            Button::new("Left").show(ui);
-            Button::new("Right").show(ui);
-        });
-        Button::new("Submit").show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Vertical");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new()
-            .orientation(GroupOrientation::Vertical)
-            .id_salt("vertical_group")
-            .show(ui, |ui| {
-                Button::new("Cut").show(ui);
-                Button::new("Copy").show(ui);
-                Button::new("Paste").show(ui);
-            });
-        ButtonGroup::new()
-            .orientation(GroupOrientation::Vertical)
-            .id_salt("vertical_group_outline")
-            .show(ui, |ui| {
-                Button::new("Top").variant(ButtonVariant::Outline).show(ui);
-                ButtonGroupSeparator::new()
-                    .orientation(GroupOrientation::Vertical)
-                    .show(ui);
-                Button::new("Middle")
-                    .variant(ButtonVariant::Outline)
-                    .show(ui);
-                ButtonGroupSeparator::new()
-                    .orientation(GroupOrientation::Vertical)
-                    .show(ui);
-                Button::new("Bottom")
-                    .variant(ButtonVariant::Outline)
-                    .show(ui);
-            });
-    });
-
-    ui.add_space(12.0);
-    ui.label("Sizes and states");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            Button::new("Sm").size(ButtonSize::Sm).show(ui);
-            Button::new("Sm")
-                .size(ButtonSize::Sm)
-                .variant(ButtonVariant::Secondary)
-                .show(ui);
-        });
-    });
+    let (btn, text) = fg2.inner;
+    let g = fg2.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; button: {:.1} x {:.1} px; Text: {:.1} x {:.1} px (stretched to the button height); S5 judges the button trailing corners + Text shadow-xs pixels",
+        g.min.x, g.min.y, g.width(), g.height(),
+        btn.width(), btn.height(), text.width(), text.height()
+    ));
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ButtonGroup::new().show(ui, |ui| {
-            Button::new("Disabled").disabled(true).show(ui);
-            Button::new("Active").show(ui);
-        });
+    ui.label("3b. Common case — Text first, button last (spec §3.2)");
+    ui.add_space(4.0);
+    let fg2b = ButtonGroup::new().id_salt("s3_fg2b").show(ui, |ui| {
+        let text = ButtonGroupText::new("https://example.com").show(ui).rect;
+        let btn = Button::new("Action").show(ui).rect;
+        (text, btn)
     });
+    let (text, btn) = fg2b.inner;
+    let g = fg2b.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; Text: {:.1} x {:.1} px; button: {:.1} x {:.1} px",
+        g.min.x,
+        g.min.y,
+        g.width(),
+        g.height(),
+        text.width(),
+        text.height(),
+        btn.width(),
+        btn.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("4. Nested group — automatic 8px gap, no .gap() call (spec §8, D4 automatic)");
+    ui.add_space(4.0);
+    let nested = ButtonGroup::new().id_salt("s4_nested").show(ui, |ui| {
+        let inner = ButtonGroup::new()
+            .id_salt("s4_nested_inner")
+            .show(ui, |ui| {
+                let l = Button::new("Left").show(ui).rect;
+                let r = Button::new("Right").show(ui).rect;
+                (l, r)
+            });
+        let submit = Button::new("Submit").show(ui).rect;
+        (inner.response.rect, inner.inner, submit)
+    });
+    let (inner_rect, (l, r), submit) = nested.inner;
+    let g = nested.response.rect;
+    ui.label(format!(
+        "outer group: x={:.1} y={:.1} {:.1} x {:.1} px; outer gap (nested group to Submit): {:.1} px (expected: 8); inner gap: {:.1} px (expected: 0); inner group: {:.1} x {:.1} px; Submit: {:.1} x {:.1} px",
+        g.min.x, g.min.y, g.width(), g.height(),
+        submit.min.x - inner_rect.max.x, r.min.x - l.max.x,
+        inner_rect.width(), inner_rect.height(), submit.width(), submit.height()
+    ));
+    ui.add_space(8.0);
+    ui.label(
+        "4b. Explicit .gap(16.0) override — labelled override, the automatic rule is 8px (spec §8)",
+    );
+    ui.add_space(4.0);
+    let over = ButtonGroup::new()
+        .gap(16.0)
+        .id_salt("s4_override")
+        .show(ui, |ui| {
+            let inner = ButtonGroup::new()
+                .id_salt("s4_override_inner")
+                .show(ui, |ui| {
+                    let l = Button::new("Left").show(ui).rect;
+                    let r = Button::new("Right").show(ui).rect;
+                    (l, r)
+                });
+            let submit = Button::new("Submit").show(ui).rect;
+            (inner.response.rect, inner.inner, submit)
+        });
+    let (inner_rect, (l, r), submit) = over.inner;
+    let g = over.response.rect;
+    ui.label(format!(
+        "outer group: {:.1} x {:.1} px; outer gap: {:.1} px (expected: 16, the explicit override); inner gap: {:.1} px (expected: 0)",
+        g.width(), g.height(),
+        submit.min.x - inner_rect.max.x, r.min.x - l.max.x
+    ));
+
+    ui.add_space(12.0);
+    ui.label("5. Separators — vertical rules in a horizontal group, stretched to the group height (spec §6)");
+    ui.add_space(4.0);
+    let seps = ButtonGroup::new().id_salt("s5a_seps").show(ui, |ui| {
+        let a = Button::new("")
+            .size(ButtonSize::Icon)
+            .icon_start(Icon::ChevronLeft)
+            .show(ui)
+            .rect;
+        let s1 = ButtonGroupSeparator::new().show(ui).rect;
+        let b = Button::new("")
+            .size(ButtonSize::Icon)
+            .icon_start(Icon::MoreHorizontal)
+            .show(ui)
+            .rect;
+        let s2 = ButtonGroupSeparator::new().show(ui).rect;
+        let c = Button::new("")
+            .size(ButtonSize::Icon)
+            .icon_start(Icon::ChevronRight)
+            .show(ui)
+            .rect;
+        (a, s1, b, s2, c)
+    });
+    let (a, s1, _b, s2, _c) = seps.inner;
+    let g = seps.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; icon buttons: {:.1} x {:.1} px; separators: {:.1} x {:.1} px at x={:.1} and {:.1} x {:.1} px at x={:.1} (expected: 1px wide, full group height)",
+        g.min.x, g.min.y, g.width(), g.height(),
+        a.width(), a.height(),
+        s1.width(), s1.height(), s1.min.x, s2.width(), s2.height(), s2.min.x
+    ));
+    ui.add_space(8.0);
+    ui.label("5b. Separators — horizontal rules in a vertical group, full group width (spec §6)");
+    ui.add_space(4.0);
+    let vseps = ButtonGroup::new()
+        .orientation(GroupOrientation::Vertical)
+        .id_salt("s5b_vseps")
+        .show(ui, |ui| {
+            let a = Button::new("Top")
+                .variant(ButtonVariant::Outline)
+                .show(ui)
+                .rect;
+            let s1 = ButtonGroupSeparator::new()
+                .orientation(GroupOrientation::Vertical)
+                .show(ui)
+                .rect;
+            let b = Button::new("Middle")
+                .variant(ButtonVariant::Outline)
+                .show(ui)
+                .rect;
+            let s2 = ButtonGroupSeparator::new()
+                .orientation(GroupOrientation::Vertical)
+                .show(ui)
+                .rect;
+            let c = Button::new("Bottom")
+                .variant(ButtonVariant::Outline)
+                .show(ui)
+                .rect;
+            (a, s1, b, s2, c)
+        });
+    let (a, s1, b, s2, c) = vseps.inner;
+    let g = vseps.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; separators: {:.1} x {:.1} px at y={:.1} and {:.1} x {:.1} px at y={:.1} (expected: full group width, 1px tall); buttons: {:.1} / {:.1} / {:.1} px wide",
+        g.min.x, g.min.y, g.width(), g.height(),
+        s1.width(), s1.height(), s1.min.y, s2.width(), s2.height(), s2.min.y,
+        a.width(), b.width(), c.width()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("6. Text variants — Text with icon, stretched to the group height (spec §§2.3, 5, 7)");
+    ui.add_space(4.0);
+    let t1 = ButtonGroup::new().id_salt("s6a_text").show(ui, |ui| {
+        let text = ButtonGroupText::new("https://example.com")
+            .icon_start(Icon::Paperclip)
+            .show(ui)
+            .rect;
+        let btn = Button::new("")
+            .size(ButtonSize::Icon)
+            .icon_start(Icon::Copy)
+            .show(ui)
+            .rect;
+        (text, btn)
+    });
+    let (text, btn) = t1.inner;
+    let g = t1.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; Text: {:.1} x {:.1} px; icon button: {:.1} x {:.1} px",
+        g.min.x, g.min.y, g.width(), g.height(),
+        text.width(), text.height(), btn.width(), btn.height()
+    ));
+    ui.add_space(8.0);
+    ui.label("6b. Text with leading + trailing icons — 8px gaps, content centred vertically (spec §§2.3, 14)");
+    ui.add_space(4.0);
+    let t2 = ButtonGroup::new().id_salt("s6b_text_icons").show(ui, |ui| {
+        let text = ButtonGroupText::new("Label")
+            .icon_start(Icon::Search)
+            .icon_end(Icon::ChevronDown)
+            .show(ui)
+            .rect;
+        let btn = Button::new("Go").show(ui).rect;
+        (text, btn)
+    });
+    let (text, btn) = t2.inner;
+    let g = t2.response.rect;
+    ui.label(format!(
+        "group: {:.1} x {:.1} px; Text: {:.1} x {:.1} px; button: {:.1} x {:.1} px",
+        g.width(),
+        g.height(),
+        text.width(),
+        text.height(),
+        btn.width(),
+        btn.height()
+    ));
+    ui.add_space(8.0);
+    ui.label("6c. Empty Text — OBSERVED ONLY, spec silent on empty Text (must-not-judge 24)");
+    ui.add_space(4.0);
+    let t3 = ButtonGroup::new().id_salt("s6c_empty_text").show(ui, |ui| {
+        let text = ButtonGroupText::new("").show(ui).rect;
+        let btn = Button::new("Go").show(ui).rect;
+        (text, btn)
+    });
+    let (text, btn) = t3.inner;
+    let g = t3.response.rect;
+    ui.label(format!(
+        "group: {:.1} x {:.1} px; empty Text: {:.1} x {:.1} px; button: {:.1} x {:.1} px",
+        g.width(),
+        g.height(),
+        text.width(),
+        text.height(),
+        btn.width(),
+        btn.height()
+    ));
+    ui.add_space(8.0);
+    ui.label("6d. Standalone Text — outside any group, content height (spec §7.1: 20px text-only line box)");
+    ui.add_space(4.0);
+    let standalone = ButtonGroupText::new("Standalone text").show(ui).rect;
+    ui.label(format!(
+        "standalone Text: x={:.1} y={:.1} {:.1} x {:.1} px",
+        standalone.min.x,
+        standalone.min.y,
+        standalone.width(),
+        standalone.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("7. Focus — middle member reachable by Tab; S5/S6 judge the shared-edge ring pixels (spec §4, FG-3)");
+    ui.add_space(4.0);
+    let focus = ButtonGroup::new().id_salt("s7_focus").show(ui, |ui| {
+        let a = Button::new("One").show(ui).rect;
+        let mid = Button::new("Two").show(ui).rect;
+        let c = Button::new("Three").show(ui).rect;
+        (a, mid, c)
+    });
+    let (a, mid, c) = focus.inner;
+    let g = focus.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; middle button: x={:.1} y={:.1} {:.1} x {:.1} px; neighbours: {:.1} / {:.1} px wide",
+        g.min.x, g.min.y, g.width(), g.height(),
+        mid.min.x, mid.min.y, mid.width(), mid.height(), a.width(), c.width()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("8. OBSERVED ONLY — D8 PROPOSED: horizontal rule in a horizontal group (§14 mismatch; Expert Reviewer decides)");
+    ui.add_space(4.0);
+    let m1 = ButtonGroup::new().id_salt("s8a_mismatch_h").show(ui, |ui| {
+        let a = Button::new("Left").show(ui).rect;
+        let sep = ButtonGroupSeparator::new()
+            .orientation(GroupOrientation::Vertical)
+            .show(ui)
+            .rect;
+        let b = Button::new("Right").show(ui).rect;
+        (a, sep, b)
+    });
+    let (a, sep, b) = m1.inner;
+    let g = m1.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; separator measured: {:.1} x {:.1} px at x={:.1}; buttons: {:.1} / {:.1} px wide; gap between buttons: {:.1} px",
+        g.min.x, g.min.y, g.width(), g.height(),
+        sep.width(), sep.height(), sep.min.x, a.width(), b.width(),
+        b.min.x - a.max.x
+    ));
+    ui.add_space(8.0);
+    ui.label("8b. OBSERVED ONLY — D8 PROPOSED: vertical rule in a vertical group (§14 mismatch; Expert Reviewer decides)");
+    ui.add_space(4.0);
+    let m2 = ButtonGroup::new()
+        .orientation(GroupOrientation::Vertical)
+        .id_salt("s8b_mismatch_v")
+        .show(ui, |ui| {
+            let a = Button::new("Top").show(ui).rect;
+            let sep = ButtonGroupSeparator::new().show(ui).rect;
+            let b = Button::new("Bottom").show(ui).rect;
+            (a, sep, b)
+        });
+    let (a, sep, b) = m2.inner;
+    let g = m2.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; separator measured: {:.1} x {:.1} px at y={:.1}; buttons: {:.1} / {:.1} px wide; gap between buttons: {:.1} px",
+        g.min.x, g.min.y, g.width(), g.height(),
+        sep.width(), sep.height(), sep.min.y, a.width(), b.width(),
+        b.min.y - a.max.y
+    ));
+
+    ui.add_space(12.0);
+    ui.label("9. Heights — mixed sizes: Text stretches to the tallest member, buttons keep fixed heights (spec §§5, 7.1)");
+    ui.add_space(4.0);
+    let heights = ButtonGroup::new().id_salt("s9_heights").show(ui, |ui| {
+        let xs = Button::new("Xs").size(ButtonSize::Xs).show(ui).rect;
+        let def = Button::new("Default").show(ui).rect;
+        let lg = Button::new("Lg").size(ButtonSize::Lg).show(ui).rect;
+        let text = ButtonGroupText::new("Text").show(ui).rect;
+        (xs, def, lg, text)
+    });
+    let (xs, def, lg, text) = heights.inner;
+    let g = heights.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; heights — xs: {:.1}, default: {:.1}, lg: {:.1}, Text: {:.1} px (Text stretched to the tallest member)",
+        g.min.x, g.min.y, g.width(), g.height(),
+        xs.height(), def.height(), lg.height(), text.height()
+    ));
+    ui.add_space(8.0);
+    ui.label("9b. Heights — xs-only group: Text follows the 24px members (spec §7.1)");
+    ui.add_space(4.0);
+    let xs_only = ButtonGroup::new().id_salt("s9_xs").show(ui, |ui| {
+        let a = Button::new("Xs").size(ButtonSize::Xs).show(ui).rect;
+        let text = ButtonGroupText::new("Text").show(ui).rect;
+        (a, text)
+    });
+    let (a, text) = xs_only.inner;
+    let g = xs_only.response.rect;
+    ui.label(format!(
+        "group: {:.1} x {:.1} px; xs button: {:.1} px tall; Text: {:.1} px tall",
+        g.width(),
+        g.height(),
+        a.height(),
+        text.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label(
+        "10. States — disabled child renders per its own spec; the group adds nothing (spec §9)",
+    );
+    ui.add_space(4.0);
+    let states = ButtonGroup::new().id_salt("s10_states").show(ui, |ui| {
+        let dis = Button::new("Disabled").disabled(true).show(ui).rect;
+        let act = Button::new("Active").show(ui).rect;
+        (dis, act)
+    });
+    let (dis, act) = states.inner;
+    let g = states.response.rect;
+    ui.label(format!(
+        "group: x={:.1} y={:.1} {:.1} x {:.1} px; disabled: {:.1} x {:.1} px; active: {:.1} x {:.1} px; shared edge: {:.1} px (expected: 0)",
+        g.min.x, g.min.y, g.width(), g.height(),
+        dis.width(), dis.height(), act.width(), act.height(), act.min.x - dis.max.x
+    ));
+    ui.add_space(8.0);
+    ui.label("10b. Outline pair — fusing applies to outline buttons the same way (spec §3.1)");
+    ui.add_space(4.0);
+    let outline = ButtonGroup::new().id_salt("s10_outline").show(ui, |ui| {
+        let a = Button::new("Outline left")
+            .variant(ButtonVariant::Outline)
+            .show(ui)
+            .rect;
+        let b = Button::new("Outline right")
+            .variant(ButtonVariant::Outline)
+            .show(ui)
+            .rect;
+        (a, b)
+    });
+    let (a, b) = outline.inner;
+    let g = outline.response.rect;
+    ui.label(format!(
+        "group: {:.1} x {:.1} px; buttons: {:.1} + {:.1} px wide; shared edge: {:.1} px (expected: 0)",
+        g.width(), g.height(), a.width(), b.width(), b.min.x - a.max.x
+    ));
+
+    ui.add_space(12.0);
+    ui.label("11. Edge cases — single member keeps all radii/borders; empty group is zero-size (spec §14)");
+    ui.add_space(4.0);
+    let single = ButtonGroup::new()
+        .id_salt("s11_single")
+        .show(ui, |ui| Button::new("Only").show(ui).rect);
+    let btn = single.inner;
+    let g = single.response.rect;
+    ui.label(format!(
+        "single-member group: {:.1} x {:.1} px; button: {:.1} x {:.1} px",
+        g.width(),
+        g.height(),
+        btn.width(),
+        btn.height()
+    ));
+    ui.add_space(4.0);
+    let empty = ButtonGroup::new().id_salt("s11_empty").show(ui, |_| {});
+    let g = empty.response.rect;
+    ui.label(format!(
+        "empty group: {:.1} x {:.1} px (expected: 0 x 0)",
+        g.width(),
+        g.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("Notes: OPEN-5 (input child in a constrained parent) and O6/D5 (select triggers, Batch F) are not exercised on this page. D8 mismatch cases in section 8 are observed-only pending the Expert Reviewer.");
 }
 
 pub fn input_demo(ui: &mut egui::Ui) {
