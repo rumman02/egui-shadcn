@@ -423,16 +423,29 @@ pub(crate) fn group_adjustments(
 /// foundation fusing fix in [`Button`][crate::components::Button]
 /// (`paint_fused_stroke`, BTG-VIS-01): the full `Inside` ring is
 /// painted through a clip that excludes the leading 1px column
-/// (horizontal groups) or row (vertical groups), and the two leading
-/// corner cells are painted back as solid stroke-color 1px squares, so
-/// the top/bottom rows stay continuous across the shared edge. Leading
-/// corners are square for non-first children ([`fuse_radius`]), so the
-/// corner cells are exact 1px squares and the clipped ring plus the
-/// cells tile with no overlap or gap at any fractional alignment (both
-/// share the same boundary). A clip is exact in all states — including
-/// the 50% disabled fade, where overpainting with the fill color would
-/// double-blend. First/only children take the plain `rect_stroke`
-/// path, identical to a standalone slot.
+/// (horizontal groups) or row (vertical groups), and once more
+/// clipped to each of the two leading corner cells. The three clips
+/// tile the ring exactly: they share only zero-area boundaries, and
+/// the renderer's scissor conversion rounds every clip edge
+/// (egui-wgpu 0.37 `ScissorRect`), so a boundary shared by two clips
+/// rounds to the same integer edge and no pixel is painted twice —
+/// exact for translucent strokes (the 50% disabled fade), where
+/// overpainting would double-blend. First/only children take the
+/// plain `rect_stroke` path, identical to a standalone slot.
+///
+/// The corner cells MUST be painted as clipped copies of the ring
+/// shape, never as 1×1 fill rects: a 1×1 `rect_filled` does not
+/// rasterize in egui 0.37 (BTG-VIS-01 corner-cell failure, S9b §5).
+/// `tessellate_rect` turns a fill-only rect ≤ 2px wide into a line
+/// segment, and `tessellate_line_segment` shrinks a 1px segment by a
+/// quarter-pixel per end and rounds both ends to the same pixel
+/// center — a zero-length segment that renders nothing. A stroked
+/// ring shape never takes that branch (it requires an empty stroke),
+/// and the clip rect only culls and scissors: the tessellated mesh is
+/// the full ring, so each corner pixel renders exactly as it does in
+/// the unclipped ring. The leading corners are square for non-first
+/// children ([`fuse_radius`]), and the trailing corners keep their
+/// radius because the shape is identical in all three paintings.
 fn paint_text_fused_stroke(
     painter: &egui::Painter,
     rect: Rect,
@@ -445,7 +458,7 @@ fn paint_text_fused_stroke(
         painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
         return;
     }
-    let (clip, cells) = match orientation {
+    let (clip, corners) = match orientation {
         GroupOrientation::Horizontal => (
             Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
             [
@@ -473,8 +486,15 @@ fn paint_text_fused_stroke(
         stroke,
         egui::epaint::StrokeKind::Inside,
     );
-    for cell in cells {
-        painter.rect_filled(cell, CornerRadius::ZERO, stroke.color);
+    // Corner pixels: the identical ring, clipped to each leading corner
+    // cell. See the doc comment — 1×1 fill rects do not rasterize.
+    for corner_clip in corners {
+        painter.with_clip_rect(corner_clip).rect_stroke(
+            rect,
+            corner,
+            stroke,
+            egui::epaint::StrokeKind::Inside,
+        );
     }
 }
 
@@ -1161,9 +1181,11 @@ mod tests {
         // BTG-VIS-01 mirror (horizontal): a non-first Text fills the
         // full border box and its ring omits the leading edge — the
         // stroke shape sits on the full rect with a clip that starts
-        // exactly 1px in, plus two 1px corner cells. On unfixed code
-        // the fill and stroke sit on the inset rect and there are no
-        // cells, so every assertion here fails.
+        // exactly 1px in, plus the identical ring painted again
+        // through each leading corner clip (no 1x1 fill rects — they
+        // do not rasterize). On unfixed code the fill and stroke sit
+        // on the inset rect and there are no corner rings, so every
+        // assertion here fails.
         let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 2, |ui| {
             ButtonGroup::new()
                 .show(ui, |ui| {
@@ -1174,9 +1196,11 @@ mod tests {
         });
         let p = palette(Mode::Light);
         let (fill, _, stroke) = text_colors(&p);
-        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        let (fills, rings, tiny_fills) = text_paint_shapes(&out, text_rect, fill, stroke);
         assert_eq!(fills, 1, "one muted fill on the full Text rect");
-        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert_eq!(tiny_fills, 0, "no 1x1 corner-cell fills may remain");
+        assert_eq!(rings.len(), 3, "main ring + two corner rings");
+        let (clip, corner, ring_stroke) = rings[0];
         assert!(
             (clip.min.x - (text_rect.min.x + 1.0)).abs() < 0.01
                 && (clip.min.y - text_rect.min.y).abs() < 0.01,
@@ -1186,7 +1210,6 @@ mod tests {
             (clip.max - text_rect.max).length() < 0.01,
             "stroke clip ends at the rect max: {clip:?} vs {text_rect:?}"
         );
-        assert_eq!(cells.len(), 2, "two leading corner cells");
         let expected = [
             Rect::from_min_max(
                 text_rect.min,
@@ -1197,10 +1220,19 @@ mod tests {
                 Pos2::new(text_rect.min.x + 1.0, text_rect.max.y),
             ),
         ];
-        for cell in expected {
+        for (i, cell) in expected.iter().enumerate() {
+            let (corner_clip, corner_radius, corner_stroke) = rings[i + 1];
             assert!(
-                cells.iter().any(|c| same_rect(*c, cell)),
-                "corner cell at {cell:?} among {cells:?}"
+                same_rect(corner_clip, *cell),
+                "corner ring clip {corner_clip:?} must equal the corner cell {cell:?}"
+            );
+            assert_eq!(
+                corner_radius, corner,
+                "corner ring shares the main ring's corner radius"
+            );
+            assert_eq!(
+                corner_stroke, ring_stroke,
+                "corner ring shares the main ring's stroke"
             );
         }
     }
@@ -1208,7 +1240,8 @@ mod tests {
     #[test]
     fn text_mirror_paints_full_rect_and_omits_leading_edge_vertical() {
         // BTG-VIS-01 mirror (vertical): the clip excludes the top row
-        // and the corner cells sit at the top-left/top-right.
+        // and the identical ring is painted again through the
+        // top-left/top-right corner clips.
         let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 2, |ui| {
             ButtonGroup::new()
                 .orientation(GroupOrientation::Vertical)
@@ -1220,9 +1253,11 @@ mod tests {
         });
         let p = palette(Mode::Light);
         let (fill, _, stroke) = text_colors(&p);
-        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        let (fills, rings, tiny_fills) = text_paint_shapes(&out, text_rect, fill, stroke);
         assert_eq!(fills, 1, "one muted fill on the full Text rect");
-        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert_eq!(tiny_fills, 0, "no 1x1 corner-cell fills may remain");
+        assert_eq!(rings.len(), 3, "main ring + two corner rings");
+        let (clip, corner, ring_stroke) = rings[0];
         assert!(
             (clip.min.x - text_rect.min.x).abs() < 0.01
                 && (clip.min.y - (text_rect.min.y + 1.0)).abs() < 0.01,
@@ -1232,7 +1267,6 @@ mod tests {
             (clip.max - text_rect.max).length() < 0.01,
             "stroke clip ends at the rect max: {clip:?} vs {text_rect:?}"
         );
-        assert_eq!(cells.len(), 2, "two leading corner cells");
         let expected = [
             Rect::from_min_max(
                 text_rect.min,
@@ -1243,10 +1277,19 @@ mod tests {
                 Pos2::new(text_rect.max.x, text_rect.min.y + 1.0),
             ),
         ];
-        for cell in expected {
+        for (i, cell) in expected.iter().enumerate() {
+            let (corner_clip, corner_radius, corner_stroke) = rings[i + 1];
             assert!(
-                cells.iter().any(|c| same_rect(*c, cell)),
-                "corner cell at {cell:?} among {cells:?}"
+                same_rect(corner_clip, *cell),
+                "corner ring clip {corner_clip:?} must equal the corner cell {cell:?}"
+            );
+            assert_eq!(
+                corner_radius, corner,
+                "corner ring shares the main ring's corner radius"
+            );
+            assert_eq!(
+                corner_stroke, ring_stroke,
+                "corner ring shares the main ring's stroke"
             );
         }
     }
@@ -1255,34 +1298,41 @@ mod tests {
     fn standalone_text_slot_paint_is_unchanged() {
         // A standalone Text (Only) takes the plain `rect_stroke` path:
         // one fill + one unclipped ring on the full rect, zero corner
-        // cells. Pins the plain path the mirror must not disturb.
+        // rings and zero 1x1 fills. Pins the plain path the mirror
+        // must not disturb.
         let (out, text_rect) = run_frames_output(Style::Vega, Mode::Light, 1, |ui| {
             ButtonGroupText::new("text").show(ui).rect
         });
         let p = palette(Mode::Light);
         let (fill, _, stroke) = text_colors(&p);
-        let (fills, stroke_clip, cells) = text_paint_shapes(&out, text_rect, fill, stroke);
+        let (fills, rings, tiny_fills) = text_paint_shapes(&out, text_rect, fill, stroke);
         assert_eq!(fills, 1, "one muted fill on the full Text rect");
-        let clip = stroke_clip.expect("a border stroke on the full Text rect");
+        assert_eq!(tiny_fills, 0, "no 1x1 corner-cell fills standalone");
+        assert_eq!(rings.len(), 1, "one unclipped ring standalone");
+        let (clip, _, _) = rings[0];
         assert!(
             clip.min.x <= text_rect.min.x + 0.01 && clip.min.y <= text_rect.min.y + 0.01,
             "standalone ring unclipped: {clip:?} vs {text_rect:?}"
         );
-        assert!(cells.is_empty(), "no corner cells standalone");
     }
 
-    /// Text paint shapes on `target`: (muted fills, stroke clip rect,
-    /// 1px corner cells). Corner cells are 1x1 stroke-color fills with
-    /// zero corner radius.
+    /// Text paint shapes on `target`: (muted fills, ring paintings,
+    /// 1x1 fills). Ring paintings are (clip rect, corner radius,
+    /// stroke) of every transparent-fill 1px stroke shape on the
+    /// target rect, in paint order: the main clipped ring first, then
+    /// the two identical corner rings. 1x1 fills are stroke-color
+    /// fills with zero corner radius — the old corner-cell
+    /// construction, which must be absent (1x1 fills do not
+    /// rasterize).
     fn text_paint_shapes(
         out: &egui::FullOutput,
         target: Rect,
         fill: Color32,
         stroke: Stroke,
-    ) -> (usize, Option<Rect>, Vec<Rect>) {
+    ) -> (usize, Vec<(Rect, CornerRadius, Stroke)>, usize) {
         let mut fills = 0;
-        let mut stroke_clip = None;
-        let mut cells = Vec::new();
+        let mut rings = Vec::new();
+        let mut tiny_fills = 0;
         for clipped in &out.shapes {
             if let egui::Shape::Rect(rs) = &clipped.shape {
                 if same_rect(rs.rect, target) && rs.fill == fill && rs.stroke == Stroke::NONE {
@@ -1292,7 +1342,7 @@ mod tests {
                     && rs.fill == Color32::TRANSPARENT
                     && rs.stroke.width == 1.0
                 {
-                    stroke_clip = Some(clipped.clip_rect);
+                    rings.push((clipped.clip_rect, rs.corner_radius, rs.stroke));
                 }
                 if rs.fill == stroke.color
                     && rs.stroke == Stroke::NONE
@@ -1300,11 +1350,11 @@ mod tests {
                     && (rs.rect.width() - 1.0).abs() < 0.01
                     && (rs.rect.height() - 1.0).abs() < 0.01
                 {
-                    cells.push(rs.rect);
+                    tiny_fills += 1;
                 }
             }
         }
-        (fills, stroke_clip, cells)
+        (fills, rings, tiny_fills)
     }
 
     #[test]
