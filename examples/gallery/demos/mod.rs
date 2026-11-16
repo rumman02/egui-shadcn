@@ -3217,56 +3217,281 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
 
 pub fn switch_demo(ui: &mut egui::Ui) {
     let store = egui::Id::unique("switch_demo_values");
-    let mut values: [bool; 4] = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(store).unwrap_or([false, true, false, true]));
-
-    ui.label("Default");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Switch::new(&mut values[0]).id_salt("sw_demo_1").show(ui);
-        Switch::new(&mut values[1]).id_salt("sw_demo_2").show(ui);
+    // One bool per switch, so S5/S6 can toggle each section independently.
+    // Order: [sizes default off/on, sizes sm off/on, invalid default off/on,
+    // invalid sm off/on, disabled off/on, disabled+invalid, focus target,
+    // label pair, card suppressed, card contrast, hover target].
+    let mut values: [bool; 16] = ui.ctx().data_mut(|d| {
+        d.get_temp(store).unwrap_or([
+            false, true, false, true, false, true, false, true, false, true, false, false, false,
+            false, false, false,
+        ])
     });
 
+    // Header: recipe position, stated honestly (spec §§2.5, 6, 7). This
+    // header is also the brief's section 2 (theme x recipe): the demo runs
+    // under the gallery's active theme/style, printed here so every capture
+    // is self-describing.
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Switch — track + thumb, two sizes. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Nova geometry is identical to base in every dimension (spec §2.5); the only nova deltas are the invalid recipe (§2.6) and the field-label focus suppression (D4, PROPOSED). Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the OPEN-1 interim framework default, not snapshot-verified. Keyboard rules are OPEN-2 (Radix, S6 Work B); focus-on-click is OPEN-3.");
+
+    // NOTE on row rects (separator/kbd S3 precedent): `ui.horizontal` sizes
+    // the row to `interact_size.y` (36px). Each switch allocates its own
+    // exact track rect, printed per switch below; the row rect is demo
+    // chrome and is printed alongside only where it aids S5.
+
+    // 1. Sizes (spec §3): default + sm, unchecked + checked.
     ui.add_space(12.0);
-    ui.label("Small");
+    ui.label("1. Sizes (spec §3; default 32 x 18.4, sm 24 x 14; travel 14 / 10)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Switch::new(&mut values[0])
+    let row = ui.horizontal(|ui| {
+        let r0 = Switch::new(&mut values[0])
+            .id_salt("sw_demo_def_off")
+            .show(ui);
+        let r1 = Switch::new(&mut values[1])
+            .id_salt("sw_demo_def_on")
+            .show(ui);
+        let r2 = Switch::new(&mut values[2])
             .size(SwitchSize::Sm)
-            .id_salt("sw_demo_sm_1")
+            .id_salt("sw_demo_sm_off")
             .show(ui);
-        Switch::new(&mut values[1])
+        let r3 = Switch::new(&mut values[3])
             .size(SwitchSize::Sm)
-            .id_salt("sw_demo_sm_2")
+            .id_salt("sw_demo_sm_on")
             .show(ui);
+        [r0, r1, r2, r3]
     });
+    let rects = row.inner;
+    ui.label(format!(
+        "row {:.1} x {:.1} px (the 36px row height is the ui.horizontal artifact); default off {:.1} x {:.1}, on {:.1} x {:.1} (expected 32.0 x 18.4, travel {:.1}); sm off {:.1} x {:.1}, on {:.1} x {:.1} (expected 24.0 x 14.0, travel {:.1})",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        rects[0].rect.width(),
+        rects[0].rect.height(),
+        rects[1].rect.width(),
+        rects[1].rect.height(),
+        SwitchSize::Default.checked_offset(),
+        rects[2].rect.width(),
+        rects[2].rect.height(),
+        rects[3].rect.width(),
+        rects[3].rect.height(),
+        SwitchSize::Sm.checked_offset(),
+    ));
 
+    // 3. Invalid (spec §2.6 / OPEN-10): unchecked + checked, both sizes.
     ui.add_space(12.0);
-    ui.label("With label");
+    ui.label("3. Invalid (spec §2.6 / OPEN-10: nova shows a 3px rest ring + destructive border, dark border /50; under base, invalid paints nothing)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Switch::new(&mut values[2])
-            .id_salt("sw_demo_airplane")
+    let row = ui.horizontal(|ui| {
+        let r0 = Switch::new(&mut values[4])
+            .invalid(true)
+            .id_salt("sw_demo_inv_def_off")
             .show(ui);
-        ui.label("Airplane Mode");
+        let r1 = Switch::new(&mut values[5])
+            .invalid(true)
+            .id_salt("sw_demo_inv_def_on")
+            .show(ui);
+        let r2 = Switch::new(&mut values[6])
+            .size(SwitchSize::Sm)
+            .invalid(true)
+            .id_salt("sw_demo_inv_sm_off")
+            .show(ui);
+        let r3 = Switch::new(&mut values[7])
+            .size(SwitchSize::Sm)
+            .invalid(true)
+            .id_salt("sw_demo_inv_sm_on")
+            .show(ui);
+        [r0, r1, r2, r3]
     });
+    let rects = row.inner;
+    ui.label(format!(
+        "invalid default off {:.1} x {:.1}, on {:.1} x {:.1}; invalid sm off {:.1} x {:.1}, on {:.1} x {:.1} (geometry identical to section 1; the ring paints outside the border box and changes no layout)",
+        rects[0].rect.width(),
+        rects[0].rect.height(),
+        rects[1].rect.width(),
+        rects[1].rect.height(),
+        rects[2].rect.width(),
+        rects[2].rect.height(),
+        rects[3].rect.width(),
+        rects[3].rect.height(),
+    ));
 
+    // 4. Disabled (spec §4): unchecked + checked + invalid+disabled.
     ui.add_space(12.0);
-    ui.label("Disabled");
+    ui.label("4. Disabled (spec §4: the whole element composites at 50%, no focus chrome, not-allowed cursor; invalid+disabled renders the invalid chrome at 50% under nova)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Switch::new(&mut values[2]).disabled(true).show(ui);
-        Switch::new(&mut values[3]).disabled(true).show(ui);
+    let row = ui.horizontal(|ui| {
+        let r0 = Switch::new(&mut values[8])
+            .disabled(true)
+            .id_salt("sw_demo_dis_off")
+            .show(ui);
+        let r1 = Switch::new(&mut values[9])
+            .disabled(true)
+            .id_salt("sw_demo_dis_on")
+            .show(ui);
+        let r2 = Switch::new(&mut values[10])
+            .disabled(true)
+            .invalid(true)
+            .id_salt("sw_demo_dis_inv")
+            .show(ui);
+        [r0, r1, r2]
     });
+    let rects = row.inner;
+    ui.label(format!(
+        "disabled off {:.1} x {:.1}, on {:.1} x {:.1}, invalid+disabled {:.1} x {:.1}",
+        rects[0].rect.width(),
+        rects[0].rect.height(),
+        rects[1].rect.width(),
+        rects[1].rect.height(),
+        rects[2].rect.width(),
+        rects[2].rect.height(),
+    ));
 
+    // 5. Focus target (spec §4): one switch with clear space around it.
     ui.add_space(12.0);
-    ui.label("Invalid");
+    ui.label("5. Focus target (spec §4: focus shows border `ring` + 3px `ring/50` ring; Tab here or click to focus)");
+    ui.add_space(8.0);
+    let resp = Switch::new(&mut values[11])
+        .id_salt("sw_demo_focus")
+        .show(ui);
+    ui.add_space(8.0);
+    ui.label(format!(
+        "track {:.1} x {:.1} px; on: {}; focused: {}",
+        resp.rect.width(),
+        resp.rect.height(),
+        values[11],
+        resp.has_focus()
+    ));
+
+    // 6. Bound label + switch pair (spec §7.3/§7.5; the label demo's
+    // binding pattern: the label's `for_id` is the switch's scoped id).
+    ui.add_space(12.0);
+    ui.label("6. Bound label + switch (spec §7.3/§7.5: a label click forwards activation AND focuses the switch; a direct click on the switch fires exactly once)");
     ui.add_space(4.0);
-    Switch::new(&mut values[3]).invalid(true).show(ui);
+    let (label_rect, resp) = ui
+        .horizontal(|ui| {
+            let target = ui.scope_id().with("sw_demo_label");
+            let lr = Label::new("Airplane mode").for_id(target).show(ui).rect;
+            let resp = Switch::new(&mut values[12])
+                .id_salt("sw_demo_label")
+                .show(ui);
+            (lr, resp)
+        })
+        .inner;
+    ui.label(format!(
+        "label {:.1} x {:.1} px; switch {:.1} x {:.1} px; on: {}; switch focused: {}",
+        label_rect.width(),
+        label_rect.height(),
+        resp.rect.width(),
+        resp.rect.height(),
+        values[12],
+        resp.has_focus()
+    ));
+
+    // 7. Card composition, focus suppression ON (spec §2.3 / D4 PROPOSED,
+    // nova-only). The flag is pinned ON in this section so S6 can verify
+    // the mechanism end-to-end: focus the inner switch (Tab or a direct
+    // click) and the card carries the focus indication while the switch
+    // shows no ring and a transparent border. The focus-inside-driven
+    // wiring is the field line's composition contract, not this demo's;
+    // no `for_id` is bound here because card-click focus is field-line
+    // behaviour (Label F2). The second card below is the suppression-OFF
+    // contrast: the same composition with the flag off.
+    ui.add_space(12.0);
+    ui.label("7a. Card composition, suppression ON (D4 PROPOSED, nova-only: inner switch shows no ring; the card carries focus)");
+    ui.add_space(4.0);
+    let card_on = FieldLabel::new("")
+        .checked(Some(values[13]))
+        .show_with_card(ui, |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| {
+                    let resp = Switch::new(&mut values[13])
+                        .id_salt("sw_demo_card_on")
+                        .suppress_focus_indication(true)
+                        .show(ui);
+                    FieldContent::new().show(ui, |ui| {
+                        FieldTitle::new("Notifications").show(ui);
+                        FieldDescription::new(
+                            "Suppression ON: this switch never shows its own focus ring.",
+                        )
+                        .show(ui);
+                    });
+                    resp
+                })
+                .inner
+        });
+    ui.label(format!(
+        "card {:.1} x {:.1} px; switch {:.1} x {:.1} px; on: {}; switch focused: {}",
+        card_on.response.rect.width(),
+        card_on.response.rect.height(),
+        card_on.inner.rect.width(),
+        card_on.inner.rect.height(),
+        values[13],
+        card_on.inner.has_focus()
+    ));
+    ui.add_space(8.0);
+    ui.label("7b. Card composition, suppression OFF (contrast: the inner switch shows its own focus ring)");
+    ui.add_space(4.0);
+    let card_off = FieldLabel::new("")
+        .checked(Some(values[14]))
+        .show_with_card(ui, |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| {
+                    let resp = Switch::new(&mut values[14])
+                        .id_salt("sw_demo_card_off")
+                        .show(ui);
+                    FieldContent::new().show(ui, |ui| {
+                        FieldTitle::new("Marketing emails").show(ui);
+                        FieldDescription::new(
+                            "Suppression OFF: this switch shows its own focus ring.",
+                        )
+                        .show(ui);
+                    });
+                    resp
+                })
+                .inner
+        });
+    ui.label(format!(
+        "card {:.1} x {:.1} px; switch {:.1} x {:.1} px; on: {}; switch focused: {}",
+        card_off.response.rect.width(),
+        card_off.response.rect.height(),
+        card_off.inner.rect.width(),
+        card_off.inner.rect.height(),
+        values[14],
+        card_off.inner.has_focus()
+    ));
+
+    // 8. Hover target (spec §4): one switch with clear space around it.
+    ui.add_space(12.0);
+    ui.label("8. Hover target (spec §4: NO hover rule in either recipe — hover must render identically to resting)");
+    ui.add_space(8.0);
+    let resp = Switch::new(&mut values[15])
+        .id_salt("sw_demo_hover")
+        .show(ui);
+    ui.add_space(8.0);
+    ui.label(format!(
+        "track {:.1} x {:.1} px; on: {}; hovered: {}",
+        resp.rect.width(),
+        resp.rect.height(),
+        values[15],
+        resp.hovered()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab to a switch, press Space or Enter to toggle.");
+    ui.label("Keyboard: Tab moves focus between switches. Which keys activate a focused switch is OPEN-2 (Radix source, S6 Work B) — the current click-sense activation is implementation, not spec truth. Whether a pointer click focuses the switch is OPEN-3 (incl. OBS-LBL-S6-2).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
