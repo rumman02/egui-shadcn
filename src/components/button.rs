@@ -1353,21 +1353,15 @@ impl Button {
                 paint_outline_shadow(painter, render_rect, corner, style, dark, self.disabled);
             }
 
-            // Non-first children of a group overlap the previous border so the
-            // shared edge shows one 1px divider (`border-l-0`).
-            let draw_rect = match orientation {
-                GroupOrientation::Horizontal
-                    if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-                {
-                    Rect::from_min_max(render_rect.min + Vec2::new(1.0, 0.0), render_rect.max)
-                }
-                GroupOrientation::Vertical
-                    if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-                {
-                    Rect::from_min_max(render_rect.min + Vec2::new(0.0, 1.0), render_rect.max)
-                }
-                _ => render_rect,
-            };
+            // Fusing paint (button-group spec §3.1, BTG-VIS-01): members
+            // paint on the FULL layout rect and share ONE 1px border by
+            // border REMOVAL, not by shifting the draw rect. An earlier
+            // 1px draw-rect inset on non-first children left the shared
+            // column painted by neither member — a backdrop seam, or a
+            // doubled border for outline members. The fill extends to
+            // the shared edge (see `shared_left`/`shared_top` below) and
+            // the stroke omits its leading edge for non-first children
+            // (`paint_fused_stroke`).
 
             // Fill: under nova, `bg-clip-padding` clips the background to
             // the padding box (spec D5) — inset 1px from the border box
@@ -1375,7 +1369,7 @@ impl Button {
             // base recipe clips to the border box, so the fill covers the
             // whole rect.
             let (fill_rect, fill_corner) = if nova {
-                let mut fill_rect = draw_rect;
+                let mut fill_rect = render_rect;
                 let shared_left = matches!(orientation, GroupOrientation::Horizontal)
                     && matches!(position, GroupPosition::Middle | GroupPosition::Last);
                 let shared_top = matches!(orientation, GroupOrientation::Vertical)
@@ -1390,16 +1384,18 @@ impl Button {
                 fill_rect.max.y -= 1.0;
                 (fill_rect, shrink_corner(corner))
             } else {
-                (draw_rect, corner)
+                (render_rect, corner)
             };
             painter.rect_filled(fill_rect, fill_corner, c.fill);
 
             if c.stroke.width > 0.0 {
-                painter.rect_stroke(
-                    draw_rect,
+                paint_fused_stroke(
+                    painter,
+                    render_rect,
                     corner,
                     c.stroke,
-                    egui::epaint::StrokeKind::Inside,
+                    orientation,
+                    position,
                 );
             }
 
@@ -1417,7 +1413,7 @@ impl Button {
             let gaps = (n_children - 1).max(0) as f32 * gap;
             let total_w = icons_w + gaps + text_w;
 
-            let center = draw_rect.center();
+            let center = render_rect.center();
             let mut cursor = center.x - total_w * 0.5;
 
             if let Some((icon, icon_size)) = start {
@@ -1561,6 +1557,68 @@ pub(crate) fn fuse_radius(
         (_, GroupPosition::Only) => {}
     }
     corner
+}
+
+/// Paints the 1px `Inside` border ring for a group member, omitting the
+/// LEADING edge for non-first children (`border-l-0` / `border-t-0`,
+/// button-group spec §3.1) while keeping the top/trailing/bottom edges
+/// and the top/bottom rows continuous across the shared edge.
+///
+/// The omission is done with a clip, not an overpaint: the ring is the
+/// same `rect_stroke` shape, clipped to exclude the leading 1px column
+/// (horizontal groups) or row (vertical groups), and the two leading
+/// corner cells are painted back as solid stroke-color squares. The
+/// leading corners are square for non-first children ([`fuse_radius`]),
+/// so the corner cells are exact 1px squares and the clipped ring plus
+/// the cells tile the full ring with no overlap and no gap, at any
+/// fractional alignment (both share the same boundary). A clip is exact
+/// for translucent fills (hover `primary/80`, `primary/90`; the 50%
+/// disabled fade), where overpainting with the fill color would
+/// double-blend. First/only children take the plain `rect_stroke` path,
+/// byte-identical to standalone buttons.
+fn paint_fused_stroke(
+    painter: &Painter,
+    rect: Rect,
+    corner: CornerRadius,
+    stroke: Stroke,
+    orientation: GroupOrientation,
+    position: GroupPosition,
+) {
+    if !matches!(position, GroupPosition::Middle | GroupPosition::Last) {
+        painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+        return;
+    }
+    let (clip, cells) = match orientation {
+        GroupOrientation::Horizontal => (
+            Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x, rect.max.y - 1.0),
+                    Pos2::new(rect.min.x + 1.0, rect.max.y),
+                ),
+            ],
+        ),
+        GroupOrientation::Vertical => (
+            Rect::from_min_max(Pos2::new(rect.min.x, rect.min.y + 1.0), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - 1.0, rect.min.y),
+                    Pos2::new(rect.max.x, rect.min.y + 1.0),
+                ),
+            ],
+        ),
+    };
+    painter.with_clip_rect(clip).rect_stroke(
+        rect,
+        corner,
+        stroke,
+        egui::epaint::StrokeKind::Inside,
+    );
+    for cell in cells {
+        painter.rect_filled(cell, CornerRadius::ZERO, stroke.color);
+    }
 }
 
 /// Applies the nova last-`[data-slot]` rule (button-group spec §3.2, FG-2):
@@ -4018,5 +4076,368 @@ mod tests {
             ring_idx < marker_idx,
             "standalone ring at {ring_idx} must paint before following content at {marker_idx}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // BTG-VIS-01: fusing paint — border removal, not a shifted draw rect
+    // (Foundation Loop, 2026-11-16).
+    // ------------------------------------------------------------------
+
+    /// `Shape::Rect` entries in paint order: (clip rect, shape).
+    fn rect_shapes(out: &egui::FullOutput) -> Vec<(Rect, &egui::epaint::RectShape)> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) => Some((clipped.clip_rect, rs)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    fn rect_approx_eq(a: Rect, b: Rect) -> bool {
+        approx_eq(a.min.x, b.min.x)
+            && approx_eq(a.min.y, b.min.y)
+            && approx_eq(a.max.x, b.max.x)
+            && approx_eq(a.max.y, b.max.y)
+    }
+
+    #[test]
+    fn non_first_member_paint_covers_the_layout_rect_and_omits_the_leading_edge() {
+        // Base recipe, horizontal group, two Outline buttons: the second
+        // (Last) member's fill and stroke must cover its full layout
+        // rect, with the stroke clipped to exclude the leading column
+        // and the two leading corner cells painted back.
+        let ctx = egui::Context::default();
+        Preset {
+            style: BASE_STYLE,
+            ..Default::default()
+        }
+        .install(&ctx);
+        let id = egui::Id::unique("fuse_h_group");
+        let mut rects = [Rect::NOTHING; 2];
+        let mut out = egui::FullOutput::default();
+        // Two frames: positions settle on frame 2 (frame-lagged `Last`).
+        for _ in 0..2 {
+            out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut fg_test_ui(ctx, "fuse_h_ui");
+                group::begin(ui, id, GroupOrientation::Horizontal);
+                let r1 = Button::new("One")
+                    .variant(ButtonVariant::Outline)
+                    .id_salt("fuse_h_b1")
+                    .show(ui);
+                let r2 = Button::new("Two")
+                    .variant(ButtonVariant::Outline)
+                    .id_salt("fuse_h_b2")
+                    .show(ui);
+                group::end(ui, id);
+                rects = [r1.rect, r2.rect];
+            });
+            out.textures_delta.clear();
+        }
+        let shapes = rect_shapes(&out);
+        inspect_fused_horizontal(&shapes, rects);
+    }
+
+    fn inspect_fused_horizontal(shapes: &[(Rect, &egui::epaint::RectShape)], rects: [Rect; 2]) {
+        let [first, last] = rects;
+        // Fills: the two button fills (large rects, no stroke) plus the
+        // two 1x1 corner cells of the Last member.
+        let fills: Vec<&egui::epaint::RectShape> = shapes
+            .iter()
+            .map(|(_, rs)| *rs)
+            .filter(|rs| rs.fill != Color32::TRANSPARENT && rs.stroke == Stroke::NONE)
+            .collect();
+        let big_fills: Vec<&&egui::epaint::RectShape> = fills
+            .iter()
+            .filter(|rs| rs.rect.width() > 2.0 && rs.rect.height() > 2.0)
+            .collect();
+        assert_eq!(big_fills.len(), 2, "expected two button fills");
+        assert!(
+            rect_approx_eq(big_fills[1].rect, last),
+            "Last fill {:?} must equal its layout rect {last:?} (no 1px inset)",
+            big_fills[1].rect
+        );
+        assert!(
+            rect_approx_eq(big_fills[0].rect, first),
+            "First fill {:?} must equal its layout rect {first:?}",
+            big_fills[0].rect
+        );
+
+        // Strokes: exactly two 1px rings, each on its full layout rect.
+        let strokes: Vec<(Rect, &egui::epaint::RectShape)> = shapes
+            .iter()
+            .copied()
+            .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(strokes.len(), 2, "expected two border rings");
+        let (first_clip, first_ring) = strokes[0];
+        let (last_clip, last_ring) = strokes[1];
+        assert!(
+            rect_approx_eq(first_ring.rect, first),
+            "First ring {:?} must sit on its layout rect {first:?}",
+            first_ring.rect
+        );
+        assert!(
+            rect_approx_eq(last_ring.rect, last),
+            "Last ring {:?} must sit on its layout rect {last:?} (no 1px inset)",
+            last_ring.rect
+        );
+        // The First ring is unclipped over its rect (leading border kept).
+        assert!(
+            first_clip.min.x <= first.min.x + 0.01 && first_clip.min.y <= first.min.y + 0.01,
+            "First ring clip {first_clip:?} must cover the whole button rect {first:?}"
+        );
+        // The Last ring is clipped to exclude exactly the leading column.
+        assert!(
+            approx_eq(last_clip.min.x, last.min.x + 1.0),
+            "Last ring clip {last_clip:?} must start 1px into the rect {last:?}"
+        );
+        assert!(
+            last_clip.min.y <= last.min.y + 0.01 && last_clip.max.y >= last.max.y - 0.01,
+            "Last ring clip {last_clip:?} must span the full height of {last:?}"
+        );
+
+        // Corner cells: exactly two 1x1 fills at the Last member's
+        // leading corners, in the ring's stroke color.
+        let cells: Vec<&&egui::epaint::RectShape> = fills
+            .iter()
+            .filter(|rs| approx_eq(rs.rect.width(), 1.0) && approx_eq(rs.rect.height(), 1.0))
+            .collect();
+        assert_eq!(cells.len(), 2, "expected exactly two corner cells");
+        let stroke_color = last_ring.stroke.color;
+        for cell in &cells {
+            assert_eq!(
+                cell.fill, stroke_color,
+                "corner cell must use the stroke color"
+            );
+            assert!(
+                approx_eq(cell.rect.min.x, last.min.x)
+                    && (approx_eq(cell.rect.min.y, last.min.y)
+                        || approx_eq(cell.rect.min.y, last.max.y - 1.0)),
+                "corner cell {:?} must sit on a leading corner of {last:?}",
+                cell.rect
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_non_first_member_omits_the_top_edge() {
+        // Base recipe, vertical group: the Last member's ring is
+        // clipped to exclude the top row, with corner cells at the
+        // top-left and top-right corners.
+        let ctx = egui::Context::default();
+        Preset {
+            style: BASE_STYLE,
+            ..Default::default()
+        }
+        .install(&ctx);
+        let id = egui::Id::unique("fuse_v_group");
+        let mut last_rect = Rect::NOTHING;
+        let mut out = egui::FullOutput::default();
+        for _ in 0..2 {
+            out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut fg_test_ui(ctx, "fuse_v_ui");
+                group::begin(ui, id, GroupOrientation::Vertical);
+                let _ = Button::new("One")
+                    .variant(ButtonVariant::Outline)
+                    .id_salt("fuse_v_b1")
+                    .show(ui);
+                let r2 = Button::new("Two")
+                    .variant(ButtonVariant::Outline)
+                    .id_salt("fuse_v_b2")
+                    .show(ui);
+                group::end(ui, id);
+                last_rect = r2.rect;
+            });
+            out.textures_delta.clear();
+        }
+        let shapes = rect_shapes(&out);
+        let strokes: Vec<(Rect, &egui::epaint::RectShape)> = shapes
+            .iter()
+            .copied()
+            .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(strokes.len(), 2, "expected two border rings");
+        let (last_clip, last_ring) = strokes[1];
+        assert!(
+            rect_approx_eq(last_ring.rect, last_rect),
+            "Last ring {:?} must sit on its layout rect {last_rect:?}",
+            last_ring.rect
+        );
+        assert!(
+            approx_eq(last_clip.min.y, last_rect.min.y + 1.0),
+            "Last ring clip {last_clip:?} must start 1px into the rect {last_rect:?}"
+        );
+        assert!(
+            last_clip.min.x <= last_rect.min.x + 0.01 && last_clip.max.x >= last_rect.max.x - 0.01,
+            "Last ring clip {last_clip:?} must span the full width of {last_rect:?}"
+        );
+        let cells: Vec<&egui::epaint::RectShape> = shapes
+            .iter()
+            .map(|(_, rs)| *rs)
+            .filter(|rs| {
+                rs.stroke == Stroke::NONE
+                    && approx_eq(rs.rect.width(), 1.0)
+                    && approx_eq(rs.rect.height(), 1.0)
+            })
+            .collect();
+        assert_eq!(cells.len(), 2, "expected exactly two corner cells");
+        for cell in &cells {
+            assert!(
+                approx_eq(cell.rect.min.y, last_rect.min.y)
+                    && (approx_eq(cell.rect.min.x, last_rect.min.x)
+                        || approx_eq(cell.rect.min.x, last_rect.max.x - 1.0)),
+                "corner cell {:?} must sit on a top corner of {last_rect:?}",
+                cell.rect
+            );
+        }
+    }
+
+    #[test]
+    fn nova_non_first_member_fill_extends_to_the_shared_edge() {
+        // Nova, Default variant: the fill is inset 1px on every side
+        // EXCEPT the shared edge, and the (transparent) 1px stroke is
+        // clipped like every other variant's — the omission applies to
+        // all variants under nova, not just Outline.
+        let ctx = egui::Context::default();
+        Preset {
+            style: Style::Nova,
+            ..Default::default()
+        }
+        .install(&ctx);
+        let id = egui::Id::unique("fuse_nova_group");
+        let mut rects = [Rect::NOTHING; 2];
+        let mut out = egui::FullOutput::default();
+        for _ in 0..2 {
+            out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut fg_test_ui(ctx, "fuse_nova_ui");
+                group::begin(ui, id, GroupOrientation::Horizontal);
+                let r1 = Button::new("One").id_salt("fuse_nova_b1").show(ui);
+                let r2 = Button::new("Two").id_salt("fuse_nova_b2").show(ui);
+                group::end(ui, id);
+                rects = [r1.rect, r2.rect];
+            });
+            out.textures_delta.clear();
+        }
+        let [first, last] = rects;
+        let shapes = rect_shapes(&out);
+        let fills: Vec<&egui::epaint::RectShape> = shapes
+            .iter()
+            .map(|(_, rs)| *rs)
+            .filter(|rs| {
+                rs.stroke == Stroke::NONE && rs.rect.width() > 2.0 && rs.rect.height() > 2.0
+            })
+            .collect();
+        assert_eq!(fills.len(), 2, "expected two button fills");
+        // First: all-sides inset (leading border ring kept).
+        assert!(
+            approx_eq(fills[0].rect.min.x, first.min.x + 1.0)
+                && approx_eq(fills[0].rect.min.y, first.min.y + 1.0)
+                && approx_eq(fills[0].rect.max.x, first.max.x - 1.0)
+                && approx_eq(fills[0].rect.max.y, first.max.y - 1.0),
+            "First fill {:?} must be inset 1px on all sides of {first:?}",
+            fills[0].rect
+        );
+        // Last: fill extends exactly to the shared (leading) edge.
+        assert!(
+            approx_eq(fills[1].rect.min.x, last.min.x)
+                && approx_eq(fills[1].rect.min.y, last.min.y + 1.0)
+                && approx_eq(fills[1].rect.max.x, last.max.x - 1.0)
+                && approx_eq(fills[1].rect.max.y, last.max.y - 1.0),
+            "Last fill {:?} must reach the shared edge of {last:?}",
+            fills[1].rect
+        );
+        let strokes: Vec<(Rect, &egui::epaint::RectShape)> = shapes
+            .iter()
+            .copied()
+            .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(strokes.len(), 2, "expected two border rings");
+        let (last_clip, last_ring) = strokes[1];
+        assert!(
+            rect_approx_eq(last_ring.rect, last),
+            "Last ring {:?} must sit on its layout rect {last:?}",
+            last_ring.rect
+        );
+        assert!(
+            approx_eq(last_clip.min.x, last.min.x + 1.0),
+            "Last ring clip {last_clip:?} must exclude the leading column of {last:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_button_paint_is_unchanged() {
+        // Standalone buttons (`Only`) take the plain `rect_stroke`
+        // path: full fill inset, full unclipped ring, no corner cells.
+        // This pins the standalone shape stream exactly; the harness
+        // (`00-button` metric 0) proves byte-identity against the
+        // frozen goldens.
+        let ctx = egui::Context::default();
+        Preset {
+            style: Style::Nova,
+            ..Default::default()
+        }
+        .install(&ctx);
+        let mut button_rect = Rect::NOTHING;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut fg_test_ui(ctx, "fuse_standalone_ui");
+            let r = Button::new("Solo").id_salt("fuse_solo").show(ui);
+            button_rect = r.rect;
+        });
+        out.textures_delta.clear();
+        let shapes = rect_shapes(&out);
+        let fills: Vec<&egui::epaint::RectShape> = shapes
+            .iter()
+            .map(|(_, rs)| *rs)
+            .filter(|rs| rs.stroke == Stroke::NONE && rs.fill != Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(fills.len(), 1, "expected exactly one fill shape");
+        assert!(
+            approx_eq(fills[0].rect.min.x, button_rect.min.x + 1.0)
+                && approx_eq(fills[0].rect.min.y, button_rect.min.y + 1.0)
+                && approx_eq(fills[0].rect.max.x, button_rect.max.x - 1.0)
+                && approx_eq(fills[0].rect.max.y, button_rect.max.y - 1.0),
+            "standalone fill {:?} must be inset 1px on all sides of {button_rect:?}",
+            fills[0].rect
+        );
+        let strokes: Vec<(Rect, &egui::epaint::RectShape)> = shapes
+            .iter()
+            .copied()
+            .filter(|(_, rs)| rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT)
+            .collect();
+        assert_eq!(strokes.len(), 1, "expected exactly one border ring");
+        let (clip, ring) = strokes[0];
+        assert!(
+            rect_approx_eq(ring.rect, button_rect),
+            "standalone ring {:?} must sit on the layout rect {button_rect:?}",
+            ring.rect
+        );
+        assert!(
+            clip.min.x <= button_rect.min.x + 0.01
+                && clip.min.y <= button_rect.min.y + 0.01
+                && clip.max.x >= button_rect.max.x - 0.01
+                && clip.max.y >= button_rect.max.y - 0.01,
+            "standalone ring clip {clip:?} must cover the whole button rect {button_rect:?}"
+        );
+        assert_eq!(
+            (
+                ring.corner_radius.nw,
+                ring.corner_radius.ne,
+                ring.corner_radius.sw,
+                ring.corner_radius.se
+            ),
+            (10, 10, 10, 10),
+            "standalone ring keeps the full nova radius on all corners"
+        );
+        let cells = shapes.iter().filter(|(_, rs)| {
+            rs.stroke == Stroke::NONE
+                && approx_eq(rs.rect.width(), 1.0)
+                && approx_eq(rs.rect.height(), 1.0)
+        });
+        assert_eq!(cells.count(), 0, "standalone buttons paint no corner cells");
     }
 }
