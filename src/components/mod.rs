@@ -173,7 +173,7 @@ pub use item::{
 };
 pub use kbd::{Kbd, KbdGroup};
 pub use label::Label;
-pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerVariant};
+pub use marker::{Marker, MarkerContent, MarkerIcon, MarkerLink, MarkerVariant};
 pub use menubar::{
     Menubar, MenubarBuilder, MenubarResponse, MENUBAR_ALIGN_OFFSET, MENUBAR_GAP, MENUBAR_HEIGHT,
     MENUBAR_MIN_WIDTH, MENUBAR_PADDING, MENUBAR_SIDE_OFFSET, MENUBAR_TRIGGER_HEIGHT,
