@@ -59,7 +59,7 @@ use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
 use egui::{
-    Color32, CornerRadius, CursorIcon, FontId, Margin, Response, Stroke, TextEdit, Ui, Vec2,
+    Color32, CornerRadius, CursorIcon, FontId, Frame, Margin, Response, Stroke, TextEdit, Ui, Vec2,
 };
 
 /// `min-h-16` — the smallest textarea height (64px, spec §3.1).
@@ -90,11 +90,12 @@ pub(crate) fn corner_radius(style: Style, radius: &RadiusTokens) -> u8 {
 
 /// Text inset from the allocated rect edge, modelling the CSS border box.
 ///
-/// `TextEdit`'s margin is the distance from the rect edge to the text. In
-/// CSS the text sits behind the 1px border plus the padding, so the margin
-/// is padding + 1px on every side (vertical: `py-2` 8px + 1px = 9px). This
-/// makes the spec §3.2 arithmetic exact: content width = box width − 2px
-/// (border) − 2 × padding-x, and height = `max(64, 18 + 20 × N)` px.
+/// The `TextEdit` frame's inner margin is the distance from the rect edge
+/// to the text. In CSS the text sits behind the 1px border plus the
+/// padding, so the margin is padding + 1px on every side (vertical: `py-2`
+/// 8px + 1px = 9px). This makes the spec §3.2 arithmetic exact: content
+/// width = box width − 2px (border) − 2 × padding-x, and height =
+/// `max(64, 18 + 20 × N)` px.
 fn content_margin(style: Style) -> Margin {
     Margin::symmetric(
         padding_x(style) as i8 + BORDER_WIDTH as i8,
@@ -358,6 +359,20 @@ impl<'a> Textarea<'a> {
             transition_color_to(&ctx, id.with("text"), p.foreground, spec).color,
             self.disabled,
         );
+        let corner = CornerRadius::same(corner_radius(style, &theme.radius));
+        // The fill is resolved BEFORE the TextEdit runs: it does not depend
+        // on focus (spec §4 — only the border and ring do), and the
+        // TextEdit's frame carries it so it paints UNDER the glyphs
+        // (TXT-VIS-01). The default frame's opaque `p.input` fill showed
+        // through the transparent resting fill, and the old post-TextEdit
+        // `rect_filled` veiled the glyphs; the frame fill is painted by the
+        // atom layout before the text atoms, so neither can happen.
+        let (fill_target, _, _) =
+            resolve_textarea_colors(&p, dark, false, self.invalid, self.disabled, style);
+        let fill = apply_element_opacity(
+            transition_color_to(&ctx, id.with("fill"), fill_target, spec).color,
+            self.disabled,
+        );
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let edit = TextEdit::multiline(self.text)
             .id_salt(id)
@@ -367,7 +382,19 @@ impl<'a> Textarea<'a> {
             .desired_rows(self.rows)
             .min_size(Vec2::new(width, TEXTAREA_MIN_HEIGHT))
             .char_limit(self.char_limit)
-            .margin(content_margin(style));
+            // Explicit frame REPLACES the default TextEdit frame (opaque
+            // `text_edit_bg_color` fill + state-dependent stroke): the
+            // fill is the resolved component fill, the stroke is NONE (the
+            // component paints its own border below), and the padding is
+            // baked into `inner_margin` — with an explicit frame the
+            // builder's `.margin()` is ignored, so the text inset from the
+            // rect edge is exactly `content_margin`, as before.
+            .frame(Frame {
+                inner_margin: content_margin(style),
+                corner_radius: corner,
+                fill,
+                ..Frame::NONE
+            });
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             if is_empty {
                 edit.hint_text(placeholder.to_owned())
@@ -404,7 +431,7 @@ impl<'a> Textarea<'a> {
 
         if ui.is_rect_visible(rect) {
             let focused = response.has_focus() && !self.disabled;
-            let (fill_target, stroke_target, ring_target) =
+            let (_, stroke_target, ring_target) =
                 resolve_textarea_colors(&p, dark, focused, self.invalid, self.disabled, style);
             // Animation follows the frozen spec §6 literally: under the
             // base recipe the `color` and `box-shadow` properties animate
@@ -413,11 +440,10 @@ impl<'a> Textarea<'a> {
             // §6 reads the base property list more narrowly (border/fill
             // snap under base) — the two frozen specs disagree here; the
             // coordinator ruling is requested in the S1 report, and S9
-            // re-wires this block if the ruling goes the other way.
-            let fill = apply_element_opacity(
-                transition_color_to(&ctx, id.with("fill"), fill_target, spec).color,
-                self.disabled,
-            );
+            // re-wires this block if the ruling goes the other way. (The
+            // fill animator runs before the TextEdit — see above — so the
+            // frame carries the animated fill; only border/ring resolve
+            // here, where focus is known.)
             let stroke_color = apply_element_opacity(
                 transition_color_to(&ctx, id.with("border"), stroke_target, spec).color,
                 self.disabled,
@@ -436,13 +462,15 @@ impl<'a> Textarea<'a> {
             let ring_color =
                 apply_element_opacity(color_alpha(ring_color, ring_alpha), self.disabled);
 
-            let corner = CornerRadius::same(corner_radius(style, &theme.radius));
             let painter = ui.painter();
 
             paint_textarea_shadow(painter, rect, corner, style, dark, self.disabled);
-            if fill != Color32::TRANSPARENT {
-                painter.rect_filled(rect, corner, fill);
-            }
+            // No fill paint here: the fill is the TextEdit frame's fill
+            // (resolved above) and already sits under the glyphs. Painting
+            // it again would double-composite it over the text (TXT-VIS-01
+            // veil). The border and ring paint after the TextEdit: the
+            // border sits at the rect edge and the ring outside it, so
+            // neither overlaps the glyphs.
             painter.rect_stroke(
                 rect,
                 corner,
@@ -766,6 +794,74 @@ mod tests {
         let mut text = String::new();
         let rect = show_rect(&ctx, &mut text, |ta| ta.rows(5));
         assert_eq!(rect.height(), 118.0, "rows(5) floor");
+    }
+
+    #[test]
+    fn frame_fill_is_resolved_and_paints_under_glyphs() {
+        // TXT-VIS-01 regression pin (shape-level): the TextEdit frame must
+        // carry the RESOLVED fill — not the theme's `text_edit_bg_color`
+        // (`p.input`) — and the fill must paint BEFORE the glyphs. The
+        // resolver unit tests passed while the render was wrong, so this
+        // test inspects the emitted shapes instead of resolver values.
+        use egui::epaint::Shape;
+        fn flatten(shape: &Shape, acc: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(v) => v.iter().for_each(|s| flatten(s, acc)),
+                s => acc.push(s.clone()),
+            }
+        }
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let expected_fill = if mode.is_dark() {
+                color_alpha(p.input, 0.3)
+            } else {
+                Color32::TRANSPARENT
+            };
+            let mut text = String::from("hello");
+            let mut rect = Rect::NOTHING;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("textarea_frame_pin"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                rect = Textarea::new(&mut text).id_salt("pin").show(ui).rect;
+            });
+            let mut shapes: Vec<Shape> = Vec::new();
+            for clipped in &out.shapes {
+                flatten(&clipped.shape, &mut shapes);
+            }
+            out.textures_delta.clear();
+            // The frame fill rect: same rect as the widget, no stroke.
+            let fill_idx = shapes.iter().position(
+                |s| matches!(s, Shape::Rect(r) if r.rect == rect && r.stroke == Stroke::NONE),
+            );
+            let fill_idx = fill_idx.expect("frame fill rect present");
+            match &shapes[fill_idx] {
+                Shape::Rect(r) => assert_eq!(
+                    r.fill, expected_fill,
+                    "frame fill is the resolved fill ({mode:?})"
+                ),
+                _ => unreachable!(),
+            }
+            // Mechanism A: no rect over the widget paints the raw theme
+            // `text_edit_bg_color` fill.
+            for s in &shapes {
+                if let Shape::Rect(r) = s {
+                    assert!(
+                        r.rect != rect || r.fill != p.input,
+                        "no raw text_edit_bg_color fill over the widget ({mode:?})"
+                    );
+                }
+            }
+            // Mechanism B: the fill paints before the first glyph.
+            if let Some(text_idx) = shapes.iter().position(|s| matches!(s, Shape::Text(_))) {
+                assert!(fill_idx < text_idx, "fill paints under glyphs ({mode:?})");
+            }
+        }
     }
 
     #[test]
