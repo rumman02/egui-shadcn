@@ -3272,84 +3272,329 @@ pub fn switch_demo(ui: &mut egui::Ui) {
 }
 
 pub fn slider_demo(ui: &mut egui::Ui) {
-    let store = egui::Id::unique("slider_demo_values");
-    let mut values: (f32, f32, f32, f32, f32, f32) = ui.ctx().data_mut(|d| {
-        d.get_temp(store)
-            .unwrap_or((30.0, 20.0, 80.0, 25.0, 50.0, 60.0))
-    });
-
-    ui.label("Single value (drag the thumb, click the track, use Arrow keys)");
-    ui.add_space(4.0);
-    let (v0, _, _, _, _, _) = values;
-    let mut single = v0;
-    let resp = Slider::new(&mut single).min(0.0).max(100.0).show(ui);
-    values.0 = single;
-    if resp.changed() {
-        ui.ctx().request_repaint();
+    // Demo-local state, held in egui temp data (the gallery's established
+    // demo-state pattern). All stored values are ABSOLUTE values (spec
+    // §7.1); no fraction is ever stored or printed.
+    #[derive(Clone)]
+    struct SliderDemoState {
+        single: f32,
+        range: (f32, f32),
+        stepped: f32,
+        f2: f32,
+        f3: f32,
+        f4: f32,
+        disabled_single: f32,
+        disabled_range: (f32, f32),
+        vertical: f32,
+        vertical_range: (f32, f32),
+        keyboard: f32,
+        pointer: (f32, f32),
     }
-    ui.small(format!("value: {:.0}", values.0));
 
-    ui.add_space(12.0);
-    ui.label("Range (two thumbs)");
-    ui.add_space(4.0);
-    let (a, b, _, _, _, _) = values;
-    let mut pair = (a, b);
-    Slider::range(&mut pair).min(0.0).max(100.0).show(ui);
-    values.1 = pair.0;
-    values.2 = pair.1;
-    ui.small(format!("range: {:.0} – {:.0}", pair.0, pair.1));
+    impl Default for SliderDemoState {
+        fn default() -> Self {
+            Self {
+                single: 30.0,
+                range: (0.0, 100.0),
+                stepped: 30.0,
+                f2: 25.0,
+                f3: 5.0,
+                f4: 0.0,
+                disabled_single: 50.0,
+                disabled_range: (30.0, 70.0),
+                vertical: 60.0,
+                vertical_range: (25.0, 75.0),
+                keyboard: 50.0,
+                pointer: (30.0, 70.0),
+            }
+        }
+    }
 
+    let store = egui::Id::unique("slider_demo_values");
+    let mut state: SliderDemoState = ui.ctx().data_mut(|d| d.get_temp(store)).unwrap_or_default();
+
+    // Header: recipe position, stated honestly (spec §§2.3, 6, 8).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Slider — Root + Track + Range + thumbs, one widget. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Geometry (§2.3): base track 6px / thumb 16px / ring 4px / hit = thumb box; nova track 4px / thumb 12px / ring 3px / hit 28px. Vertical min-height 176px base / 160px nova (§3.2). Thumb fill is white in both modes (§4.5). No invalid state exists (§4.6).");
+    ui.label("OPEN-11: transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the interim Tailwind framework default, not snapshot-verified (§6). Keyboard/pointer behaviour is working assumptions W-1…W-10 (OPEN-1…OPEN-10); S6 Work B confirms from Radix source. Readouts print ABSOLUTE values only (§7.1).");
+
+    // Thumb-centre readout helpers: the thumb CENTRE travels the full Track
+    // length (spec §3.3), and the Track spans the full allocated rect, so
+    // each centre follows from the allocated rect + the absolute value.
+    // The fraction is an internal display computation only; it is never
+    // stored or printed.
+    let h_centre = |rect: egui::Rect, value: f32, min: f32, max: f32| -> egui::Pos2 {
+        let fraction = (value - min) / (max - min);
+        egui::Pos2::new(rect.left() + fraction * rect.width(), rect.center().y)
+    };
+    let v_centre = |rect: egui::Rect, value: f32, min: f32, max: f32| -> egui::Pos2 {
+        let fraction = (value - min) / (max - min);
+        egui::Pos2::new(rect.center().x, rect.bottom() - fraction * rect.height())
+    };
+
+    // 1. Single + range, resting (spec §§2–3).
     ui.add_space(12.0);
-    ui.label("Stepped (step = 10)");
+    ui.label("1. Single + range, resting (spec §§2–3; at the extremes the thumb overhangs the Track end by half its diameter, §3.3)");
     ui.add_space(4.0);
-    let (_, _, _, c, _, _) = values;
-    let mut stepped = c;
-    Slider::new(&mut stepped)
+    let single_rect = Slider::new(&mut state.single)
+        .min(0.0)
+        .max(100.0)
+        .id_salt("s3-single")
+        .show(ui)
+        .rect;
+    let centre = h_centre(single_rect, state.single, 0.0, 100.0);
+    ui.small(format!(
+        "single: allocated {:.1} x {:.1} px; thumb centre ({:.1}, {:.1}); value: {}",
+        single_rect.width(),
+        single_rect.height(),
+        centre.x,
+        centre.y,
+        state.single
+    ));
+    ui.add_space(4.0);
+    let range_rect = Slider::range(&mut state.range)
+        .min(0.0)
+        .max(100.0)
+        .id_salt("s3-range")
+        .show(ui)
+        .rect;
+    let lo = h_centre(range_rect, state.range.0, 0.0, 100.0);
+    let hi = h_centre(range_rect, state.range.1, 0.0, 100.0);
+    ui.small(format!(
+        "range at [min, max]: allocated {:.1} x {:.1} px; thumb centres ({:.1}, {:.1}) and ({:.1}, {:.1}); values: {} – {}",
+        range_rect.width(),
+        range_rect.height(),
+        lo.x,
+        lo.y,
+        hi.x,
+        hi.y,
+        state.range.0,
+        state.range.1
+    ));
+
+    // 2. Stepped + §7.6 discriminating fixtures (S6 drives the exact
+    // keyboard table against these sliders).
+    ui.add_space(12.0);
+    ui.label("2. Stepped + §7.6 discriminating fixtures (S6 drives the exact keyboard table against these)");
+    ui.add_space(4.0);
+    ui.label("Stepped, step 10 (0–100):");
+    let stepped_rect = Slider::new(&mut state.stepped)
         .min(0.0)
         .max(100.0)
         .step(10.0)
-        .show(ui);
-    values.3 = stepped;
-    ui.small(format!("value: {:.0}", stepped));
-
-    ui.add_space(12.0);
-    ui.label("Disabled");
+        .id_salt("s3-stepped")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "stepped: allocated {:.1} x {:.1} px; value: {}",
+        stepped_rect.width(),
+        stepped_rect.height(),
+        state.stepped
+    ));
     ui.add_space(4.0);
-    let (_, _, _, _, e, _) = values;
-    let mut frozen = e;
-    Slider::new(&mut frozen)
+    ui.label("F2 (min 20, max 40, step 5, v=25): ArrowRight→30, ArrowLeft→20, Home→20, End→40:");
+    let f2_rect = Slider::new(&mut state.f2)
+        .min(20.0)
+        .max(40.0)
+        .step(5.0)
+        .id_salt("s3-f2")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "F2: allocated {:.1} x {:.1} px; value: {}",
+        f2_rect.width(),
+        f2_rect.height(),
+        state.f2
+    ));
+    ui.add_space(4.0);
+    ui.label("F3 (min 0, max 10, step 0.5, v=5): ArrowRight→5.5:");
+    let f3_rect = Slider::new(&mut state.f3)
+        .min(0.0)
+        .max(10.0)
+        .step(0.5)
+        .id_salt("s3-f3")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "F3: allocated {:.1} x {:.1} px; value: {}",
+        f3_rect.width(),
+        f3_rect.height(),
+        state.f3
+    ));
+    ui.add_space(4.0);
+    ui.label("F4 (min −50, max 50, step 10, v=0): ArrowLeft→−10:");
+    let f4_rect = Slider::new(&mut state.f4)
+        .min(-50.0)
+        .max(50.0)
+        .step(10.0)
+        .id_salt("s3-f4")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "F4: allocated {:.1} x {:.1} px; value: {}",
+        f4_rect.width(),
+        f4_rect.height(),
+        state.f4
+    ));
+
+    // 3. Disabled (spec §4.4 N8).
+    ui.add_space(12.0);
+    ui.label("3. Disabled (spec §4.4 N8: uniform single 50% fade — every part at the same effective 50%, no part at 25%; no ring; no Tab stop, W-10)");
+    ui.add_space(4.0);
+    let dis_rect = Slider::new(&mut state.disabled_single)
         .min(0.0)
         .max(100.0)
         .disabled(true)
-        .show(ui);
-    values.4 = frozen;
-
-    ui.add_space(12.0);
-    ui.label("Vertical (Arrow Up/Down move the thumb)");
+        .id_salt("s3-disabled-single")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "disabled single: allocated {:.1} x {:.1} px; value: {}",
+        dis_rect.width(),
+        dis_rect.height(),
+        state.disabled_single
+    ));
     ui.add_space(4.0);
-    let (_, _, _, _, _, f) = values;
-    let mut vertical = f;
-    ui.horizontal(|ui| {
-        Slider::new(&mut vertical)
-            .min(0.0)
-            .max(100.0)
-            .orientation(GroupOrientation::Vertical)
-            .show(ui);
-        let mut pair = (values.1, values.2);
-        Slider::range(&mut pair)
-            .min(0.0)
-            .max(100.0)
-            .orientation(GroupOrientation::Vertical)
-            .show(ui);
-        values.1 = pair.0;
-        values.2 = pair.1;
-    });
-    values.5 = vertical;
+    let dis_range_rect = Slider::range(&mut state.disabled_range)
+        .min(0.0)
+        .max(100.0)
+        .disabled(true)
+        .id_salt("s3-disabled-range")
+        .show(ui)
+        .rect;
+    ui.small(format!(
+        "disabled range: allocated {:.1} x {:.1} px; values: {} – {}",
+        dis_range_rect.width(),
+        dis_range_rect.height(),
+        state.disabled_range.0,
+        state.disabled_range.1
+    ));
+
+    // 4. Vertical (spec §3.2). NOTE: a vertical slider stretches to the
+    // OFFERED height (`h-full`), and inside the gallery ScrollArea the
+    // offered height is the viewport height — so the row height is set
+    // explicitly via `allocate_ui_with_layout` (separator S3 precedent):
+    // 200px, above both floors (176px base / 160px nova), so the offered
+    // height — not the floor — determines the rendered height in both
+    // styles. The row's response rect is the content union (the requested
+    // 120px width shrink-wraps to the two 24px sliders + spacing); each
+    // slider's allocated rect and thumb centres are printed below. Do NOT
+    // change the component to fit the demo.
+    ui.add_space(12.0);
+    ui.label("4. Vertical (spec §3.2: h-full with the 176px base / 160px nova floor; values increase bottom-up)");
+    ui.add_space(4.0);
+    let mut vertical = state.vertical;
+    let mut vertical_pair = state.vertical_range;
+    let row = ui.allocate_ui_with_layout(
+        egui::Vec2::new(120.0, 200.0),
+        egui::Layout::left_to_right(egui::Align::Min),
+        |ui| {
+            let r1 = Slider::new(&mut vertical)
+                .min(0.0)
+                .max(100.0)
+                .orientation(GroupOrientation::Vertical)
+                .id_salt("s3-vertical")
+                .show(ui)
+                .rect;
+            let r2 = Slider::range(&mut vertical_pair)
+                .min(0.0)
+                .max(100.0)
+                .orientation(GroupOrientation::Vertical)
+                .id_salt("s3-vertical-range")
+                .show(ui)
+                .rect;
+            (r1, r2)
+        },
+    );
+    state.vertical = vertical;
+    state.vertical_range = vertical_pair;
+    let row_rect = row.response.rect;
+    let (v_single_rect, v_range_rect) = row.inner;
+    let v_single_centre = v_centre(v_single_rect, state.vertical, 0.0, 100.0);
+    let v_lo = v_centre(v_range_rect, state.vertical_range.0, 0.0, 100.0);
+    let v_hi = v_centre(v_range_rect, state.vertical_range.1, 0.0, 100.0);
+    ui.small(format!(
+        "vertical row: {:.1} x {:.1} px (row rect = content union; 200px height offered explicitly); single {:.1} x {:.1} px, thumb centre ({:.1}, {:.1}), value: {}; range {:.1} x {:.1} px, thumb centres ({:.1}, {:.1}) and ({:.1}, {:.1}), values: {} – {}",
+        row_rect.width(),
+        row_rect.height(),
+        v_single_rect.width(),
+        v_single_rect.height(),
+        v_single_centre.x,
+        v_single_centre.y,
+        state.vertical,
+        v_range_rect.width(),
+        v_range_rect.height(),
+        v_lo.x,
+        v_lo.y,
+        v_hi.x,
+        v_hi.y,
+        state.vertical_range.0,
+        state.vertical_range.1
+    ));
+
+    // 5. Keyboard target (spec §8.1; S6 drives it).
+    ui.add_space(16.0);
+    ui.label("5. Keyboard target (spec §8.1 — S6 drives it; F1 fixture: 0–100, step 1, v=50)");
+    ui.label(
+        "Arrows ±1, Home→0, End→100, PageUp/PageDown ±10 (W-2), clamp at the bounds, no wrap (F6).",
+    );
+    ui.add_space(4.0);
+    let kb = Slider::new(&mut state.keyboard)
+        .min(0.0)
+        .max(100.0)
+        .step(1.0)
+        .id_salt("s3-keyboard")
+        .show(ui);
+    ui.small(format!(
+        "keyboard target: allocated {:.1} x {:.1} px; value: {}; focused: {}",
+        kb.rect.width(),
+        kb.rect.height(),
+        state.keyboard,
+        kb.has_focus()
+    ));
+    ui.add_space(16.0);
+
+    // 6. Pointer target (spec §8.2; S6 drives it).
+    ui.label(
+        "6. Pointer target (spec §8.2 — S6 drives it; F5a values: range 0–100, step 10, [30, 70])",
+    );
+    ui.label("Press on the Track moves the NEAREST thumb (W-6a) and begins a drag (W-6b); right/middle-click and wheel have no effect (W-6d/f).");
+    ui.add_space(4.0);
+    let ptr = Slider::range(&mut state.pointer)
+        .min(0.0)
+        .max(100.0)
+        .step(10.0)
+        .id_salt("s3-pointer")
+        .show(ui);
+    ui.small(format!(
+        "pointer target: allocated {:.1} x {:.1} px; values: {} – {}; hovered: {}; dragged: {}",
+        ptr.rect.width(),
+        ptr.rect.height(),
+        state.pointer.0,
+        state.pointer.1,
+        ptr.hovered(),
+        ptr.dragged()
+    ));
+    ui.add_space(16.0);
+
+    // 7. Hit-area note (spec §3.5).
+    ui.label("7. Hit areas (spec §3.5): nova 28×28px — thumb box + 8px on all sides (after:-inset-2); base 16×16px thumb box. Hover/focus/drag sensing uses the hit rect; paint stays the thumb box. S6 verifies with pointer probes. Overlapping thumbs: nearest centre wins (W-6c); exact ties OPEN-6.");
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab to a thumb, use Arrow keys, Home and End.");
+    ui.label("Keyboard: Tab moves between thumbs (W-9); which keys activate is OPEN-3/OPEN-4 (S6 Work B). The ring shows on any focus (deviation D2, PROPOSED).");
 
-    ui.ctx().data_mut(|d| d.insert_temp(store, values));
+    ui.ctx().data_mut(|d| d.insert_temp(store, state));
 }
 
 pub fn toggle_demo(ui: &mut egui::Ui) {
