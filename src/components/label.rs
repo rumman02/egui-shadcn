@@ -41,6 +41,24 @@
 //! are expressed as one explicit flag applying the group-disabled
 //! outcome (50% opacity + non-interactive).
 //!
+//! Platform limits and notes (spec §10): D2 (`asChild`/Slot) and D3
+//! (ARIA tree) are limitations — egui has no element-substitution
+//! mechanism and no accessibility tree, so only the functional
+//! consequence of `htmlFor` (click acts on the target) is implemented.
+//! D4 (double-click text selection) is a note: egui label text has no
+//! user text-selection behaviour to suppress. D5 (the peer-disabled
+//! `not-allowed` cursor) is not separately expressible under D1's
+//! single-flag simplification; see [`Label::disabled`].
+//!
+//! OPEN items (spec §11): OPEN-1 (activation + focus), OPEN-2 (Radix
+//! prop forwarding: `Label` consumes no props of its own, everything
+//! spreads onto the native `<label>`), and OPEN-6 (no Tab stop) are
+//! settled dispositions, closed by S6 Work B from public Radix Label
+//! source. OPEN-5 (composition API shape) is DECIDED — see
+//! [`Label::show_with`]. OPEN-3 (`.cn-label-aria` attachment), OPEN-4
+//! (font family), and OPEN-7 (`cn()` conflict resolution) stay OPEN:
+//! the snapshot cannot supply the evidence, and no closure is claimed.
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -458,8 +476,14 @@ impl Label {
     /// widgets `content` adds, laid out as one flex row with `gap-2`
     /// (8px) between children and vertical centering (`items-center`,
     /// spec §2). This is the Rust analogue of the original's arbitrary
-    /// JSX children, including nested controls (spec §8, OPEN-5) — the
-    /// S1 API proposal, pending Coordinator confirmation.
+    /// JSX children, including nested controls (spec §8, OPEN-5
+    /// DECIDED: coordinator decision 2026-11-16 adopting the S1
+    /// proposal — icon slots plus this generic composition method).
+    ///
+    /// The label's own text does not wrap in a `show_with` row
+    /// (deliberate scope boundary, F5): the row is content-sized with
+    /// no wrap-width concept, so the §9 wrapping requirement covers
+    /// [`Label::show`] only.
     ///
     /// The closure runs TWICE (measure pass, then real pass — the
     /// `dialog_footer` pattern): the measure pass runs in an invisible,
