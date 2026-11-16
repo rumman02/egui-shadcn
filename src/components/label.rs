@@ -23,11 +23,17 @@
 //! not a class-string fact).
 //!
 //! Click behaviour: a label bound with [`Label::for_id`] (the `htmlFor`
-//! concept, spec §8) forwards clicks to the named control. Whether the
-//! original's forwarding ACTIVATEs toggleable controls or only focuses
-//! them is OPEN-1 (spec §7.2, the N6 question) — unestablished from the
-//! snapshot, and this implementation's focus-only behaviour is recorded
-//! without any parity claim. S6 settles OPEN-1 from Radix source.
+//! concept, spec §8) forwards clicks to the named control: the click
+//! fires on the control (activation for checkbox/radio/switch/button,
+//! focus for text inputs) AND focuses it. That is the settled OPEN-1
+//! rule (spec §7.2, the N6 question), closed by S6 Work B from public
+//! Radix Label source (verbatim `.click()` + `.focus()` pre-2022,
+//! native `<label>` platform forwarding since; see
+//! `~/workspace/batches-a-h/captures/label-s6/_radix-source/`). The
+//! forwarding is deferred one pass (see `record_pending_click`): egui
+//! surrenders focus requested before the target is created in the
+//! click pass, so the focus request and the synthetic activation are
+//! issued on the next pass instead, when no click is in flight.
 //!
 //! The disabled flag ([`Label::disabled`]) is proposed deviation D1
 //! (spec §10, Expert Reviewer approval pending): egui has no CSS
@@ -44,6 +50,7 @@
 
 use crate::icons::Icon;
 use crate::theme::{color_alpha, fonts, Palette, ShadcnTheme};
+use egui::text::{LayoutJob, TextFormat};
 use egui::{
     Align, Align2, Color32, FontId, Id, Layout, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2,
     Widget,
@@ -84,9 +91,17 @@ pub(crate) fn text_color(p: &Palette, disabled: bool) -> Color32 {
 /// between every pair of PRESENT children; height is the tallest child.
 /// The text child exists only when the text is non-empty, so an icon-only
 /// label is exactly the icon box and an empty label is zero-size
-/// (spec §9). No padding, border, or chrome is added (spec §3.4) — the
-/// widget allocates exactly this size.
-pub(crate) fn content_size(text_w: f32, has_text: bool, icon_start: bool, icon_end: bool) -> Vec2 {
+/// (spec §9). `text_h` is the text child's height: one 14px line box
+/// for a single line, one 14px line box per wrapped line for wrapped
+/// text (spec §9). No padding, border, or chrome is added (spec §3.4) —
+/// the widget allocates exactly this size.
+pub(crate) fn content_size(
+    text_w: f32,
+    text_h: f32,
+    has_text: bool,
+    icon_start: bool,
+    icon_end: bool,
+) -> Vec2 {
     let mut width: f32 = 0.0;
     let mut height: f32 = 0.0;
     let mut children = 0usize;
@@ -97,7 +112,7 @@ pub(crate) fn content_size(text_w: f32, has_text: bool, icon_start: bool, icon_e
     }
     if has_text {
         width += text_w;
-        height = height.max(LINE_H);
+        height = height.max(text_h);
         children += 1;
     }
     if icon_end {
@@ -123,6 +138,93 @@ pub(crate) fn label_sense(has_target: bool, disabled: bool) -> Sense {
     } else {
         Sense::hover()
     }
+}
+
+/// Temp-data key for a bound-label click that still needs forwarding to
+/// its target (see [`record_pending_click`]).
+fn pending_click_id(target: Id) -> Id {
+    target.with("shadcn_label_pending_click")
+}
+
+/// A pending click older than this is dropped instead of forwarded. The
+/// forwarding normally lands on the very next pass; the bound only stops
+/// a stale click from firing if the label vanishes before the next pass
+/// and reappears much later. Generous on purpose: passes under load can
+/// lag seconds behind wall time.
+const PENDING_CLICK_TTL: f64 = 30.0;
+
+/// Records that a bound-label click must be forwarded to `target` on the
+/// next pass, and requests the repaint that guarantees the next pass
+/// happens.
+///
+/// Why deferred: in the click pass the label is usually shown BEFORE its
+/// target, and egui 0.37's surrender-on-click (`Context::create_widget`:
+/// a click that lands elsewhere surrenders the focused widget) undoes a
+/// focus request in the same pass the target is created — the S1
+/// focus-only forwarding never survived a pass (LBL-INT-01). On the next
+/// pass no click is in flight, so the focus request sticks, and the
+/// synthetic Space press (see [`consume_pending_click`]) reaches the
+/// target's `interact` while it holds focus.
+fn record_pending_click(ctx: &egui::Context, target: Id) {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|data| data.insert_temp(pending_click_id(target), now));
+    ctx.request_repaint();
+}
+
+/// Forwards a click recorded by [`record_pending_click`] on a previous
+/// pass: requests focus on `target`, then pushes a synthetic Space
+/// key-down + key-up pair into the live input events.
+///
+/// The pair is what makes the target ACTIVATE (LBL-INT-02): egui's
+/// `interact` reports a fake primary click for the focused widget
+/// whenever it sees `key_pressed(Space)` or `key_pressed(Enter)`, and
+/// `key_pressed` scans the live event list, so events pushed here are
+/// visible to every widget shown later in this pass — including the
+/// target, which the label precedes in the usual label-then-control
+/// order. Both halves of the pair matter: the key-down is what
+/// `interact` reads, and the key-up is what the crate's button needs —
+/// its Space-fires-on-keyup handling hides a lone key-down and only
+/// re-creates it when the release arrives. A bare Space key press
+/// inserts no text (text insertion reads `Event::Text`, never a lone
+/// `Key` event), so a text-input target focuses with no side effect;
+/// a disabled target is protected twice over — egui's `ignore_focus`
+/// clears focus for non-focusable widgets before `interact` reads it,
+/// and the crate's controls gate `clicked()` on `!disabled`.
+///
+/// The pending flag is consumed (removed) whether or not `enabled`:
+/// a label disabled after the click must not fire a stale activation
+/// if it is re-enabled later. Callers place this where the target runs
+/// AFTER it in the same pass: at the top of [`Label::show`], and
+/// between the measure and real passes of [`Label::show_with`] (the
+/// measure pass runs in a disabled child `Ui`, whose `interact` would
+/// `ignore_focus` the target if the request came before it).
+fn consume_pending_click(ui: &mut Ui, target: Id, enabled: bool) {
+    let set_at = ui
+        .ctx()
+        .data_mut(|data| data.remove_temp::<f64>(pending_click_id(target)));
+    let Some(set_at) = set_at else {
+        return;
+    };
+    if !enabled {
+        return;
+    }
+    let now = ui.input(|i| i.time);
+    if now - set_at > PENDING_CLICK_TTL {
+        return;
+    }
+    // Focus first: the fake click only applies to the focused widget.
+    ui.memory_mut(|mem| mem.request_focus(target));
+    ui.ctx().input_mut(|input| {
+        for pressed in [true, false] {
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: Some(egui::Key::Space),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+    });
 }
 
 /// A shadcn label. See the [module docs](self) for an example.
@@ -166,13 +268,23 @@ impl Label {
         self
     }
 
-    /// Binds the label to a control id: clicking the label moves keyboard
-    /// focus to that widget, like Radix `htmlFor` (spec §8). `htmlFor` has
-    /// no default: a label without a target has no associated control.
+    /// Binds the label to a control id: clicking the label forwards the
+    /// click to that widget — activation for checkbox, radio, switch,
+    /// and button targets, focus for text inputs — and focuses it, like
+    /// Radix `htmlFor` (spec §8; the settled OPEN-1 rule, see the
+    /// module docs). `htmlFor` has no default: a label without a
+    /// target has no associated control.
     ///
-    /// Whether the original also ACTIVATEs toggleable targets is OPEN-1
-    /// (spec §7.2) and is not claimed here: this implementation forwards
-    /// focus only.
+    /// When the control is a crate widget shown after the label in the
+    /// same `Ui` scope, its id is usually `ui.scope_id().with(id_salt)`
+    /// for the same `id_salt` the control is constructed with. Some
+    /// widgets compute their widget id inside a child `Ui` — `Input`
+    /// shows its text edit in a `ui.scope`, so its widget id is NOT
+    /// `ui.scope_id().with(id_salt)` — and a control nested inside
+    /// [`Label::show_with`] lives one scope deeper than the label.
+    /// For those, capture the id from the control's returned
+    /// [`Response::id`] on one pass and bind it from the next; binding
+    /// a computed id that matches no widget focuses nothing.
     pub fn for_id(mut self, id: Id) -> Self {
         self.for_id = Some(id);
         self
@@ -207,14 +319,57 @@ impl Label {
         let font = label_font();
         // Placeholder color: the paint-time fallback replaces it exactly,
         // so this one galley serves both sizing and painting.
-        let galley = ui
-            .painter()
-            .layout_no_wrap(self.text.clone(), font, Color32::PLACEHOLDER);
+        let no_wrap_galley =
+            ui.painter()
+                .layout_no_wrap(self.text.clone(), font.clone(), Color32::PLACEHOLDER);
 
         let has_text = !self.text.is_empty();
+        // Long text wraps within the available width (spec §9: default
+        // browser flex behaviour; each wrapped line is a 14px line box).
+        // The width the text child can take is what remains after the
+        // icon boxes and the gaps between present children. Short text
+        // keeps the no-wrap galley, so single-line labels render
+        // byte-identically to before.
+        let mut reserved = 0.0f32;
+        let mut children = 0usize;
+        if self.icon.is_some() {
+            reserved += ICON_SIZE;
+            children += 1;
+        }
+        if has_text {
+            children += 1;
+        }
+        if self.icon_end.is_some() {
+            reserved += ICON_SIZE;
+            children += 1;
+        }
+        if children > 1 {
+            reserved += (children - 1) as f32 * GAP;
+        }
+        let text_avail = ui.available_width() - reserved;
+        let (galley, text_h) =
+            if has_text && text_avail > 0.0 && no_wrap_galley.size().x > text_avail {
+                let mut job = LayoutJob::single_section(
+                    self.text.clone(),
+                    TextFormat {
+                        font_id: font,
+                        color: Color32::PLACEHOLDER,
+                        line_height: Some(LINE_H),
+                        ..Default::default()
+                    },
+                );
+                job.wrap.max_width = text_avail;
+                let galley = ui.painter().layout_job(job);
+                let text_h = galley.size().y;
+                (galley, text_h)
+            } else {
+                (no_wrap_galley, LINE_H)
+            };
+
         let text_w = galley.size().x;
         let desired = content_size(
             text_w,
+            text_h,
             has_text,
             self.icon.is_some(),
             self.icon_end.is_some(),
@@ -222,6 +377,12 @@ impl Label {
 
         let sense = label_sense(self.for_id.is_some(), self.disabled);
         let interactive = self.for_id.is_some() && !self.disabled;
+
+        // A click recorded on a previous pass is forwarded here, before
+        // the target is created later in this pass (LBL-INT-01/02).
+        if let Some(target) = self.for_id {
+            consume_pending_click(ui, target, !self.disabled);
+        }
 
         let (rect, response) = {
             // Reserve space without registering an auto-id focusable
@@ -235,10 +396,15 @@ impl Label {
             (rect, ui.interact(rect, id, sense))
         };
 
-        // Focus-only forwarding (OPEN-1 unestablished; no parity claim).
+        // Click forwarding (LBL-INT-01/02): the click is recorded for
+        // the next pass, when no click is in flight to surrender the
+        // focus request. The immediate request is kept too — it helps
+        // when the label runs AFTER its target — but on its own it
+        // never survives the click pass (see `record_pending_click`).
         if interactive && response.clicked() {
             if let Some(target) = self.for_id {
                 ui.memory_mut(|mem| mem.request_focus(target));
+                record_pending_click(ui.ctx(), target);
             }
         }
 
@@ -302,15 +468,20 @@ impl Label {
     /// content must therefore be a pure function of its inputs, and must
     /// not depend on the available width for its height.
     ///
-    /// Clicks anywhere in the row forward focus to the [`Label::for_id`]
-    /// target (OPEN-1: focus-only, no parity claim), detected from
-    /// pointer state rather than a click-sense interact, so no
-    /// click-sense rect steals hits from nested widgets (the
-    /// `FieldLabel::show_with_card` pattern). Nested interactive children
-    /// keep their own click handling. When disabled (D1), the whole row
-    /// renders at 50% opacity via row opacity and no click is forwarded;
-    /// nested children keep their own enabled state (the caller disables
-    /// the nested control itself, as on the web).
+    /// Clicks anywhere in the row forward the click to the
+    /// [`Label::for_id`] target — activation for checkbox, radio,
+    /// switch, and button targets, focus for text inputs — and focus it
+    /// (the settled OPEN-1 rule; see the module docs). The click is
+    /// detected from pointer state rather than a click-sense interact,
+    /// so no click-sense rect steals hits from nested widgets (the
+    /// `FieldLabel::show_with_card` pattern). Nested interactive
+    /// children keep their own click handling: a click that landed on
+    /// the target itself is NOT forwarded (Radix's `isClickingControl`
+    /// exclusion), so a direct click on a nested control fires exactly
+    /// once. When disabled (D1), the whole row renders at 50% opacity
+    /// via row opacity and no click is forwarded; nested children keep
+    /// their own enabled state (the caller disables the nested control
+    /// itself, as on the web).
     pub fn show_with<R>(
         self,
         ui: &mut Ui,
@@ -367,13 +538,32 @@ impl Label {
 
         // Measure pass (dialog_footer pattern): cross-align Min keeps the
         // measured frame widget-sized; Center would span the full
-        // (infinite) available height.
+        // (infinite) available height. The measure child gets its own
+        // id salt, so nested widgets register DIFFERENT ids here than
+        // in the real pass: the measure child is invisible and therefore
+        // disabled, and egui's `create_widget` calls `ignore_focus` for
+        // every widget in a disabled Ui — with a shared scope that
+        // would clear the nested target's focus on every pass, and the
+        // two passes would also trip the debug id-clash check.
         let flow_min = ui.cursor().min;
         let flow_w = ui.available_width();
         let measure_rect = Rect::from_min_size(flow_min, Vec2::new(flow_w, f32::INFINITY));
-        let mut measure = ui.new_child(UiBuilder::new().max_rect(measure_rect).invisible());
+        let mut measure = ui.new_child(
+            UiBuilder::new()
+                .max_rect(measure_rect)
+                .invisible()
+                .id_salt("shadcn_label_measure"),
+        );
         measure.with_layout(Layout::left_to_right(Align::Min), |ui| render(ui));
         let measured = measure.min_rect().size();
+
+        // A click recorded on a previous pass is forwarded here — AFTER
+        // the measure pass (whose disabled child Ui would `ignore_focus`
+        // the target) and BEFORE the real pass (so the nested target
+        // sees the focused + Space state during its own `interact`).
+        if let Some(target) = for_id {
+            consume_pending_click(ui, target, !disabled);
+        }
 
         // Real pass: the row rect is the measured size, so Align::Center
         // centers every child on the row's center line (items-center).
@@ -387,14 +577,32 @@ impl Label {
         // interact steals hits from nested widgets.
         if let Some(target) = for_id {
             if !disabled {
-                let clicked = ui.input(|i| {
-                    i.pointer.any_click()
-                        && i.pointer
-                            .press_origin()
-                            .is_some_and(|o| row_rect.contains(o))
-                });
+                // The click is recorded for the next pass, when no click
+                // is in flight to surrender the focus request (see
+                // `record_pending_click`). A click that landed on the
+                // target itself is excluded — the target already fired
+                // from the real click, and forwarding would fire it
+                // twice (Radix's `isClickingControl` exclusion).
+                //
+                // The click position is the RELEASE position
+                // (`latest_pos`): `press_origin` is cleared during
+                // `begin_pass` when the release event is processed, so
+                // it is always `None` on the pass where `any_click()`
+                // is true and a press-origin check can never fire.
+                // egui only reports a click when the pointer stayed
+                // within `max_click_dist` of the press, so a release
+                // inside the row means the press began inside (or
+                // within a few px of) the row.
+                let clicked_on_target =
+                    ui.ctx().interaction_snapshot(|s| s.clicked == Some(target));
+                let clicked = !clicked_on_target
+                    && ui.input(|i| {
+                        i.pointer.any_click()
+                            && i.pointer.latest_pos().is_some_and(|p| row_rect.contains(p))
+                    });
                 if clicked {
                     ui.memory_mut(|mem| mem.request_focus(target));
+                    record_pending_click(ui.ctx(), target);
                 }
             }
         }
@@ -426,27 +634,52 @@ mod tests {
     fn content_size_matches_gap_arithmetic() {
         // Spec §3.2 table, text advance W = 50, icon box I = 16, gap = 8.
         let w = 50.0;
-        assert_eq!(content_size(w, true, false, false), Vec2::new(50.0, 14.0));
-        assert_eq!(content_size(w, true, true, false), Vec2::new(74.0, 16.0));
-        assert_eq!(content_size(w, true, false, true), Vec2::new(74.0, 16.0));
-        assert_eq!(content_size(w, true, true, true), Vec2::new(98.0, 16.0));
+        assert_eq!(
+            content_size(w, LINE_H, true, false, false),
+            Vec2::new(50.0, 14.0)
+        );
+        assert_eq!(
+            content_size(w, LINE_H, true, true, false),
+            Vec2::new(74.0, 16.0)
+        );
+        assert_eq!(
+            content_size(w, LINE_H, true, false, true),
+            Vec2::new(74.0, 16.0)
+        );
+        assert_eq!(
+            content_size(w, LINE_H, true, true, true),
+            Vec2::new(98.0, 16.0)
+        );
     }
 
     #[test]
     fn content_size_icon_only_and_empty() {
         // Icon-only: exactly the icon box, no text line box (spec §9).
-        assert_eq!(content_size(0.0, false, true, false), Vec2::new(16.0, 16.0));
-        assert_eq!(content_size(0.0, false, false, true), Vec2::new(16.0, 16.0));
+        assert_eq!(
+            content_size(0.0, LINE_H, false, true, false),
+            Vec2::new(16.0, 16.0)
+        );
+        assert_eq!(
+            content_size(0.0, LINE_H, false, false, true),
+            Vec2::new(16.0, 16.0)
+        );
         // Empty label: zero-size (spec §9).
-        assert_eq!(content_size(0.0, false, false, false), Vec2::new(0.0, 0.0));
+        assert_eq!(
+            content_size(0.0, LINE_H, false, false, false),
+            Vec2::new(0.0, 0.0)
+        );
     }
 
     #[test]
     fn content_size_height_is_tallest_child() {
         // Text-only height is the 14px line box; a 16px icon beside 14px
         // text makes the row 16px tall (spec §3.2).
-        assert_eq!(content_size(30.0, true, false, false).y, 14.0);
-        assert_eq!(content_size(30.0, true, true, false).y, 16.0);
+        assert_eq!(content_size(30.0, LINE_H, true, false, false).y, 14.0);
+        assert_eq!(content_size(30.0, LINE_H, true, true, false).y, 16.0);
+        // Wrapped text: one 14px line box per line; a 2-line text child
+        // (28px) is taller than the 16px icon (spec §9).
+        assert_eq!(content_size(30.0, 28.0, true, false, false).y, 28.0);
+        assert_eq!(content_size(30.0, 28.0, true, true, false).y, 28.0);
     }
 
     #[test]
@@ -484,5 +717,367 @@ mod tests {
         assert!(label.disabled);
         assert_eq!(label.for_id, Some(Id::unique("email")));
         assert_eq!(label.id_salt.as_deref(), Some("email_label"));
+    }
+
+    // --- S9 harness tests: real egui passes (chart.rs / button.rs pattern).
+    //
+    // Each test drives a fresh `Context` through explicit passes so the
+    // click + deferred-forward sequence (LBL-INT-01/02) and the wrap
+    // layout (LBL-VIS-01) are exercised exactly as the gallery runs them.
+    // The Ui id and rect are fixed within a test so widget ids are
+    // stable across passes.
+
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        ctx
+    }
+
+    fn run_ui(ctx: &egui::Context, input: egui::RawInput, mut f: impl FnMut(&mut Ui)) {
+        let mut output = ctx.run_ui(input, |ctx| {
+            let mut ui = Ui::new(
+                ctx.clone(),
+                Id::unique("label_s9_test"),
+                UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+            );
+            f(&mut ui);
+        });
+        // No renderer consumes the texture uploads in a headless test;
+        // dropping an unapplied delta panics, so clear it explicitly.
+        output.textures_delta.clear();
+    }
+
+    fn click_event(pos: Pos2, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn long_text_wraps_within_available_width() {
+        // LBL-VIS-01: the demo §10 sentence wraps in a 320px container
+        // (width <= 320, height a multiple of 14px, >= 2 lines) and
+        // stays single-line where it fits; short labels are unchanged.
+        let ctx = test_ctx();
+        let sentence =
+            "This is a very long label that exceeds the width of its container by a wide margin";
+
+        let mut wide = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            wide = Label::new(sentence).show(ui).rect;
+        });
+        assert_eq!(wide.height(), 14.0, "wide container: single line");
+        assert!(wide.width() > 320.0, "sentence is wider than 320px");
+
+        let mut narrow = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            narrow = ui
+                .allocate_ui(Vec2::new(320.0, 60.0), |ui| {
+                    Label::new(sentence).show(ui).rect
+                })
+                .inner;
+        });
+        assert!(narrow.width() <= 320.0, "wrapped width: {narrow:?}");
+        assert!(narrow.height() >= 28.0, "at least two lines: {narrow:?}");
+        assert_eq!(narrow.height() % LINE_H, 0.0, "one 14px box per line");
+
+        // A short label is byte-identical in both widths.
+        let mut short_wide = Rect::NOTHING;
+        let mut short_narrow = Rect::NOTHING;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            short_wide = Label::new("Email address").show(ui).rect;
+        });
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            short_narrow = ui
+                .allocate_ui(Vec2::new(320.0, 60.0), |ui| {
+                    Label::new("Email address").show(ui).rect
+                })
+                .inner;
+        });
+        assert_eq!(short_wide.height(), 14.0);
+        assert_eq!(short_wide, short_narrow);
+    }
+
+    #[test]
+    fn bound_label_click_focuses_and_toggles_checkbox() {
+        // LBL-INT-01 + LBL-INT-02 (show path): a click on a bound label
+        // focuses the checkbox AND toggles it on the deferred pass; a
+        // second click toggles back. On unfixed code the focus is
+        // surrendered in the click pass and nothing toggles.
+        use crate::components::checkbox::Checkbox;
+
+        let ctx = test_ctx();
+        // Interior mutability: the render closure is reused across
+        // passes, so state lives in cells the test can read between
+        // passes. The checkbox borrow ends within each pass.
+        let checked = std::cell::RefCell::new(false);
+        let target = std::cell::Cell::new(Id::NULL);
+        let label_rect = std::cell::Cell::new(Rect::NOTHING);
+
+        let render = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                let t = ui.scope_id().with("label_s9_cb");
+                target.set(t);
+                let lr = Label::new("Accept terms").for_id(t).show(ui);
+                let mut guard = checked.borrow_mut();
+                let cr = Checkbox::new(&mut guard).id_salt("label_s9_cb").show(ui);
+                (lr, cr)
+            })
+            .inner
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            label_rect.set(render(ui).0.rect);
+        });
+        assert!(!ctx.memory(|m| m.has_focus(target.get())));
+
+        for expected in [true, false] {
+            let center = label_rect.get().center();
+            run_ui(&ctx, click_event(center, true), |ui| {
+                render(ui);
+            });
+            let mut clicked = false;
+            run_ui(&ctx, click_event(center, false), |ui| {
+                clicked = render(ui).0.clicked();
+            });
+            assert!(clicked, "label click registers");
+            // Deferred pass: no click in flight, the forwarded
+            // focus + synthetic Space reach the checkbox.
+            run_ui(&ctx, egui::RawInput::default(), |ui| {
+                render(ui);
+            });
+            assert!(ctx.memory(|m| m.has_focus(target.get())), "INT-01: focused");
+            assert_eq!(*checked.borrow(), expected, "INT-02: toggled");
+        }
+    }
+
+    #[test]
+    fn bound_label_click_activates_button_on_deferred_pass() {
+        // LBL-INT-02 for a button target (show path): the forwarded
+        // synthetic Space press fires the button's `clicked()` on the
+        // deferred pass only — not on the press or release pass, and
+        // not again on the pass after. The button path is distinct
+        // from checkbox/radio/switch: its Space-fires-on-keyup handling
+        // hides a lone key-down, so the key-down + key-up pair the
+        // forwarding pushes is what produces the click.
+        use crate::components::button::Button;
+
+        let ctx = test_ctx();
+        let target = std::cell::Cell::new(Id::NULL);
+        let label_rect = std::cell::Cell::new(Rect::NOTHING);
+
+        let render = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                let t = ui.scope_id().with("label_s9_btn");
+                target.set(t);
+                let lr = Label::new("Submit").for_id(t).show(ui);
+                let br = Button::new("Target button")
+                    .id_salt("label_s9_btn")
+                    .show(ui);
+                (lr, br)
+            })
+            .inner
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            label_rect.set(render(ui).0.rect);
+        });
+        let center = label_rect.get().center();
+        run_ui(&ctx, click_event(center, true), |ui| {
+            assert!(!render(ui).1.clicked(), "no activation on press pass");
+        });
+        run_ui(&ctx, click_event(center, false), |ui| {
+            assert!(!render(ui).1.clicked(), "no activation on release pass");
+        });
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            assert!(render(ui).1.clicked(), "INT-02: button activates");
+        });
+        assert!(ctx.memory(|m| m.has_focus(target.get())), "INT-01: focused");
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            assert!(!render(ui).1.clicked(), "no repeat activation");
+        });
+    }
+
+    #[test]
+    fn bound_label_click_focuses_input_without_inserting_text() {
+        // LBL-INT-01 for a text target (show path): the click focuses
+        // the input, and the synthetic Space press inserts nothing.
+        //
+        // The binding id is CAPTURED from the input's returned response:
+        // `Input` shows its text edit inside a `ui.scope`, so its widget
+        // id is not `ui.scope_id().with(id_salt)` (see `Label::for_id`).
+        // Binding the computed id would target a widget that does not
+        // exist; the demo §8a wiring has exactly this mismatch (S9
+        // finding — demo-side fix, capture the response id).
+        use crate::components::input::Input;
+
+        let ctx = test_ctx();
+        let text = std::cell::RefCell::new("m@example.com".to_string());
+        let target = std::cell::Cell::new(Id::NULL);
+        let label_rect = std::cell::Cell::new(Rect::NOTHING);
+
+        // Pass 1: render unbound, capture the input's widget id.
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                Label::new("Email").show(ui);
+                let mut guard = text.borrow_mut();
+                let ir = Input::new(&mut guard).id_salt("label_s9_input").show(ui);
+                target.set(ir.id);
+            });
+        });
+        assert_ne!(target.get(), Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                let lr = Label::new("Email").for_id(target.get()).show(ui);
+                let mut guard = text.borrow_mut();
+                let ir = Input::new(&mut guard).id_salt("label_s9_input").show(ui);
+                (lr, ir)
+            })
+            .inner
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            label_rect.set(render(ui).0.rect);
+        });
+        let center = label_rect.get().center();
+        run_ui(&ctx, click_event(center, true), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, click_event(center, false), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        assert!(ctx.memory(|m| m.has_focus(target.get())), "INT-01: focused");
+        assert_eq!(*text.borrow(), "m@example.com", "no Space inserted");
+    }
+
+    #[test]
+    fn bound_label_click_never_focuses_disabled_target() {
+        // Regression guard (passes on unfixed code too): a click on a
+        // label bound to a DISABLED checkbox focuses nothing and
+        // activates nothing — the disabled pair stays inert.
+        use crate::components::checkbox::Checkbox;
+
+        let ctx = test_ctx();
+        let checked = std::cell::RefCell::new(false);
+        let target = std::cell::Cell::new(Id::NULL);
+        let label_rect = std::cell::Cell::new(Rect::NOTHING);
+
+        let render = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                let t = ui.scope_id().with("label_s9_cb_dis");
+                target.set(t);
+                let lr = Label::new("Disabled terms").for_id(t).show(ui);
+                let mut guard = checked.borrow_mut();
+                let cr = Checkbox::new(&mut guard)
+                    .id_salt("label_s9_cb_dis")
+                    .disabled(true)
+                    .show(ui);
+                (lr, cr)
+            })
+            .inner
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            label_rect.set(render(ui).0.rect);
+        });
+        let center = label_rect.get().center();
+        run_ui(&ctx, click_event(center, true), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, click_event(center, false), |ui| {
+            render(ui);
+        });
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            render(ui);
+        });
+        assert!(!ctx.memory(|m| m.has_focus(target.get())));
+        assert!(!*checked.borrow());
+    }
+
+    #[test]
+    fn show_with_click_forwards_to_nested_target_once() {
+        // LBL-INT-01 + LBL-INT-02 (show_with path): a click on the label
+        // text forwards to the NESTED checkbox exactly once (focus +
+        // toggle); a direct click on the nested checkbox also toggles
+        // exactly once (the target-itself exclusion). The nested
+        // control lives one Ui scope deeper than the label, so its id
+        // is captured from the first pass rather than guessed.
+        use crate::components::checkbox::Checkbox;
+
+        let ctx = test_ctx();
+        let checked = std::cell::RefCell::new(false);
+        let mut nested_id = Id::NULL;
+
+        // Pass 1: capture the nested checkbox's id.
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            let row = Label::new("Accept").show_with(ui, |ui| {
+                let mut guard = checked.borrow_mut();
+                Checkbox::new(&mut guard)
+                    .id_salt("label_s9_nested")
+                    .show(ui)
+            });
+            nested_id = row.inner.id;
+        });
+        assert_ne!(nested_id, Id::NULL);
+
+        let row_rect = std::cell::Cell::new(Rect::NOTHING);
+        let cb_rect = std::cell::Cell::new(Rect::NOTHING);
+        let render = |ui: &mut Ui| {
+            let row = Label::new("Accept").for_id(nested_id).show_with(ui, |ui| {
+                let mut guard = checked.borrow_mut();
+                Checkbox::new(&mut guard)
+                    .id_salt("label_s9_nested")
+                    .show(ui)
+            });
+            row_rect.set(row.response.rect);
+            cb_rect.set(row.inner.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let text_pt = Pos2::new(row_rect.get().left() + 8.0, row_rect.get().center().y);
+        assert!(
+            !cb_rect.get().contains(text_pt),
+            "text point is on the label"
+        );
+        assert!(row_rect.get().contains(text_pt));
+
+        // Click the label text: forwards exactly once.
+        for expected in [true, false] {
+            run_ui(&ctx, click_event(text_pt, true), |ui| render(ui));
+            run_ui(&ctx, click_event(text_pt, false), |ui| render(ui));
+            run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+            assert!(ctx.memory(|m| m.has_focus(nested_id)), "INT-01");
+            assert_eq!(*checked.borrow(), expected, "INT-02: exactly one toggle");
+            // Focus persists across later passes: the measure pass runs
+            // in a disabled child Ui, and must not clear it (distinct
+            // measure scope; with a shared scope this fails).
+            run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+            run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+            assert!(
+                ctx.memory(|m| m.has_focus(nested_id)),
+                "INT-01: focus persists past the measure pass"
+            );
+            assert_eq!(*checked.borrow(), expected, "no extra toggle");
+        }
+
+        // Direct click on the nested checkbox: its own click toggles
+        // exactly once; the forwarding must not fire it a second time.
+        let cb_center = cb_rect.get().center();
+        run_ui(&ctx, click_event(cb_center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(cb_center, false), |ui| render(ui));
+        assert!(*checked.borrow(), "direct click toggles");
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(*checked.borrow(), "no second toggle from forwarding");
     }
 }
