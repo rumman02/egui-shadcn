@@ -53,7 +53,8 @@
 //!     .show(ui);
 //! ```
 
-use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
+use crate::components::attachment::mix;
+use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
@@ -120,7 +121,9 @@ pub(crate) fn ring_visible(focused: bool, invalid: bool, style: Style) -> bool {
 /// `disabled:opacity-50` is applied: callers animate these targets and then
 /// apply [`apply_element_opacity`] instantly (spec §6: `opacity` is in
 /// neither transition list, so the disabled fade is instant, never
-/// animated).
+/// animated) — except the border, which uses the group-fade precomposite
+/// [`disabled_border_color`] instead (TXT-VIS-02: a halved-alpha stroke
+/// over the faded fill double-applies the fade at the border pixel).
 ///
 /// Precedence (OPEN-2, INTERIM): invalid wins over focus for both the
 /// border and the ring colour. The compiled cascade order is not in the
@@ -181,16 +184,38 @@ pub(crate) fn resolve_textarea_colors(
 ///
 /// The original fades fill, border, text, ring, and shadow together at 50%;
 /// egui has no element-level opacity, so every painted color is halved at
-/// this single composition point. Applied instantly, never animated
-/// (spec §6). Derivation for the disabled fills: nova light `input/50` ×
-/// 0.5 = 25% effective, nova dark `input/80` × 0.5 = 40%, base dark
-/// `input/30` × 0.5 = 15%.
+/// this single composition point — except the border stroke, which uses
+/// [`disabled_border_color`] (TXT-VIS-02). Applied instantly, never
+/// animated (spec §6). Derivation for the disabled fills: nova light
+/// `input/50` × 0.5 = 25% effective, nova dark `input/80` × 0.5 = 40%,
+/// base dark `input/30` × 0.5 = 15%.
 pub(crate) fn apply_element_opacity(color: Color32, disabled: bool) -> Color32 {
     if disabled {
         color_alpha(color, 0.5)
     } else {
         color
     }
+}
+
+/// Group-fade precomposite for the disabled border stroke (TXT-VIS-02).
+///
+/// CSS `opacity: 0.5` composites the whole element once over the backdrop
+/// (ruling 7: the spec §4 "whole element renders at 50% opacity" is
+/// group-fade language). A halved-alpha stroke painted over the
+/// already-faded fill double-applies the fade at the border pixel:
+/// nova-light reads (239) instead of the group-fade (242). The disabled
+/// stroke is therefore painted OPAQUE with the precomputed composite —
+/// `0.5 * (stroke over fill over backdrop) + 0.5 * backdrop` — following
+/// the toggle line's `disabled_group_fade` shape. `fill` is the animated
+/// pre-opacity fill (the disabled-state fill target, e.g. nova `input/50`);
+/// `backdrop` is `p.background`, exact on the gallery page. On other
+/// backdrops the theme background is the fade target, a recorded
+/// limitation (same class as toggle). Only the stroke uses this path: the
+/// fill paints over the backdrop alone (halving is exact there), and the
+/// ring and shadow sit outside the rect over the backdrop, where halving
+/// is likewise exact.
+fn disabled_border_color(stroke: Color32, fill: Color32, backdrop: Color32) -> Color32 {
+    mix(backdrop, blend(blend(backdrop, fill), stroke), 0.5)
 }
 
 /// Paints the textarea's `shadow-xs` through the LAYER resolution API.
@@ -369,10 +394,12 @@ impl<'a> Textarea<'a> {
         // atom layout before the text atoms, so neither can happen.
         let (fill_target, _, _) =
             resolve_textarea_colors(&p, dark, false, self.invalid, self.disabled, style);
-        let fill = apply_element_opacity(
-            transition_color_to(&ctx, id.with("fill"), fill_target, spec).color,
-            self.disabled,
-        );
+        // Keep the animated pre-opacity fill: the frame carries the faded
+        // fill, while the disabled border precomposite (TXT-VIS-02) needs
+        // the un-faded animated value. Same animator id, same target — the
+        // animation wiring is untouched.
+        let fill_animated = transition_color_to(&ctx, id.with("fill"), fill_target, spec).color;
+        let fill = apply_element_opacity(fill_animated, self.disabled);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let edit = TextEdit::multiline(self.text)
             .id_salt(id)
@@ -444,10 +471,16 @@ impl<'a> Textarea<'a> {
             // fill animator runs before the TextEdit — see above — so the
             // frame carries the animated fill; only border/ring resolve
             // here, where focus is known.)
-            let stroke_color = apply_element_opacity(
-                transition_color_to(&ctx, id.with("border"), stroke_target, spec).color,
-                self.disabled,
-            );
+            let stroke_animated =
+                transition_color_to(&ctx, id.with("border"), stroke_target, spec).color;
+            // TXT-VIS-02: when disabled, the stroke precomposites the
+            // group fade (opaque) instead of halving its alpha over the
+            // faded fill. Enabled rendering is unchanged.
+            let stroke_color = if self.disabled {
+                disabled_border_color(stroke_animated, fill_animated, p.background)
+            } else {
+                stroke_animated
+            };
             let show_ring = ring_visible(focused, self.invalid, style);
             let (ring_color, ring_alpha) = if matches!(style, Style::Nova) {
                 // `transition-colors` does not cover `box-shadow`: the ring
@@ -685,6 +718,129 @@ mod tests {
         );
         // Not disabled: the composition is the identity.
         assert_eq!(apply_element_opacity(light.input, false), light.input);
+    }
+
+    #[test]
+    fn disabled_border_group_fade_matches_differential_model() {
+        // TXT-VIS-02: the disabled border stroke must be the group-fade
+        // precomposite — 0.5 * (stroke over fill over backdrop) + 0.5 *
+        // backdrop — not a halved-alpha stroke over the faded fill.
+        // Synthetic opaque case, exact arithmetic: backdrop 200, fill 50,
+        // stroke 100. Composite = 100 (opaque stroke); group fade = 150.
+        let backdrop = Color32::from_rgb(200, 200, 200);
+        let fill = Color32::from_rgb(50, 50, 50);
+        let stroke = Color32::from_rgb(100, 100, 100);
+        assert_eq!(
+            disabled_border_color(stroke, fill, backdrop),
+            Color32::from_rgb(150, 150, 150)
+        );
+        // Transparent fill: the precomposite fades the stroke over the
+        // backdrop alone.
+        assert_eq!(
+            disabled_border_color(stroke, Color32::TRANSPARENT, backdrop),
+            Color32::from_rgb(150, 150, 150)
+        );
+        // Translucent stroke (dark `input` token shape): the precomposite
+        // equals the differential formula — composite the enabled stack,
+        // then fade once. This pins the wiring, not just the arithmetic.
+        let translucent = color_alpha(Color32::from_rgb(255, 255, 255), 0.15);
+        let fill_composite = blend(backdrop, fill);
+        assert_eq!(
+            disabled_border_color(translucent, fill, backdrop),
+            mix(backdrop, blend(fill_composite, translucent), 0.5)
+        );
+        // Real palette values: the four closing values from the TXT-VIS-01
+        // amendment (group fade governs; the (28) slot model is
+        // superseded). The nova-light (242) is the discriminating slot:
+        // the old per-slot path read (239).
+        let light = palette(Mode::Light);
+        let dark = palette(Mode::Dark);
+        for (p, dark_mode, style, expected) in [
+            (&light, false, Style::Nova, 242u8),
+            (&light, false, Style::Vega, 242u8),
+            (&dark, true, Style::Nova, 41u8),
+            (&dark, true, Style::Vega, 33u8),
+        ] {
+            let (fill, stroke, _) =
+                resolve_textarea_colors(p, dark_mode, false, false, true, style);
+            assert_color_near(
+                disabled_border_color(stroke, fill, p.background),
+                Color32::from_rgb(expected, expected, expected),
+            );
+        }
+        // The precomposite is opaque: what sits beneath the stroke cannot
+        // double-apply the fade.
+        let (fill, stroke, _) =
+            resolve_textarea_colors(&light, false, false, false, true, Style::Nova);
+        assert_eq!(
+            disabled_border_color(stroke, fill, light.background).a(),
+            255
+        );
+    }
+
+    #[test]
+    fn disabled_border_shape_carries_group_fade_precomposite() {
+        // TXT-VIS-02 regression pin (shape-level): a disabled textarea's
+        // emitted border stroke must carry the group-fade precomposite
+        // colour, in all 4 configs — not the halved-alpha stroke the old
+        // path painted. Resolver unit tests alone cannot catch a paint
+        // wiring regression (TXT-VIS-01 lesson), so this inspects the
+        // emitted shapes.
+        use egui::epaint::Shape;
+        fn flatten(shape: &Shape, acc: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(v) => v.iter().for_each(|s| flatten(s, acc)),
+                s => acc.push(s.clone()),
+            }
+        }
+        for mode in [Mode::Light, Mode::Dark] {
+            for style in [Style::Nova, Style::Vega] {
+                let preset = Preset {
+                    style,
+                    ..Preset::default()
+                };
+                let ctx = egui::Context::default();
+                preset.build(mode).install(&ctx);
+                let p = preset.build(mode).palette;
+                let mut text = String::new();
+                let mut rect = Rect::NOTHING;
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("textarea_border_pin"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                    );
+                    rect = Textarea::new(&mut text)
+                        .id_salt("border-pin")
+                        .disabled(true)
+                        .show(ui)
+                        .rect;
+                });
+                let mut shapes: Vec<Shape> = Vec::new();
+                for clipped in &out.shapes {
+                    flatten(&clipped.shape, &mut shapes);
+                }
+                out.textures_delta.clear();
+                // The border: the 1px stroke on exactly the widget rect.
+                // (The frame fill rect has no stroke; shadow rects sit on
+                // expanded rects.)
+                let border = shapes.iter().find_map(|s| match s {
+                    Shape::Rect(r) if r.rect == rect && r.stroke.width == BORDER_WIDTH => {
+                        Some(r.stroke.color)
+                    }
+                    _ => None,
+                });
+                let border = border.expect("disabled border stroke present");
+                let (fill, stroke, _) =
+                    resolve_textarea_colors(&p, mode.is_dark(), false, false, true, style);
+                assert_eq!(
+                    border,
+                    disabled_border_color(stroke, fill, p.background),
+                    "border stroke is the group-fade precomposite ({mode:?}/{style:?})"
+                );
+            }
+        }
     }
 
     #[test]
