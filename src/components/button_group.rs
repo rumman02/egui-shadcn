@@ -45,30 +45,28 @@
 //! with fusing still applied. [`ButtonGroup::gap`] is an explicit override
 //! for callers that need a different gap; leave it unset for the spec rule.
 //!
-//! ## Known gaps (foundation work, not silent workarounds)
+//! ## Shared plumbing (FG-1/2/3, Foundation Loop)
 //!
-//! * **FG-1 — vertical width stretch for text buttons.** In a vertical
-//!   group, text buttons (no explicit width) must stretch to the widest
-//!   member (spec §5). [`Button::show`][crate::components::Button::show]
-//!   reads no stretch state, and the group cannot widen a button from
-//!   outside — the plumbing for it lives in `button.rs`. Icon buttons
-//!   correctly keep their fixed width (no cooperation needed). Text and
-//!   separator width stretch in vertical groups IS implemented here.
-//! * **FG-2 — nova last-`[data-slot]` rule (spec §3.2).** Under nova the
-//!   LAST child carrying a `data-slot` identity gets trailing corners
-//!   forced to `rounded-lg!`, beating the fusing square rule — including
-//!   when a non-slot child (plain Text) follows it. Selector semantics
-//!   need a slot-identity registration channel in the `button.rs`
-//!   plumbing (buttons/select triggers must register; the group must
-//!   expose the "receives the rule" flag for `Button::show` to override
-//!   the fused trailing corners). The common cases — where the last child
-//!   IS the last slot child — already render correctly through fusing.
-//! * **FG-3 — focus ring above siblings (spec §4, D2).** The z-10 rule
-//!   needs the focused member's ring painted ABOVE later siblings.
-//!   Buttons paint their rings inline in show order, so a focused
-//!   non-last child's shared-edge ring segment is covered by the
-//!   following sibling. Deferred or forward-layer ring painting belongs
-//!   in `button.rs`.
+//! Three behaviours need channels in `button.rs` that a member cannot
+//! provide from outside; they live in `crate::components::button::group`
+//! and are wired here (S1b):
+//!
+//! * **FG-1 — stretch target.** The real pass pushes the measured cross
+//!   size (`group::StretchTarget`); text buttons in vertical groups read
+//!   it in `Button::show`, and Text/separator read it here. The one
+//!   shared stack is the single source of truth — no group-local
+//!   stretch state survives.
+//! * **FG-2 — slot identity.** Children register the `data-slot` they
+//!   carry: buttons self-register, the separator and nested groups
+//!   register here, plain Text registers nothing. The measure pass
+//!   learns the last slot-carrying child and the real pass transfers
+//!   that index, so the nova last-`[data-slot]` rule (§3.2) is
+//!   same-frame correct, including the trailing-non-slot edge case.
+//! * **FG-3 — deferred focus rings.** Buttons queue their rings during
+//!   the child pass; `group::end` flushes them into a foreground layer
+//!   above following siblings (§4, `z-10`). Every group pass path —
+//!   measure, gap-measure, and real — calls `begin`/`end`
+//!   symmetrically, so no ring is left unflushed.
 //!
 //! ## Deviations and limitations (spec §15)
 //!
@@ -196,6 +194,17 @@ impl ButtonGroup {
         let flow_w = ui.available_size_before_wrap().x;
         let measure_rect = Rect::from_min_size(flow_min, Vec2::new(flow_w, f32::INFINITY));
 
+        // Slot registration (§3.2 / FG-2): this group is itself a direct
+        // child of an enclosing group, carrying `data-slot="button-group"`.
+        // Consume the parent position — the group counts as one fused unit
+        // (§3.3), so siblings after it get the positions they would have
+        // had around any other member — and register, while the parent is
+        // still the stack top (before this group's own `begin` calls).
+        // No-op outside a group.
+        if group::next_child_position(ui).is_some() {
+            group::register_slot(ui, group::SlotIdentity::ButtonGroup);
+        }
+
         // Measure pass 1: zero spacing, so the measured main size is the
         // exact sum of the members' natural main sizes and the measured
         // cross size is the tallest/widest member.
@@ -209,6 +218,10 @@ impl ButtonGroup {
             0.0,
             &mut content,
         );
+        // The FG-2 transfer reads the LAST measure pass that ran: both
+        // passes see the same children, so either finalizes the same
+        // last-slot-child index.
+        let mut last_measure_id = measure_id;
 
         // Gap decision (§8 / D4): automatic unless overridden.
         let gap = self
@@ -229,29 +242,39 @@ impl ButtonGroup {
                 &mut content,
             );
             measured = with_gap;
+            last_measure_id = measure_gap_id;
         }
 
-        // Real pass: present the true content-sized box, with the stretch
-        // target pushed so auto-cross-size members stretch same-frame.
+        // Real pass: present the true content-sized box, with the shared
+        // stretch target pushed so auto-cross-size members stretch
+        // same-frame (FG-1). The push happens immediately before the
+        // real pass and the pop immediately after — never during a
+        // measure pass, exactly one pop per push, same frame.
         let cross = match self.orientation {
             GroupOrientation::Horizontal => measured.y,
             GroupOrientation::Vertical => measured.x,
         };
-        push_stretch_target(
+        group::push_stretch_target(
             ui.ctx(),
-            StretchTarget {
+            group::StretchTarget {
                 orientation: self.orientation,
                 cross,
             },
         );
         group::begin(ui, id, self.orientation);
+        // FG-2 transfer: the measure pass learned which child is the last
+        // slot-carrying child. Carry it into the real pass — which uses a
+        // different id, so without the transfer the flag would come from
+        // last frame's real pass instead of this frame's measurement.
+        // `None` when no child carries a slot.
+        group::set_last_slot_child(ui, id, group::last_slot_child(ui, last_measure_id));
         let response =
             ui.allocate_ui_with_layout(measured, group_layout(self.orientation, rtl), |ui| {
                 ui.spacing_mut().item_spacing = gap_spacing(self.orientation, gap);
                 content(ui)
             });
         group::end(ui, id);
-        pop_stretch_target(ui.ctx());
+        group::pop_stretch_target(ui.ctx());
         response
     }
 }
@@ -375,50 +398,6 @@ fn push_measure_frame(ctx: &Context) {
 fn pop_measure_frame(ctx: &Context) -> bool {
     with_measure_stack(ctx, |stack| {
         stack.pop().is_some_and(|frame| frame.has_nested)
-    })
-}
-
-/// The same-frame `items-stretch` target for one group's real pass: the
-/// group's orientation plus the measured cross size (tallest member in a
-/// horizontal group, widest in a vertical group). Pushed immediately
-/// before the real pass and popped immediately after — it never survives
-/// the frame, so no stale maximum can pin a shrunken group open.
-#[derive(Clone, Copy, Debug)]
-struct StretchTarget {
-    orientation: GroupOrientation,
-    cross: f32,
-}
-
-fn stretch_stack_id() -> Id {
-    Id::unique("shadcn_button_group_stretch_stack")
-}
-
-fn with_stretch_stack<R>(ctx: &Context, f: impl FnOnce(&mut Vec<StretchTarget>) -> R) -> R {
-    ctx.data_mut(|d| {
-        let mut stack: Vec<StretchTarget> = d.get_temp(stretch_stack_id()).unwrap_or_default();
-        let result = f(&mut stack);
-        d.insert_temp(stretch_stack_id(), stack);
-        result
-    })
-}
-
-fn push_stretch_target(ctx: &Context, target: StretchTarget) {
-    with_stretch_stack(ctx, |stack| stack.push(target));
-}
-
-fn pop_stretch_target(ctx: &Context) {
-    with_stretch_stack(ctx, |stack| {
-        stack.pop();
-    });
-}
-
-/// The innermost active stretch target, if the caller is inside a group's
-/// real pass. `None` in measure passes (natural sizes) and outside any
-/// group (standalone sizing).
-fn current_stretch_target(ui: &Ui) -> Option<StretchTarget> {
-    ui.ctx().data_mut(|d| {
-        d.get_temp::<Vec<StretchTarget>>(stretch_stack_id())
-            .and_then(|stack| stack.last().copied())
     })
 }
 
@@ -587,7 +566,7 @@ impl ButtonGroupText {
         // the measured cross size before the real pass. In a measure pass
         // (no target pushed) and standalone, the natural size stands — and
         // the stretch target never shrinks the slot below its content.
-        let desired = match current_stretch_target(ui) {
+        let desired = match group::stretch_target(ui) {
             Some(target) if target.orientation == GroupOrientation::Horizontal => {
                 Vec2::new(natural.x, target.cross.max(natural.y))
             }
@@ -774,10 +753,16 @@ impl ButtonGroupSeparator {
         // Count toward the group (this is a group member like any other).
         // Fusing is inert for a 1px line (spec §14): no border, no radius.
         let group = group::next_child_position(ui);
+        // FG-2: the separator carries `data-slot="button-group-separator"`.
+        // Registered after the position call, so it lands on this child's
+        // index; the flag itself is inert for a 1px line (spec §14).
+        if group.is_some() {
+            group::register_slot(ui, group::SlotIdentity::ButtonGroupSeparator);
+        }
         let size = separator_size(
             self.rule,
             group.map(|(orientation, _)| orientation),
-            current_stretch_target(ui).map(|target| target.cross),
+            group::stretch_target(ui).map(|target| target.cross),
             Vec2::new(ui.available_width(), ui.available_height()),
         );
         let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
@@ -879,6 +864,116 @@ mod tests {
             out.textures_delta.clear();
         }
         collected
+    }
+
+    /// Like [`run_frames`], but returns the LAST frame's [`egui::FullOutput`]
+    /// alongside the value the closure returned on that frame, so tests can
+    /// inspect paint order and shape geometry. Measure passes paint nothing
+    /// (invisible Uis emit `Shape::Noop`), so the output's shapes are the
+    /// real pass's alone.
+    fn run_frames_output<T, F>(
+        style: Style,
+        mode: Mode,
+        frames: usize,
+        mut show: F,
+    ) -> (egui::FullOutput, T)
+    where
+        F: FnMut(&mut Ui) -> T,
+    {
+        let ctx = egui::Context::default();
+        Preset {
+            style,
+            ..Preset::default()
+        }
+        .build(mode)
+        .install(&ctx);
+        let mut values = Vec::new();
+        let mut last_out = None;
+        for _ in 0..frames {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("button_group_test"),
+                    UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                values.push(show(ui));
+            });
+            out.textures_delta.clear();
+            last_out = Some(out);
+        }
+        (
+            last_out.expect("at least one frame"),
+            values.pop().expect("at least one value"),
+        )
+    }
+
+    /// A 500x500 test Ui with a stable id, for tests that drive the clock
+    /// frame by frame (FG-3).
+    fn fg_test_ui(ctx: &egui::Context, name: &str) -> egui::Ui {
+        egui::Ui::new(
+            ctx.clone(),
+            egui::Id::unique(name),
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+        )
+    }
+
+    /// Input carrying only a controlled clock time.
+    fn input_at(time: f64) -> egui::RawInput {
+        egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        }
+    }
+
+    /// Border-stroke shapes (`Shape::Rect` with a 1px stroke and a
+    /// transparent fill) in paint order, with their corner radii.
+    fn border_strokes(out: &egui::FullOutput) -> Vec<(Rect, CornerRadius)> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs)
+                    if rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT =>
+                {
+                    Some((rs.rect, rs.corner_radius))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Fill shapes (non-transparent fill, no stroke) in paint order, with
+    /// their corner radii.
+    fn fill_shapes(out: &egui::FullOutput) -> Vec<(Rect, CornerRadius)> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs)
+                    if rs.fill != Color32::TRANSPARENT && rs.stroke == Stroke::NONE =>
+                {
+                    Some((rs.rect, rs.corner_radius))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether two rects coincide (sub-pixel tolerance for layout math).
+    fn same_rect(a: Rect, b: Rect) -> bool {
+        (a.min - b.min).length() < 0.01 && (a.max - b.max).length() < 0.01
+    }
+
+    /// The draw rect a group member paints on: the 1px shared-edge inset
+    /// for non-first positions, the full rect for first/only.
+    fn draw_rect_for(rect: Rect, position: GroupPosition) -> Rect {
+        group_adjustments(
+            GroupOrientation::Horizontal,
+            position,
+            CornerRadius::same(0),
+            rect,
+        )
+        .1
     }
 
     #[test]
@@ -1434,5 +1529,255 @@ mod tests {
             runs
         });
         assert!(frames[0] >= 2);
+    }
+
+    #[test]
+    fn vertical_group_text_button_stretches_to_widest_member() {
+        // FG-1 end to end (spec §5): in a vertical group a text button
+        // stretches to the widest member's width through the shared
+        // stretch channel, while an icon button keeps its fixed size —
+        // both through the real `ButtonGroup::show`, not the raw plumbing.
+        let frames = run_frames(Style::Vega, Mode::Light, 1, |ui| {
+            let group = ButtonGroup::new()
+                .orientation(GroupOrientation::Vertical)
+                .show(ui, |ui| {
+                    vec![
+                        ButtonGroupText::new("a wide text slot")
+                            .show(ui)
+                            .rect
+                            .size(),
+                        Button::new("B").show(ui).rect.size(),
+                        Button::new("")
+                            .size(ButtonSize::Icon)
+                            .icon_start(Icon::Copy)
+                            .show(ui)
+                            .rect
+                            .size(),
+                    ]
+                });
+            (group.inner, group.response.rect.size())
+        });
+        let (sizes, group_size) = &frames[0];
+        assert_eq!(sizes[0].x, group_size.x, "Text stretches to group width");
+        assert_eq!(
+            sizes[1].x, group_size.x,
+            "text button stretches to the widest member"
+        );
+        assert_eq!(sizes[1].y, 36.0, "text button keeps its fixed height");
+        assert_eq!(
+            sizes[2],
+            Vec2::new(36.0, 36.0),
+            "icon button keeps its fixed size"
+        );
+        assert!(group_size.x > 36.0, "group is wider than the icon button");
+    }
+
+    #[test]
+    fn nova_trailing_non_slot_child_button_keeps_lg_trailing_corners() {
+        // FG-2 end to end (spec §3.2): [Button, Text] under nova. The
+        // button is the last SLOT child (Text carries no `data-slot`), so
+        // its trailing corners are forced to `rounded-lg!` even though it
+        // is not positionally last. Without the transfer the button would
+        // render fused trailing corners.
+        let (out, button_rect) = run_frames_output(Style::Nova, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .show(ui, |ui| {
+                    let r = Button::new("A").show(ui);
+                    ButtonGroupText::new("text").show(ui);
+                    r.rect
+                })
+                .inner
+        });
+        let strokes: Vec<(Rect, CornerRadius)> = border_strokes(&out)
+            .into_iter()
+            .filter(|(rect, _)| same_rect(*rect, button_rect))
+            .collect();
+        assert_eq!(strokes.len(), 1, "one border stroke on the button rect");
+        let (_, rounding) = strokes[0];
+        assert_eq!(
+            (rounding.nw, rounding.ne, rounding.sw, rounding.se),
+            (10, 10, 10, 10),
+            "trailing corners forced to rounded-lg by the last-slot rule"
+        );
+    }
+
+    #[test]
+    fn nova_plain_last_child_button_corners_unchanged() {
+        // FG-2: the common case — [Button, Button] under nova. The last
+        // button IS the last slot child, so the flag changes nothing: its
+        // trailing corners are its own `rounded-lg` either way, and the
+        // first button gets no flag.
+        let (out, rects) = run_frames_output(Style::Nova, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .show(ui, |ui| {
+                    vec![
+                        Button::new("A").show(ui).rect,
+                        Button::new("B").show(ui).rect,
+                    ]
+                })
+                .inner
+        });
+        let strokes = border_strokes(&out);
+        let rounding_at = |target: Rect| {
+            strokes
+                .iter()
+                .find(|(rect, _)| same_rect(*rect, target))
+                .map(|(_, c)| *c)
+                .expect("a border stroke on the button draw rect")
+        };
+        let first = rounding_at(draw_rect_for(rects[0], GroupPosition::First));
+        assert_eq!(
+            (first.nw, first.ne, first.sw, first.se),
+            (10, 0, 10, 0),
+            "first button: fused trailing corners, no flag"
+        );
+        let last = rounding_at(draw_rect_for(rects[1], GroupPosition::Last));
+        assert_eq!(
+            (last.nw, last.ne, last.sw, last.se),
+            (0, 10, 0, 10),
+            "last button: fused leading corners, own trailing radius"
+        );
+    }
+
+    #[test]
+    fn base_recipe_ignores_last_slot_flag() {
+        // FG-2: the same [Button, Text] composition under the base recipe.
+        // The flag is computed but the base recipe ignores it, so the
+        // button's trailing corners stay fused (radius 8 own, 0 fused).
+        let (out, button_rect) = run_frames_output(Style::Vega, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .show(ui, |ui| {
+                    let r = Button::new("A").show(ui);
+                    ButtonGroupText::new("text").show(ui);
+                    r.rect
+                })
+                .inner
+        });
+        let fills: Vec<(Rect, CornerRadius)> = fill_shapes(&out)
+            .into_iter()
+            .filter(|(rect, _)| same_rect(*rect, button_rect))
+            .collect();
+        assert_eq!(fills.len(), 1, "one fill shape on the button rect");
+        let (_, rounding) = fills[0];
+        assert_eq!(
+            (rounding.nw, rounding.ne, rounding.sw, rounding.se),
+            (8, 0, 8, 0),
+            "base recipe ignores the last-slot flag: fusing stands"
+        );
+    }
+
+    #[test]
+    fn nested_group_registers_slot_identity() {
+        // FG-2: [Button, NestedGroup, Text] under nova. The nested group
+        // is the last slot-carrying child, so the first button must NOT
+        // receive the rule — its trailing corners stay fused. Without the
+        // nested registration the button would be flagged.
+        let (out, first_rect) = run_frames_output(Style::Nova, Mode::Light, 2, |ui| {
+            ButtonGroup::new()
+                .show(ui, |ui| {
+                    let r = Button::new("A").show(ui);
+                    ButtonGroup::new().show(ui, |ui| {
+                        Button::new("In").show(ui);
+                    });
+                    ButtonGroupText::new("text").show(ui);
+                    r.rect
+                })
+                .inner
+        });
+        let strokes: Vec<(Rect, CornerRadius)> = border_strokes(&out)
+            .into_iter()
+            .filter(|(rect, _)| same_rect(*rect, first_rect))
+            .collect();
+        assert_eq!(strokes.len(), 1, "one border stroke on the button rect");
+        let (_, rounding) = strokes[0];
+        assert_eq!(
+            (rounding.nw, rounding.ne, rounding.sw, rounding.se),
+            (10, 0, 10, 0),
+            "first button is not the last slot child: fusing stands"
+        );
+    }
+
+    #[test]
+    fn group_focus_ring_paints_above_following_sibling() {
+        // FG-3 end to end (spec §4): through the real `ButtonGroup::show`,
+        // a focused middle member's ring paints above the following
+        // sibling — the deferred flush in `group::end`, not inline paint.
+        let ctx = egui::Context::default();
+        Preset {
+            style: Style::Nova,
+            ..Preset::default()
+        }
+        .build(Mode::Light)
+        .install(&ctx);
+        let mut middle_id = egui::Id::NULL;
+        let mut third_rect = Rect::NOTHING;
+
+        let show_group = |ui: &mut Ui| {
+            ButtonGroup::new()
+                .id_salt("s1b_fg3")
+                .show(ui, |ui| {
+                    let _ = Button::new("One").id_salt("s1b_fg3_b1").show(ui);
+                    let mid = Button::new("Two").id_salt("s1b_fg3_b2").show(ui);
+                    let third = Button::new("Three").id_salt("s1b_fg3_b3").show(ui);
+                    (mid.id, third.rect)
+                })
+                .inner
+        };
+
+        // Frame 1: render, record the middle button's id and the third
+        // button's rect.
+        let mut out = ctx.run_ui(input_at(0.0), |ctx| {
+            let ui = &mut fg_test_ui(ctx, "s1b_fg3_ui");
+            let (id, rect) = show_group(ui);
+            middle_id = id;
+            third_rect = rect;
+        });
+        out.textures_delta.clear();
+
+        // Focus the middle button, then run two more frames with a
+        // controlled clock so the 150ms ring fade completes.
+        ctx.memory_mut(|m| m.request_focus(middle_id));
+        for time in [0.05, 0.30] {
+            out = ctx.run_ui(input_at(time), |ctx| {
+                let ui = &mut fg_test_ui(ctx, "s1b_fg3_ui");
+                show_group(ui);
+            });
+            out.textures_delta.clear();
+        }
+
+        // The ring: a 3px outside stroke. It must exist (the queue
+        // flushed) and come after every shape the third button painted.
+        let mut ring_idx = None;
+        let mut sibling_max_idx = 0usize;
+        let mut sibling_count = 0usize;
+        for (i, clipped) in out.shapes.iter().enumerate() {
+            match &clipped.shape {
+                egui::Shape::Rect(rs)
+                    if rs.stroke.width == 3.0
+                        && rs.stroke_kind == egui::epaint::StrokeKind::Outside =>
+                {
+                    ring_idx = Some(i);
+                }
+                egui::Shape::Rect(rs) if rs.rect.intersects(third_rect) => {
+                    sibling_max_idx = sibling_max_idx.max(i);
+                    sibling_count += 1;
+                }
+                egui::Shape::Text(ts) if third_rect.contains(ts.pos) => {
+                    sibling_max_idx = sibling_max_idx.max(i);
+                    sibling_count += 1;
+                }
+                _ => {}
+            }
+        }
+        let ring_idx = ring_idx.expect("a deferred focus ring must be painted");
+        assert!(
+            sibling_count > 0,
+            "the following sibling must paint shapes to compare against"
+        );
+        assert!(
+            ring_idx > sibling_max_idx,
+            "ring at shape {ring_idx} must paint after the following sibling's \
+             last shape at {sibling_max_idx}"
+        );
     }
 }
