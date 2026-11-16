@@ -1798,45 +1798,436 @@ pub fn aspect_ratio_demo(ui: &mut egui::Ui) {
 }
 
 pub fn marker_demo(ui: &mut egui::Ui) {
-    ui.label("Default");
-    ui.add_space(4.0);
-    Marker::new().show(ui, |ui| {
-        MarkerIcon::new(Icon::Sparkles).show(ui);
-        MarkerContent::new("Heads up — AI usage is trending up this week").show(ui);
-    });
-
+    // Intro: nova effective values equal base (spec §2.3) — one geometry
+    // and one colour rule serve both recipes; no style branching. Settled
+    // frames: Marker stores last frame's measured content size (S1
+    // report); the first frame uses the 16px floor, so S5/S6/S7 must
+    // capture settled frames.
+    ui.label("Marker — nova effective values equal base (§2.3): one geometry, one colour rule, both recipes.");
+    ui.label("Row height = max(16px, tallest item) (§4.1, N5); gap 8px set explicitly (§4.2, N12). Captures must use settled frames (one-frame stored-measurement transient).");
     ui.add_space(12.0);
-    ui.label("Separator (content centered between rules)");
-    ui.add_space(4.0);
-    Marker::new()
-        .variant(MarkerVariant::Separator)
-        .show(ui, |ui| {
-            MarkerContent::new("or continue with").show(ui);
-        });
-    Marker::new()
-        .variant(MarkerVariant::Separator)
-        .show(ui, |ui| {
-            MarkerIcon::new(Icon::Plus).show(ui);
-            MarkerContent::new("add item").show(ui);
-        });
 
-    ui.add_space(12.0);
-    ui.label("Border (bottom rule grows with the content)");
+    // 1. Default variant (§§3, 4.1, 4.2).
+    ui.label("1. Default — text, icon+text, text+icon, icon-only, empty (spec §§3, 4.1, 4.2)");
     ui.add_space(4.0);
-    Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
-        MarkerIcon::new(Icon::CircleAlert).show(ui);
-        MarkerContent::new("Deployment pending review").show(ui);
+    let row = Marker::new()
+        .id_salt("s1-text")
+        .show(ui, |ui| MarkerContent::new("Single-line text").show(ui));
+    ui.label(format!(
+        "text-only: row {:.1} x {:.1} px; content {:.1} x {:.1} px (expect 20px tall: 14px text in a 20px line box, O1)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        row.inner.rect.width(),
+        row.inner.rect.height()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s1-icon-text").show(ui, |ui| {
+        let icon = MarkerIcon::new(Icon::Info).show(ui);
+        let text = MarkerContent::new("Icon + text").show(ui);
+        (icon.rect, text.rect)
     });
-    Marker::new().variant(MarkerVariant::Border).show(ui, |ui| {
-        MarkerContent::new("Last synced 2 minutes ago").show(ui);
+    let (icon_rect, text_rect) = row.inner;
+    ui.label(format!(
+        "icon+text: row {:.1} x {:.1} px; icon {:.1} x {:.1} px; measured gap {:.1} px (expect 8px, §4.2)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        icon_rect.width(),
+        icon_rect.height(),
+        text_rect.left() - icon_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s1-text-icon").show(ui, |ui| {
+        let text = MarkerContent::new("Text + icon").show(ui);
+        let icon = MarkerIcon::new(Icon::ArrowRight).show(ui);
+        (text.rect, icon.rect)
     });
-    Marker::new()
+    let (text_rect, icon_rect) = row.inner;
+    ui.label(format!(
+        "text+icon: row {:.1} x {:.1} px; measured gap {:.1} px (expect 8px, §4.2)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        icon_rect.left() - text_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .id_salt("s1-icon-only")
+        .show(ui, |ui| MarkerIcon::new(Icon::Check).show(ui));
+    ui.label(format!(
+        "icon-only: row {:.1} x {:.1} px (expect 16px tall, §4.1)",
+        row.response.rect.width(),
+        row.response.rect.height()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s1-empty").show(ui, |_ui| {});
+    ui.label(format!(
+        "empty: row {:.1} x {:.1} px (expect 16px tall, the min-h-4 floor, §4.1; full width)",
+        row.response.rect.width(),
+        row.response.rect.height()
+    ));
+
+    // 2. Separator variant (§5). Rule spans below are DERIVED from the
+    // measured content rect (12px each side); S5 verifies painted pixels.
+    ui.add_space(12.0);
+    ui.label("2. Separator — rules share free space equally, 12px from content each side, vertically centred (spec §5)");
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s2-short")
+        .show(ui, |ui| {
+            MarkerContent::new("or continue with").show(ui).rect
+        });
+    let content = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "short: row {:.1} x {:.1} px; content {:.1} x {:.1} px; content centre offset {:.1} px from row centre (expect 0); expected rule spans x {:.1}..{:.1} and {:.1}..{:.1} (derived; S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        content.width(),
+        content.height(),
+        content.center().x - row_rect.center().x,
+        row_rect.left(),
+        content.left() - 12.0,
+        content.right() + 12.0,
+        row_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s2-long")
+        .show(ui, |ui| {
+            MarkerContent::new("a much longer separator label")
+                .show(ui)
+                .rect
+        });
+    let content = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "long: row {:.1} x {:.1} px; content {:.1} x {:.1} px; content centre offset {:.1} px (expect 0); expected rule spans x {:.1}..{:.1} and {:.1}..{:.1} (derived; S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        content.width(),
+        content.height(),
+        content.center().x - row_rect.center().x,
+        row_rect.left(),
+        content.left() - 12.0,
+        content.right() + 12.0,
+        row_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s2-empty")
+        .show(ui, |_ui| {});
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "empty: row {:.1} x {:.1} px; expected two rules with a centred 16px gap: x {:.1}..{:.1} and {:.1}..{:.1} (derived; S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        row_rect.left(),
+        row_rect.center().x - 8.0,
+        row_rect.center().x + 8.0,
+        row_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s2-tall")
+        .show(ui, |ui| {
+            MarkerContent::new("Two-line content:\nthe rules stay centred")
+                .show(ui)
+                .rect
+        });
+    let content = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "tall: row {:.1} x {:.1} px; content {:.1} x {:.1} px (expect 40px tall; rules vertically centred on the grown row, §5 — S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        content.width(),
+        content.height()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s2-icon-text")
+        .show(ui, |ui| {
+            let icon = MarkerIcon::new(Icon::Plus).show(ui);
+            let text = MarkerContent::new("add item").show(ui);
+            (icon.rect, text.rect)
+        });
+    let (icon_rect, text_rect) = row.inner;
+    let row_rect = row.response.rect;
+    let group_left = icon_rect.left();
+    let group_right = text_rect.right();
+    ui.label(format!(
+        "icon+text: row {:.1} x {:.1} px; group {:.1} px wide, centre offset {:.1} px (expect 0); gap {:.1} px (expect 8px)",
+        row_rect.width(),
+        row_rect.height(),
+        group_right - group_left,
+        (group_left + group_right) / 2.0 - row_rect.center().x,
+        text_rect.left() - icon_rect.right()
+    ));
+
+    // 3. Border variant (§6). Rule centre is DERIVED (row bottom - 0.5px);
+    // S5 verifies painted pixels.
+    ui.add_space(12.0);
+    ui.label("3. Border — content + 8px padding + 1px full-width rule (spec §6)");
+    ui.add_space(4.0);
+    let row = Marker::new()
         .variant(MarkerVariant::Border)
-        .id_salt("marker_demo_multiline")
+        .id_salt("s3-text")
         .show(ui, |ui| {
-            MarkerIcon::new(Icon::CircleAlert).show(ui);
-            MarkerContent::new("Two-line content:\nthe row and its rule grow with it").show(ui);
+            let icon = MarkerIcon::new(Icon::CircleAlert).show(ui);
+            let text = MarkerContent::new("Deployment pending review").show(ui);
+            (icon.rect, text.rect)
         });
+    let (icon_rect, text_rect) = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "text: row {:.1} x {:.1} px (expect 29 = 20 + 9); gap {:.1} px; derived rule centre y = {:.1} (row bottom - 0.5px; S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        text_rect.left() - icon_rect.right(),
+        row_rect.bottom() - 0.5
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Border)
+        .id_salt("s3-tall")
+        .show(ui, |ui| {
+            MarkerContent::new("Two-line content:\nthe row and its rule grow with it")
+                .show(ui)
+                .rect
+        });
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "tall: row {:.1} x {:.1} px (expect 49 = 40 + 9); derived rule centre y = {:.1} (S5 verifies pixels)",
+        row_rect.width(),
+        row_rect.height(),
+        row_rect.bottom() - 0.5
+    ));
+    ui.add_space(4.0);
+    // Ruled 16px total (S5 ruling, MRK-VIS-01 fixed by S9 7ff3f66):
+    // base `min-h-4` + border `border-b pb-2` under border-box
+    // (Tailwind v4 Preflight) => max(16, content + 9); the 8px padding
+    // + 1px rule fit inside the 16px minimum for empty content.
+    ui.label("EMPTY border row — ruled 16px total: border-box floor max(16, content + 9) (S5 ruling; MRK-VIS-01 fixed by S9 7ff3f66).");
+    let row = Marker::new()
+        .variant(MarkerVariant::Border)
+        .id_salt("s3-empty")
+        .show(ui, |_ui| {});
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "empty border: row {:.1} x {:.1} px (ruled 16px total, border-box floor)",
+        row_rect.width(),
+        row_rect.height()
+    ));
+
+    // 4. Links (§7.2, D2 PROPOSED). MarkerLink is reachable only via the
+    // full path until the coordinator adds the mod.rs re-export at merge
+    // time (S1 report, API decision 3) — no re-export is added here.
+    ui.add_space(12.0);
+    ui.label("4. Links — underlined, 3px offset, hover -> foreground, instant (spec §7.2). D2 PROPOSED: clicks surface via Response, navigation caller-owned.");
+    ui.add_space(4.0);
+    // Click counter (demo chrome): proves click surfacing for S6.
+    let store = ui.scope_id().with("marker_demo_link_clicks");
+    let mut clicks: u32 = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(0));
+    let row = Marker::new().id_salt("s4-link").show(ui, |ui| {
+        MarkerIcon::new(Icon::Info).show(ui);
+        egui_shadcn_ui::components::marker::MarkerLink::new("View details").show(ui)
+    });
+    let link_rect = row.inner.rect;
+    if row.inner.clicked() {
+        clicks += 1;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(store, clicks));
+    ui.label(format!(
+        "default link: row {:.1} x {:.1} px; link origin ({:.1}, {:.1}), {:.1} x {:.1} px (hover target, id_salt \"s4-link\"); clicks so far: {} (demo-chrome counter)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        link_rect.left(),
+        link_rect.top(),
+        link_rect.width(),
+        link_rect.height(),
+        clicks
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s4-sep-link")
+        .show(ui, |ui| {
+            egui_shadcn_ui::components::marker::MarkerLink::new("See all activity")
+                .show(ui)
+                .rect
+        });
+    let link_rect = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "separator link: row {:.1} x {:.1} px; link origin ({:.1}, {:.1}), {:.1} x {:.1} px (hover target, id_salt \"s4-sep-link\"); centre offset {:.1} px (expect 0)",
+        row_rect.width(),
+        row_rect.height(),
+        link_rect.left(),
+        link_rect.top(),
+        link_rect.width(),
+        link_rect.height(),
+        link_rect.center().x - row_rect.center().x
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s4-mixed").show(ui, |ui| {
+        let text = MarkerContent::new("Shared by").show(ui);
+        let link = egui_shadcn_ui::components::marker::MarkerLink::new("ada@example.com").show(ui);
+        (text.rect, link.rect)
+    });
+    let (text_rect, link_rect) = row.inner;
+    ui.label(format!(
+        "text + link: row {:.1} x {:.1} px; gap {:.1} px (expect 8px); link origin ({:.1}, {:.1}) (hover target, id_salt \"s4-mixed\")",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        link_rect.left() - text_rect.right(),
+        link_rect.left(),
+        link_rect.top()
+    ));
+    ui.label("Underline: 1px, text colour, baseline + 3px (D4 closest equivalent; O2 open — S5 judges). No :visited/:active/:focus-visible styling (§7.2).");
+
+    // 5. Generic slot (§11.2, M-P2-2 composition half).
+    ui.add_space(12.0);
+    ui.label("5. Generic slot — MarkerContent::show_custom accepts arbitrary widgets (spec §11.2, M-P2-2)");
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s5-button").show(ui, |ui| {
+        let text = MarkerContent::new("Status:").show(ui);
+        let slot = MarkerContent::show_custom(ui, |ui| ui.button("Retry"));
+        (text.rect, slot.inner.rect)
+    });
+    let (text_rect, button_rect) = row.inner;
+    ui.label(format!(
+        "text + button: row {:.1} x {:.1} px (follows tallest child); button {:.1} x {:.1} px; gap {:.1} px (expect 8px)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        button_rect.width(),
+        button_rect.height(),
+        button_rect.left() - text_rect.right()
+    ));
+    ui.add_space(4.0);
+    let row = Marker::new()
+        .variant(MarkerVariant::Separator)
+        .id_salt("s5-sep-button")
+        .show(ui, |ui| {
+            MarkerContent::show_custom(ui, |ui| ui.button("Load more"))
+                .inner
+                .rect
+        });
+    let button_rect = row.inner;
+    let row_rect = row.response.rect;
+    ui.label(format!(
+        "separator + button slot: row {:.1} x {:.1} px; button {:.1} x {:.1} px; centre offset {:.1} px (expect 0)",
+        row_rect.width(),
+        row_rect.height(),
+        button_rect.width(),
+        button_rect.height(),
+        button_rect.center().x - row_rect.center().x
+    ));
+
+    // 6. Long text (§§3.3, 12) in a 320px container. The grey outline is
+    // demo chrome marking the container edge for S5.
+    ui.add_space(12.0);
+    ui.label("6. Long text — wraps at the container edge, row grows vertically (spec §§3.3, 12)");
+    ui.add_space(4.0);
+    let container = ui.allocate_ui(egui::Vec2::new(320.0, 80.0), |ui| {
+        Marker::new().id_salt("s6-long").show(ui, |ui| {
+            MarkerContent::new(
+                "This is a long marker sentence that should wrap onto multiple lines within the 320px container.",
+            )
+            .show(ui)
+            .rect
+        })
+    });
+    let marker_rect = container.inner.response.rect;
+    ui.painter().rect_stroke(
+        marker_rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(136, 136, 136)),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.label(format!(
+        "long sentence: marker {:.1} x {:.1} px in a 320px container (expect width 320, height a multiple of 20px; grey outline is demo chrome)",
+        marker_rect.width(),
+        marker_rect.height()
+    ));
+    ui.add_space(4.0);
+    let container = ui.allocate_ui(egui::Vec2::new(320.0, 60.0), |ui| {
+        Marker::new().id_salt("s6-word").show(ui, |ui| {
+            MarkerContent::new("antidisestablishmentarianismantidisestablishmentarianism")
+                .show(ui)
+                .rect
+        })
+    });
+    let marker_rect = container.inner.response.rect;
+    ui.painter().rect_stroke(
+        marker_rect,
+        0.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(136, 136, 136)),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.label(format!(
+        "unbroken word (56 chars): marker {:.1} x {:.1} px in a 320px container (expect wrap-break-word: breaks at the edge, no horizontal overflow past x = {:.1}; S5 verifies pixels)",
+        marker_rect.width(),
+        marker_rect.height(),
+        marker_rect.left() + 320.0
+    ));
+
+    // 7. Nesting (§12; rendered counterpart of the S1 nesting test).
+    ui.add_space(12.0);
+    ui.label("7. Nesting — each marker renders independently (spec §12; rendered counterpart of the S1 nesting test)");
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s7-outer").show(ui, |ui| {
+        let icon = MarkerIcon::new(Icon::Info).show(ui);
+        let slot = MarkerContent::show_custom(ui, |ui| {
+            Marker::new()
+                .variant(MarkerVariant::Border)
+                .id_salt("s7-inner")
+                .show(ui, |ui| {
+                    MarkerContent::new("Nested border marker").show(ui).rect
+                })
+        });
+        (icon.rect, slot.inner.response.rect)
+    });
+    let (icon_rect, inner_rect) = row.inner;
+    ui.label(format!(
+        "outer default + inner border: outer row {:.1} x {:.1} px; inner row {:.1} x {:.1} px (expect 29 = 20 + 9); gap {:.1} px (expect 8px)",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        inner_rect.width(),
+        inner_rect.height(),
+        inner_rect.left() - icon_rect.right()
+    ));
+
+    // 8. Multi-part row (§§3, 4.2, 7.2).
+    ui.add_space(12.0);
+    ui.label(
+        "8. Multi-part row — icon + text + icon + link, 8px gaps throughout (spec §§3, 4.2, 7.2)",
+    );
+    ui.add_space(4.0);
+    let row = Marker::new().id_salt("s8-multi").show(ui, |ui| {
+        let icon1 = MarkerIcon::new(Icon::Sparkles).show(ui);
+        let text = MarkerContent::new("Shared with").show(ui);
+        let icon2 = MarkerIcon::new(Icon::ArrowRight).show(ui);
+        let link = egui_shadcn_ui::components::marker::MarkerLink::new("3 people").show(ui);
+        (icon1.rect, text.rect, icon2.rect, link.rect)
+    });
+    let (icon1_rect, text_rect, icon2_rect, link_rect) = row.inner;
+    ui.label(format!(
+        "multi-part: row {:.1} x {:.1} px; gaps {:.1} / {:.1} / {:.1} px (expect 8px each); link origin ({:.1}, {:.1})",
+        row.response.rect.width(),
+        row.response.rect.height(),
+        text_rect.left() - icon1_rect.right(),
+        icon2_rect.left() - text_rect.right(),
+        link_rect.left() - icon2_rect.right(),
+        link_rect.left(),
+        link_rect.top()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("No background/radius/shadow/ring on any marker slot (§4.3); no row hover/focus/disabled styling (§7.1); nothing animates (§9); row/parts not Tab-focusable, links are (§10, D2).");
 }
 
 pub fn button_group_demo(ui: &mut egui::Ui) {
