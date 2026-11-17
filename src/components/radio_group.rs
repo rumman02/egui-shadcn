@@ -52,15 +52,17 @@
 //! Opacity is in neither transition list, so the disabled fade is
 //! instant.
 //!
-//! Keyboard/click (spec §7): the Radix rules are OPEN-1–OPEN-4 —
-//! hypotheses for S6 Work B from Radix source, NOT established by the
-//! snapshot. This build implements the current egui-natural behaviour
-//! (spatial arrow navigation, selection follows focus, Space activates
-//! the focused item, clicks select and never uncheck) and records it as
-//! implementation, not spec truth. There is no Home/End handling and no
-//! arrow wrap-around in this build; whether Radix provides them is for
-//! S6 to settle. Focus-visible modality is proposed deviation D1 (the
-//! ring shows on any focus; egui cannot distinguish keyboard from
+//! Keyboard/click (spec §7, settled by S6 Work B from Radix source):
+//! roving tabindex — one Tab stop per group (zero when all items are
+//! disabled), Tab entry focuses the checked item (else the first
+//! focusable item) and does NOT check it, and selection follows focus
+//! ONLY for arrow-key moves. Up/Down move focus within the group
+//! (disabled items skipped); arrow wrap-around, Left/Right navigation,
+//! and Home/End/PageUp/PageDown are RAD-INT-02/03's, not yet built.
+//! Space activates the focused item and Enter checks it (RAD-INT-04/05
+//! own the phases); clicks select and never uncheck, but do not focus
+//! yet (RAD-INT-06). Focus-visible modality is proposed deviation D1
+//! (the ring shows on any focus; egui cannot distinguish keyboard from
 //! pointer focus).
 //!
 //! Focus+invalid border precedence is deliberately NOT frozen by the
@@ -758,6 +760,21 @@ fn render_items(
         invalid,
         suppressed,
     } = *style;
+    // Roving tabindex (RAD-INT-01; settled OPEN-2/OPEN-4): exactly one
+    // item per group is Tab-reachable. Entry focuses the first of
+    // [checked item, current tab stop, first focusable item]; the
+    // stored stop only matters while the group has no selection (once
+    // an item is checked it is the stop). A disabled item is never the
+    // stop; a group with no enabled item has no stop at all.
+    let first_enabled = options.iter().position(|o| !disabled && !o.disabled);
+    let stored_tab_stop: Option<usize> =
+        ui.ctx().data_mut(|d| d.get_temp(group_id.with("tab_stop")));
+    let tab_stop = match *selected {
+        Some(i) if i < options.len() && !disabled && !options[i].disabled => Some(i),
+        _ => stored_tab_stop
+            .filter(|&i| i < options.len() && !disabled && !options[i].disabled)
+            .or(first_enabled),
+    };
     let mut responses: Vec<Response> = Vec::with_capacity(options.len());
     for (i, option) in options.iter().enumerate() {
         let item_disabled = disabled || option.disabled;
@@ -796,12 +813,23 @@ fn render_items(
                 .show(&mut child);
         }
 
-        // Disabled items are not focusable (`Sense::hover`), so egui's
-        // built-in spatial Arrow-key navigation skips them automatically.
+        // Roving tabindex: only the tab-stop item is focusable, so Tab
+        // visits one stop per group. The other enabled items stay
+        // clickable (`Sense::CLICK`, no FOCUSABLE bit) but are invisible
+        // to Tab and to egui's spatial arrow navigation; arrows are
+        // handled component-level below. An item that already holds
+        // focus (label-forwarded focus is requested earlier in this
+        // same pass, before this interact) MUST stay focusable:
+        // egui's `create_widget` calls `ignore_focus` on a
+        // non-focusable widget and clears focus it holds. Disabled
+        // items are not focusable (`Sense::hover`).
+        let holds_focus = ui.ctx().memory(|m| m.has_focus(item_id));
         let sense = if item_disabled {
             Sense::hover()
-        } else {
+        } else if tab_stop == Some(i) || holds_focus {
             Sense::click()
+        } else {
+            Sense::CLICK
         };
         let response = ui.interact(circle_rect, item_id, sense);
         let is_selected = *selected == Some(i);
@@ -834,26 +862,71 @@ fn render_items(
         responses.push(response);
     }
 
-    // Selection follows focus (IMPLEMENTATION behaviour, an OPEN-1
-    // hypothesis — S6 Work B settles whether Radix moves selection with
-    // focus): focus movement is left to egui's spatial Arrow-key
-    // navigation (Up/Down/Left/Right, no wrap-around); whichever item
-    // holds focus becomes the selection.
-    let focused_now = responses.iter().position(|r| r.has_focus());
-    let last_focused: Option<usize> = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(group_id.with("last_focused")));
-    if let Some(focused) = focused_now {
-        if last_focused != focused_now
-            && !disabled
-            && !options[focused].disabled
-            && *selected != Some(focused)
-        {
-            *selected = Some(focused);
+    // Roving tabindex, arrow leg (RAD-INT-01; settled OPEN-1/OPEN-4):
+    // selection follows focus ONLY for arrow-key-driven moves. Tab
+    // entry, click-focus, and programmatic focus never check — there
+    // is deliberately no focus-gain follower anymore (the old
+    // `last_focused` mechanism is gone). Up/Down are handled here:
+    // each unmodified keydown steps to the next/previous enabled item
+    // (disabled skipped, no wrap — wrap and Left/Right are
+    // RAD-INT-02's), checks it, and moves the tab stop with it. An
+    // arrow at the edge is left entirely alone so egui's spatial
+    // navigation still carries focus out of the group, as S6 recorded.
+    // Modifier+arrow receives NO handling (gate G5, HEAD Radix
+    // behaviour). Left/Right, Home/End, PageUp/PageDown, Enter, Space,
+    // and Escape are untouched (RAD-INT-02…05/07 own them).
+    let focused_id = ui.ctx().memory(|m| m.focused());
+    let focused_idx =
+        focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
+    if let Some(current) = focused_idx {
+        let steps: Vec<isize> = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !modifiers.any() => match key {
+                        egui::Key::ArrowDown => Some(1),
+                        egui::Key::ArrowUp => Some(-1),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        });
+        let mut target = current;
+        let mut moved = false;
+        for step in steps {
+            let mut next = target as isize + step;
+            while (0..options.len() as isize).contains(&next)
+                && (disabled || options[next as usize].disabled)
+            {
+                next += step;
+            }
+            if (0..options.len() as isize).contains(&next) {
+                target = next as usize;
+                moved = true;
+            }
+        }
+        if moved {
+            *selected = Some(target);
+            responses[target].mark_changed();
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(group_id.with("tab_stop"), target));
+            ui.ctx().memory_mut(|m| {
+                m.request_focus(group_id.with(target));
+                // Cancel egui's spatial arrow move for this pass:
+                // `begin_pass` already set the cardinal direction from
+                // the key event, and `end_pass` would otherwise move
+                // focus AGAIN, starting from the newly focused item.
+                m.move_focus(egui::FocusDirection::None);
+            });
         }
     }
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(group_id.with("last_focused"), focused_now));
 }
 
 #[cfg(test)]
@@ -883,13 +956,17 @@ mod tests {
     }
 
     fn key_input(key: Key) -> egui::RawInput {
+        key_input_mod(key, egui::Modifiers::default())
+    }
+
+    fn key_input_mod(key: Key, modifiers: egui::Modifiers) -> egui::RawInput {
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
             key,
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: egui::Modifiers::default(),
+            modifiers,
         });
         input
     }
@@ -1577,8 +1654,9 @@ mod tests {
 
     #[test]
     fn arrows_move_selection_and_focus() {
-        // IMPLEMENTATION behaviour (OPEN-1 hypothesis, not Radix truth):
-        // egui spatial navigation moves focus; selection follows focus.
+        // Settled OPEN-1/OPEN-4 (RAD-INT-01): the group handles Up/Down
+        // itself — each arrow keydown moves focus one item and checks
+        // it in the same pass. Selection follows arrow moves only.
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut selected = Some(0);
@@ -1608,8 +1686,8 @@ mod tests {
 
         let arrow_input = key_input(Key::ArrowDown);
 
-        // ArrowDown: egui's spatial navigation moves focus down one item; on
-        // the next frame the item that gained focus becomes the selection.
+        // ArrowDown: the group's own arrow handling moves focus down
+        // one item and checks it in the same pass.
         run(&ctx, &mut selected, arrow_input.clone());
         run(&ctx, &mut selected, egui::RawInput::default());
         assert_eq!(selected, Some(1));
@@ -1659,6 +1737,217 @@ mod tests {
         run(&ctx, &mut selected, arrow_input);
         run(&ctx, &mut selected, egui::RawInput::default());
         assert_eq!(selected, Some(2));
+    }
+
+    #[test]
+    fn tab_walk_visits_one_stop_per_group_and_never_checks() {
+        // Roving tabindex (RAD-INT-01; settled OPEN-2/OPEN-4): Tab
+        // visits exactly one stop per group — the checked item, else
+        // the first focusable item — and never changes a selection.
+        // The all-disabled group takes no stop. Re-entry lands on the
+        // checked item. Selection moves only on the arrow key.
+        let ctx = test_ctx();
+        let sel_a = std::cell::RefCell::new(None);
+        let sel_b = std::cell::RefCell::new(Some(1));
+        let sel_c = std::cell::RefCell::new(None);
+        let ids = std::cell::Cell::new([Id::NULL; 5]);
+
+        let render = |ui: &mut Ui| {
+            let base = ui.scope_id();
+            ids.set([
+                base.with("walk_a").with(0usize),
+                base.with("walk_a").with(1usize),
+                base.with("walk_b").with(0usize),
+                base.with("walk_b").with(1usize),
+                base.with("walk_c").with(0usize),
+            ]);
+            RadioGroup::new(&mut sel_a.borrow_mut())
+                .id_salt("walk_a")
+                .option("A0")
+                .option("A1")
+                .show(ui);
+            RadioGroup::new(&mut sel_b.borrow_mut())
+                .id_salt("walk_b")
+                .option("B0")
+                .option("B1")
+                .show(ui);
+            RadioGroup::new(&mut sel_c.borrow_mut())
+                .id_salt("walk_c")
+                .option_disabled("C0")
+                .option_disabled("C1")
+                .show(ui);
+        };
+
+        let focused = |ctx: &egui::Context| ctx.memory(|m| m.focused());
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let [a0, a1, _b0, b1, c0] = ids.get();
+        assert_eq!(focused(&ctx), None);
+
+        // Tab: entry at the first focusable item of the no-selection
+        // group — focus without checking.
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a0));
+        assert_eq!(*sel_a.borrow(), None, "Tab entry must not check");
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a0));
+        assert_eq!(*sel_a.borrow(), None);
+
+        // Tab: exit to the next group's stop — its CHECKED item.
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(b1));
+        assert_eq!(*sel_b.borrow(), Some(1));
+
+        // Tab: the all-disabled group takes no stop; the cycle wraps
+        // (the wrap lands on the next pass via `give_to_next`).
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(focused(&ctx), None);
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a0));
+        assert_ne!(focused(&ctx), Some(c0));
+        assert_eq!(*sel_c.borrow(), None);
+
+        // ArrowDown: selection follows the arrow move only.
+        run_ui(&ctx, key_input(Key::ArrowDown), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a1));
+        assert_eq!(*sel_a.borrow(), Some(1));
+
+        // Tab out, Shift+Tab back in: re-entry lands on the checked
+        // item (Shift+Tab is frame-delayed: needs a settle pass).
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(b1));
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        run_ui(&ctx, key_input_mod(Key::Tab, shift), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(
+            focused(&ctx),
+            Some(a1),
+            "re-entry lands on the checked item"
+        );
+        assert_eq!(*sel_a.borrow(), Some(1));
+
+        // Shift+Tab from the first stop wraps to the last stop.
+        run_ui(&ctx, key_input_mod(Key::Tab, shift), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(b1));
+    }
+
+    #[test]
+    fn label_click_on_non_tab_stop_item_focuses_it() {
+        // The label-click rule (§7.3) on a NON-stop item: the label's
+        // deferred forwarding requests focus before the circle's
+        // interact runs, so the item must render focusable that pass
+        // (the holds-focus clause) or egui's `ignore_focus` clears the
+        // focus. Without the clause this test fails: the selection
+        // lands but the focus does not.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(0));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_label_nonstop").with(2usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_label_nonstop")
+                .option("AAA")
+                .option("BBB")
+                .option("CCC")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(!ctx.memory(|m| m.has_focus(item_id.get())));
+
+        // Label centre of row 2. Rows are 16px with the style gap, so
+        // the pitch is (height − 16) / 2; the equal-width labels span
+        // x ∈ [24, rect.width()).
+        let rect = group_rect.get();
+        let pitch = (rect.height() - RADIO_SIZE) / 2.0;
+        let center = Pos2::new(
+            rect.min.x
+                + RADIO_SIZE
+                + RADIO_LABEL_GAP
+                + (rect.width() - RADIO_SIZE - RADIO_LABEL_GAP) / 2.0,
+            rect.min.y + 2.0 * pitch + RADIO_SIZE / 2.0,
+        );
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        // Deferred pass: the forwarded focus + synthetic Space reach
+        // the item.
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "label click must focus the non-stop item"
+        );
+        assert_eq!(
+            *selected.borrow(),
+            Some(2),
+            "label click must select the item"
+        );
+    }
+
+    #[test]
+    fn modifier_arrows_do_not_move_focus_or_selection() {
+        // Gate G5 (HEAD Radix behaviour): arrows with modifiers
+        // receive NO handling — neither the group's arrow leg nor
+        // egui's spatial navigation (unmodified arrows only) moves.
+        let ctx = test_ctx();
+        let mut selected = Some(0);
+        let base = egui::Id::unique("radio_mod_test").with("radio_mod");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_mod_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_mod")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        for modifiers in [
+            egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        ] {
+            run(
+                &ctx,
+                &mut selected,
+                key_input_mod(Key::ArrowDown, modifiers),
+            );
+            run(&ctx, &mut selected, egui::RawInput::default());
+            assert_eq!(selected, Some(0));
+            assert!(
+                ctx.memory(|m| m.has_focus(base.with(0usize))),
+                "modifier+arrow must leave focus on item 0"
+            );
+        }
     }
 
     #[test]
