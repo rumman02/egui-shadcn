@@ -85,10 +85,13 @@
 //! (see `space_keyup_fire`, the button BTN-INT-04 shape) to toggle on
 //! keyup. Enter never toggles: the build suppresses Enter keydown
 //! events before `interact` (see `suppress_enter_activation`,
-//! CHK-INT-03), the Radix `preventDefault()` equivalent. The remaining
-//! settled rows (click focuses, label composition) are implemented by
-//! the S9 fixes for CHK-INT-01/04; until those land, this build's
-//! behaviour on those rows is egui-natural, not spec truth. Label-click composition
+//! CHK-INT-03), the Radix `preventDefault()` equivalent. A direct
+//! click focuses AND toggles (CHK-INT-01): egui's `interact` never
+//! grants focus on a pointer click, so the build requests focus on
+//! `clicked()`, the button BTN-INT-01 shape. The remaining settled row
+//! (label composition) is implemented by the S9 fix for CHK-INT-04;
+//! until it lands, this build's behaviour on that row is egui-natural,
+//! not spec truth. Label-click composition
 //! (spec §7.3): the label side is settled — a label click fires a click
 //! on the control AND focuses it. The checkbox needs no forwarding code
 //! of its own: the label requests focus on the checkbox's returned
@@ -593,6 +596,20 @@ impl<'a> Checkbox<'a> {
         let clicked = response.clicked() && !self.disabled;
         if clicked {
             *self.checked = !*self.checked;
+            // Click focuses AND toggles (spec §7.2, OPEN-1(e) closed by
+            // S6 Work B; CHK-INT-01; the button BTN-INT-01 / `TextEdit`
+            // shape): egui's `interact` never grants focus on a pointer
+            // click — `get_response` only SURRENDERS focus when the
+            // pointer clicks elsewhere — so the widget requests focus
+            // itself. Gated on `clicked` (the release frame), so a
+            // press-drag-off-release focuses nothing, and on
+            // `!disabled`: a disabled box takes neither toggle nor
+            // focus. Requesting before painting lets `has_focus()` below
+            // see the focus on the click frame itself. A fake click from
+            // the label-forwarded Space pair re-requests focus the label
+            // already granted — idempotent; the label path is untouched
+            // (CHK-INT-04).
+            response.request_focus();
         }
 
         if ui.is_rect_visible(rect) {
@@ -1169,6 +1186,179 @@ mod tests {
         };
         assert!(!disabled_frame(key_event(egui::Key::Enter, true, false)));
         assert!(!disabled_frame(key_event(egui::Key::Enter, false, false)));
+    }
+
+    #[test]
+    fn click_focuses_and_toggles() {
+        // CHK-INT-01: native `<button>` behaviour (spec §7.2, OPEN-1(e)
+        // closed by S6 Work B) — a direct click focuses AND toggles.
+        // Mirrors the button pin `click_moves_keyboard_focus_to_the_button`
+        // (BTN-INT-01), adapted to the checkbox's `run_pass` harness,
+        // plus the drag-off and post-click Space legs.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let click_event = |pos: egui::Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut checked = false;
+
+        // Frame 1: render, record rect + id; nothing focused yet.
+        let mut rect = egui::Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked).id_salt("click").show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+        let center = rect.center();
+
+        // Press alone: no toggle, no focus (focus is requested on the
+        // click — the release frame — so a press-drag-off-release
+        // focuses nothing).
+        run_pass(&ctx, click_event(center, true), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("click").show(ui);
+        });
+        assert!(!checked, "press alone must not toggle");
+        assert!(
+            !ctx.memory(|m| m.has_focus(id)),
+            "press alone must not focus"
+        );
+
+        // Release on the box: the click toggles AND focuses, and the
+        // click frame itself already sees focus (the request happens
+        // before painting reads `has_focus()`).
+        let mut clicked = false;
+        let mut focused_on_click_frame = false;
+        run_pass(&ctx, click_event(center, false), |ui| {
+            let r = Checkbox::new(&mut checked).id_salt("click").show(ui);
+            clicked = r.clicked();
+            focused_on_click_frame = r.has_focus();
+        });
+        assert!(clicked, "press + release must register a click");
+        assert!(checked, "click must toggle");
+        assert!(focused_on_click_frame, "click frame must already see focus");
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "click must move keyboard focus to the box"
+        );
+
+        // Space after a click toggles (focus retained, CHK-INT-02
+        // keyup path): keydown no toggle, keyup exactly one toggle.
+        run_pass(&ctx, key_event(egui::Key::Space, true), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("click").show(ui);
+        });
+        assert!(checked, "Space keydown must not toggle");
+        run_pass(&ctx, key_event(egui::Key::Space, false), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("click").show(ui);
+        });
+        assert!(!checked, "Space keyup after a click must toggle");
+        assert!(ctx.memory(|m| m.has_focus(id)), "focus retained");
+
+        // A second click toggles back and keeps focus.
+        run_pass(&ctx, click_event(center, true), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("click").show(ui);
+        });
+        run_pass(&ctx, click_event(center, false), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("click").show(ui);
+        });
+        assert!(checked, "second click must toggle back");
+        assert!(ctx.memory(|m| m.has_focus(id)), "focus retained");
+
+        // Press-drag-off-release: no toggle, no focus. Fresh context so
+        // no stale focus state leaks in. The move past `max_click_dist`
+        // is what voids the click (egui `PointerState`).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        let mut rect = egui::Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked).id_salt("dragoff").show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        let center = rect.center();
+        let away = egui::pos2(100.0, 100.0);
+        run_pass(&ctx, click_event(center, true), |ui| {
+            let _ = Checkbox::new(&mut checked).id_salt("dragoff").show(ui);
+        });
+        run_pass(
+            &ctx,
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(away),
+                    egui::Event::PointerButton {
+                        pos: away,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                let _ = Checkbox::new(&mut checked).id_salt("dragoff").show(ui);
+            },
+        );
+        assert!(!checked, "drag-off release must not toggle");
+        assert!(
+            !ctx.memory(|m| m.has_focus(id)),
+            "drag-off release must not focus"
+        );
+
+        // A disabled box takes neither toggle nor focus when clicked:
+        // fresh context so no stale focus state leaks in.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        let mut rect = egui::Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("click_dis")
+                .show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        let center = rect.center();
+        run_pass(&ctx, click_event(center, true), |ui| {
+            let _ = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("click_dis")
+                .show(ui);
+        });
+        let mut clicked = false;
+        run_pass(&ctx, click_event(center, false), |ui| {
+            let r = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("click_dis")
+                .show(ui);
+            clicked = r.clicked();
+        });
+        assert!(!clicked, "disabled box must not report a click");
+        assert!(!checked, "disabled box must not toggle on click");
+        assert!(
+            !ctx.memory(|m| m.has_focus(id)),
+            "disabled box must not take focus on click"
+        );
     }
 
     #[test]
