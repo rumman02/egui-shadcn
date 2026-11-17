@@ -1179,6 +1179,11 @@ impl<'a> NativeSelect<'a> {
         egui::ScrollArea::vertical()
             .max_height(POPUP_MAX_VISIBLE_ROWS as f32 * POPUP_ROW_HEIGHT)
             .show(&mut child, |ui| {
+                // NSL-VIS-01: rows tile at 36px pitch — zero the
+                // inter-widget gap inside the popup. egui's default 8px
+                // `item_spacing` made the laid-out pitch 44px while the
+                // frame is sized for 36px pitch, clipping the last rows.
+                ui.spacing_mut().item_spacing.y = 0.0;
                 if rows.is_empty() {
                     paint_label_row(ui, "No options", p);
                 } else {
@@ -1721,6 +1726,75 @@ mod tests {
             .show(ui);
         *rect = r.rect;
         *trigger_id = r.id;
+    }
+
+    /// Four enabled options (no disabled row, no headers): the pitch pin
+    /// needs a uniform row grid.
+    fn pitch_ui(ui: &mut Ui, selected: &mut Option<usize>, rect: &mut Rect, trigger_id: &mut Id) {
+        let r = NativeSelect::new(selected)
+            .id_salt("pitch-harness")
+            .options(["Alpha", "Beta", "Gamma", "Delta"])
+            .show(ui);
+        *rect = r.rect;
+        *trigger_id = r.id;
+    }
+
+    #[test]
+    fn popup_rows_laid_out_at_36px_pitch() {
+        // NSL-VIS-01: popup rows must tile at 36px pitch (no inter-row
+        // gap). A click at content_top + 112 / +120 lands on row 3 under
+        // 36px pitch (rows [0,36) [36,72) [72,108) [108,144)) but on row 2
+        // under the buggy 44px pitch (row 2 spans [88,124)). content_top
+        // is the trigger bottom + 5 (1px popup gap + 4px frame margin —
+        // the S6 gallery calibration, same egui popup placement headless).
+        // The 112/120 offsets sit 4px+ clear of every row edge in both
+        // layouts (row 3 spans [108,144) at 36px pitch; row 2 spans
+        // [88,124) at 44px pitch), so the discrimination does not depend
+        // on edge tie-breaking.
+        let mut h = Harness::new();
+        let mut selected = Some(0);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| pitch_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        let content_top = rect.bottom() + 5.0;
+        let cx = rect.center().x;
+        // Calibration sanity: row centres both layouts agree on. If the
+        // content_top calibration were wrong, these fail loudly instead
+        // of letting the discriminating probes pass vacuously.
+        for (dy, want) in [(18.0, 0), (54.0, 1)] {
+            h.click(rect.center(), |ui| {
+                pitch_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert!(h.is_popup_open(trigger_id), "popup opens for dy={dy}");
+            h.click(Pos2::new(cx, content_top + dy), |ui| {
+                pitch_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert_eq!(
+                selected,
+                Some(want),
+                "click at content_top+{dy} selects row {want}"
+            );
+            assert!(!h.is_popup_open(trigger_id));
+            selected = Some(0);
+        }
+        // Discriminating probes: row 3 under 36px pitch, row 2 under
+        // 44px pitch.
+        for dy in [112.0, 120.0] {
+            h.click(rect.center(), |ui| {
+                pitch_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert!(h.is_popup_open(trigger_id), "popup opens for dy={dy}");
+            h.click(Pos2::new(cx, content_top + dy), |ui| {
+                pitch_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert_eq!(
+                selected,
+                Some(3),
+                "click at content_top+{dy} selects row 3 (36px pitch)"
+            );
+            assert!(!h.is_popup_open(trigger_id));
+            selected = Some(0);
+        }
     }
 
     #[test]
