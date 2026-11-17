@@ -3,9 +3,11 @@
 //! Built to the frozen Batch B spec (`~/workspace/batch-b/specs/switch-spec.md`,
 //! coordinator-signed 2026-11-16). Source: `apps/v4/registry/new-york-v4/ui/switch.tsx`
 //! (34 lines) plus the nova rules in `apps/v4/registry/styles/style-nova.css:1250-1264`.
-//! No Radix source is in the snapshot, so no Radix default is guessed: keyboard,
-//! focus-on-click, and timing details that the snapshot does not establish are
-//! recorded as OPEN items below and implemented provisionally where the spec says so.
+//! No Radix source is in the snapshot, so no Radix default is guessed from the
+//! snapshot itself: the keyboard rules were settled by S6 Work B from the
+//! public Radix Switch source (OPEN-2/OPEN-5/OPEN-6 CLOSED, OPEN-3 partially
+//! closed — the browser-heuristic half stays OPEN), and timing stays OPEN-1
+//! (Tailwind framework defaults, labelled INTERIM).
 //!
 //! Base track class string (`switch.tsx:19`):
 //!
@@ -60,30 +62,56 @@
 //!
 //! Invalid (spec §2.6, N5 settled): the invalid recipe is nova-only. The base
 //! recipe has ZERO invalid classes, so under the base recipe (any non-nova
-//! style) `.invalid(true)` is accepted but paints no extra chrome (spec OPEN-10,
-//! S1 decision: snapshot-faithful, no deviation needed). Under nova, invalid
-//! paints the destructive border (full strength light, `/50` dark) and a 3px
-//! rest ring (`destructive/20` light, `/40` dark) that is NOT focus-gated.
-//! Invalid+focus precedence is spec OPEN-4; this build keeps invalid-wins
-//! provisionally and records it as such.
+//! style) `.invalid(true)` is accepted but paints no extra chrome (spec
+//! OPEN-10, S1 decision RATIFIED at the S8 gate: snapshot-faithful, no
+//! deviation needed). Under nova, invalid paints the destructive border
+//! (full strength light, `/50` dark) and a 3px rest ring (`destructive/20`
+//! light, `/40` dark) that is NOT focus-gated. Invalid+focus precedence is
+//! spec OPEN-4; this build keeps invalid-wins provisionally (and
+//! suppression-wins-over-invalid, also provisional) and records it as such.
 //!
-//! Keyboard and click (spec §7, OPEN-2/OPEN-3): `switch.tsx` attaches no
-//! handler; S6 Work B settled the Radix semantics from the public Radix
-//! Switch source (OPEN-2 CLOSED): Space toggles on KEYUP, Enter on keydown,
-//! click toggles on the click event, exactly one Tab stop, disabled blocks
-//! activation. egui fires Space on keydown, so this build intervenes (see
-//! `space_keyup_fire`, the button BTN-INT-04 shape) to toggle on keyup.
-//! The ring paints on any egui focus (proposed deviation D1, button D3 class);
-//! whether a mouse click focuses the control in egui is an S6 runtime question
-//! (OPEN-3, partially closed by S6 Work B — the browser-heuristic half stays
-//! OPEN — incl. observation OBS-LBL-S6-2).
+//! Disabled (spec §4/§5): `disabled:opacity-50` composites the whole element
+//! at 50% via one opacity multiplier applied to every painted slot — fill,
+//! thumb, border, ring, and shadow — per the frozen spec's own gloss
+//! ("multiplies every painted slot including shadow and ring"). The S5
+//! verdict stands on that text (ruling 7 item 3). The spec-language
+//! divergence from the checkbox/slider group-fade reading of the same CSS
+//! property is a wave-pack question for the Expert Reviewer, not resolved
+//! here. A disabled switch takes no Tab stop, never activates, and shows the
+//! `not-allowed` cursor.
+//!
+//! Keyboard and click (spec §7): `switch.tsx` attaches no handler; S6 Work B
+//! settled the Radix semantics from the public Radix Switch source (OPEN-2
+//! CLOSED, `@radix-ui/react-switch` 1.4.1, mechanism stable 2021→2026):
+//! Space toggles on KEYUP, Enter on keydown, click toggles on the click
+//! event, exactly one Tab stop, disabled blocks activation and takes no
+//! stop, arrows/Escape/Home/End have no behaviour. egui fires Space on
+//! keydown, so this build intervenes (see `space_keyup_fire`, the button
+//! BTN-INT-04 shape) to toggle on keyup (SWI-INT-01, fixed in one cycle
+//! and independently re-verified at S10). The ring paints on any egui focus
+//! (proposed deviation D1, button D3 class). A direct click toggles but does
+//! not focus the switch and shows no ring in egui (observation OBS-SWI-S6-1,
+//! gate G6 — not a defect: OPEN-3's browser-heuristic half stays OPEN, and
+//! the harmonization question goes to the Expert Reviewer). OPEN-5 CLOSED
+//! (controlled `checked` + `onCheckedChange`, uncontrolled `defaultChecked`
+//! defaulting to `false`); this port exposes the controlled form only.
+//! OPEN-6 CLOSED (`asChild` supported upstream; limitation D3 stands).
 //!
 //! Deviations (all PROPOSED by the spec, none approved — the Expert Reviewer
 //! rules at the wave pack): D1 `:focus-visible` modality (ring on any focus);
 //! D2 ARIA limitation (note only); D3 `asChild` limitation (note only); D4
-//! field-label focus suppression (see [`Switch::suppress_focus_indication`]);
+//! field-label focus suppression (see [`Switch::suppress_focus_indication`];
+//! the mechanism was verified in S5/S6, approval still pending);
 //! D5 `peer`/`group` implementation note (no deviation); D6 native form
 //! submission limitation (note only).
+//!
+//! Verification (Batch B): S5 judged 40/40 checks PASS in all 4 configs; S6
+//! filed one defect (SWI-INT-01, Space phase), fixed and independently
+//! re-verified at S10 with 0 defects; S7 passed M1–M7 with two accepted
+//! gaps (the M8 render floor and the theme cross-fade leg could not be
+//! resolved by the environment — gate G2, no breach claimed either way).
+//! The FLD-VIS-01 field-description cross-check on the demo's §7 cards is
+//! PENDING until the field line lands its fix (gate G7).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -392,8 +420,9 @@ pub struct Switch<'a> {
 }
 
 impl<'a> Switch<'a> {
-    /// Creates a switch bound to the given boolean (controlled `&mut bool`,
-    /// per crate convention; spec OPEN-5).
+    /// Creates a switch bound to the given boolean (controlled `&mut bool`;
+    /// spec OPEN-5 CLOSED by S6 Work B — the uncontrolled `defaultChecked`
+    /// form has no port equivalent).
     pub fn new(checked: &'a mut bool) -> Self {
         Self {
             checked,
@@ -419,7 +448,7 @@ impl<'a> Switch<'a> {
 
     /// Marks the switch aria-invalid. Paints the nova invalid recipe (border
     /// and rest ring); under the base recipe it paints nothing extra (spec
-    /// OPEN-10).
+    /// OPEN-10, ratified at the S8 gate).
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
         self
@@ -434,7 +463,9 @@ impl<'a> Switch<'a> {
     /// (`style-nova.css:1251`): the composing card sets this flag each frame
     /// from its own focus-inside state. The field line owns the composition
     /// contract. Nova-only; a no-op under the base recipe. Suppression+invalid
-    /// precedence is provisional (OPEN-4): the suppression wins.
+    /// precedence is provisional (OPEN-4): the suppression wins. The
+    /// mechanism was verified against the demo's card compositions in S5/S6;
+    /// the deviation itself awaits Expert Reviewer approval.
     pub fn suppress_focus_indication(mut self, suppress: bool) -> Self {
         self.suppress_focus_indication = suppress;
         self
