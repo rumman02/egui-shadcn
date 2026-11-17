@@ -578,13 +578,18 @@ impl<'a> Checkbox<'a> {
         // without activation. Consuming the pending click here makes
         // the activation reach the checkbox in either show order: in
         // label-first order the label already consumed the flag and
-        // this is a no-op, so exactly one activation fires. Only while
-        // enabled: a disabled checkbox leaves the flag for the label's
-        // own consume, preserving the disabled pair's behaviour
-        // exactly (CHK-INT-05 owns that pair).
-        if !self.disabled {
-            consume_pending_click(ui, id, true);
-        }
+        // this is a no-op, so exactly one activation fires. The flag
+        // is consumed whether or not the checkbox is enabled, gated on
+        // the checkbox's own enabled state: a DISABLED checkbox drops
+        // the flag silently (CHK-INT-05) instead of leaving it for the
+        // label's own consume — the label's consume requests focus
+        // unconditionally (gated only on the label's enabled state),
+        // and in control-first order that request lands after this
+        // checkbox's `interact`, the only thing that would clear it, so
+        // the disabled pair's readout observes focus during the
+        // forwarding pass. Dropping the flag here makes the disabled
+        // pair do nothing, per spec §7.3 point 4.
+        consume_pending_click(ui, id, !self.disabled);
         // Space toggles on keyup, not keydown (spec §7, OPEN-1(a)
         // closed by S6 Work B; CHK-INT-02): hide this frame's Space
         // keydown from `interact` and re-create it on the keyup frame.
@@ -1805,6 +1810,113 @@ mod tests {
             ctx.memory(|m| m.has_focus(target)),
             "focus retained after second label click"
         );
+    }
+
+    #[test]
+    fn label_click_on_disabled_checkbox_in_control_first_order_does_nothing() {
+        // CHK-INT-05: the demo §6 disabled pair shows the checkbox
+        // BEFORE its bound label. On the pass after a label click, the
+        // label's deferred forwarding (`consume_pending_click`) requests
+        // focus on the target unconditionally — gated only on the LABEL's
+        // enabled state — and in control-first order that request lands
+        // AFTER the disabled checkbox's `interact`, which is the only
+        // thing that would clear it (`create_widget` calls `ignore_focus`
+        // for the non-focusable `Sense::hover()` widget). The focus is
+        // therefore set for the rest of the pass, and the demo readout
+        // (`Response::has_focus`, a live memory read evaluated after the
+        // label runs) observes `true` and bakes it into the painted
+        // frame. egui's end-of-pass dead-man's-switch
+        // (`Focus::end_pass`: the hover-sense widget's id is never in
+        // `used_ids`, and the focus was gained on the previous pass)
+        // clears the focus before the next pass, so the logical state
+        // does not stick — but the PAINTED "focused: true" persists until
+        // some later pass repaints the readout, which is the
+        // nondeterminism S6 observed (3/4 configs; no repaint under a
+        // parked pointer). The disabled checkbox drops its own pending
+        // click at the top of `show`, before `interact`, so the label's
+        // later consume finds nothing and the transient focus never
+        // happens. This pin drives the REAL `Label` + disabled `Checkbox`
+        // in control-first order through real passes with real pointer
+        // events, three click cycles, and reads focus DURING the
+        // forwarding pass (after the label runs — exactly where the demo
+        // readout reads it): it FAILS on the pre-fix build and PASSES
+        // with the fix. An end-of-pass read would NOT discriminate: the
+        // dead-man's-switch clears the focus on both builds.
+        use crate::components::label::Label;
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let click_event = |pos: egui::Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut checked = false;
+        let mut target = egui::Id::NULL;
+        let mut label_rect = egui::Rect::NOTHING;
+
+        // Frame 1: render the disabled pair control-first, capture the
+        // label rect and the checkbox id (same-pass captured-id binding,
+        // as the demo does).
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("lbl5")
+                .show(ui);
+            target = r.id;
+            label_rect = Label::new("Disabled option").for_id(r.id).show(ui).rect;
+        });
+        assert!(!checked);
+        assert!(!ctx.memory(|m| m.has_focus(target)));
+        let label_center = label_rect.center();
+
+        let show_pair = |ctx: &egui::Context, input: egui::RawInput, checked: &mut bool| {
+            run_pass(ctx, input, |ui| {
+                let r = Checkbox::new(checked)
+                    .disabled(true)
+                    .id_salt("lbl5")
+                    .show(ui);
+                let _ = Label::new("Disabled option").for_id(r.id).show(ui);
+            });
+        };
+
+        // Three label-click cycles: on each forwarding pass the disabled
+        // pair must show no toggle and no focus DURING the pass (spec
+        // §7.3 point 4). Repeated cycles because the defect is a race.
+        for cycle in 1..=3 {
+            show_pair(&ctx, click_event(label_center, true), &mut checked);
+            show_pair(&ctx, click_event(label_center, false), &mut checked);
+            // Non-vacuity guard: the label's immediate focus request must
+            // have landed on the click pass, proving the click engaged
+            // the forwarding path (a missed click would make the
+            // forwarding assertions below pass silently).
+            assert!(
+                ctx.memory(|m| m.has_focus(target)),
+                "cycle {cycle}: label click did not engage the forwarding path"
+            );
+            // Forwarding pass: read focus DURING the pass, after the
+            // label runs — exactly where the demo readout reads it.
+            let mut focused_during_pass = false;
+            run_pass(&ctx, egui::RawInput::default(), |ui| {
+                let r = Checkbox::new(&mut checked)
+                    .disabled(true)
+                    .id_salt("lbl5")
+                    .show(ui);
+                let _ = Label::new("Disabled option").for_id(r.id).show(ui);
+                focused_during_pass = ui.ctx().memory(|m| m.has_focus(target));
+            });
+            assert!(
+                !checked,
+                "cycle {cycle}: disabled checkbox toggled on label click"
+            );
+            assert!(
+                !focused_during_pass,
+                "cycle {cycle}: disabled checkbox took focus during the forwarding pass"
+            );
+        }
     }
 
     /// The synthetic Space down+up pair the label forwarding mechanism
