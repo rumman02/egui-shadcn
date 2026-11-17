@@ -77,16 +77,23 @@
 //! stays removed (D3 unexercised — no deviation is needed to render the
 //! `CheckIcon`).
 //!
-//! Keyboard/click (spec §7, OPEN-1): ALL Radix interaction semantics are
-//! unestablished (no Radix source in the snapshot). This build uses
-//! egui-natural activation ([`Sense::click`] + [`Response::clicked`],
-//! which covers pointer clicks and egui's focused-widget Space/Enter
-//! activation) as IMPLEMENTATION, not spec truth. Label-click composition
+//! Keyboard/click (spec §7, OPEN-1): S6 Work B settled the Radix
+//! semantics from the public Radix Checkbox source (OPEN-1(a)–(h)
+//! CLOSED). Space toggles on KEYUP, once per press, with no repeat
+//! while held (the native `<button>` rule — Radix adds no Space
+//! handler). egui fires Space on keydown, so this build intervenes
+//! (see `space_keyup_fire`, the button BTN-INT-04 shape) to toggle on
+//! keyup. The remaining settled rows (Enter must not toggle, click
+//! focuses, label composition) are implemented by the S9 fixes for
+//! CHK-INT-01/03/04; until those land, this build's behaviour on those
+//! rows is egui-natural, not spec truth. Label-click composition
 //! (spec §7.3): the label side is settled — a label click fires a click
 //! on the control AND focuses it. The checkbox needs no forwarding code
 //! of its own: the label requests focus on the checkbox's returned
 //! [`Response::id`] and pushes a synthetic Space pair, which `interact`
-//! reports as a click on the focused widget. Bind labels with the
+//! reports as a click on the focused widget (the pair survives the
+//! Space-keyup intervention: both halves arrive in one frame, so the
+//! hidden keydown is re-created on that same frame). Bind labels with the
 //! returned `Response::id` (scoped-widget id rule).
 //!
 //! Combined-state precedence (spec §4.6, OPEN-4) is UNESTABLISHED except
@@ -351,6 +358,90 @@ fn paint_checkbox_shadow(
     }
 }
 
+/// Space-keyup activation (spec §7, OPEN-1(a) closed by S6 Work B;
+/// CHK-INT-02; the button BTN-INT-04 shape, as in `switch.rs`).
+///
+/// Native `<button>` toggles on Space KEYUP, once per press, with no
+/// repeat while held; Radix adds no Space handler, so the native rule
+/// governs. egui's `interact` reports a fake click whenever the focused
+/// widget sees `key_pressed(Space)`, so without intervention Space
+/// toggles on keydown (and re-toggles on every autorepeat). This helper,
+/// called before `interact` while the checkbox holds focus, hides this
+/// frame's Space keydown events from `interact`, remembers that Space
+/// was pressed here ("armed"), and re-creates the keydown on the keyup
+/// frame so `interact` reports the click then.
+///
+/// Only the event list `interact` reads is touched: `keys_down` is
+/// computed in `begin_pass`, before widgets run, so `key_down(Space)` is
+/// unaffected. Enter events are never touched (Enter handling is
+/// CHK-INT-03's fix, not this one). The synthetic keydown on the keyup
+/// frame can only fake-click the focused widget, and copies the release
+/// event's physical key and modifiers. A Space released without a
+/// preceding keydown on this checkbox (focus arrived mid-hold) does not
+/// toggle; a stale armed flag is cleared on the first frame the
+/// checkbox is shown with Space up.
+///
+/// The label-forwarded synthetic Space pair (spec §7.3) still activates
+/// through this helper: both halves arrive in one frame, so the hidden
+/// keydown is re-created on that same frame and `interact` reports the
+/// click.
+fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
+    let armed_id = id.with("space_armed");
+    let mut armed = ctx
+        .data_mut(|data| data.get_temp::<bool>(armed_id))
+        .unwrap_or(false);
+    ctx.input_mut(|input| {
+        let space_pressed = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+        let release = input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: false,
+                physical_key,
+                modifiers,
+                ..
+            } => Some((*physical_key, *modifiers)),
+            _ => None,
+        });
+        if space_pressed {
+            input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+            armed = true;
+        }
+        if let Some((physical_key, modifiers)) = release {
+            if armed {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Space,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            armed = false;
+        } else if !input.key_down(egui::Key::Space) {
+            armed = false;
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(armed_id, armed));
+}
+
 /// A shadcn checkbox. See the [module docs](self) for an example.
 #[derive(Debug)]
 pub struct Checkbox<'a> {
@@ -434,6 +525,15 @@ impl<'a> Checkbox<'a> {
         // Reserve space without an auto-id widget so egui's built-in
         // spatial arrow navigation only sees the explicit widget id.
         let (_, rect) = ui.allocate_space(Vec2::splat(CHECKBOX_SIZE));
+        // Space toggles on keyup, not keydown (spec §7, OPEN-1(a)
+        // closed by S6 Work B; CHK-INT-02): hide this frame's Space
+        // keydown from `interact` and re-create it on the keyup frame.
+        // Only while focused and enabled — an unfocused checkbox must
+        // not consume another widget's Space, and a disabled checkbox
+        // never activates.
+        if !self.disabled && ui.ctx().memory(|m| m.has_focus(id)) {
+            space_keyup_fire(ui.ctx(), id);
+        }
         let mut response = ui.interact(rect, id, sense);
 
         if self.disabled {
@@ -442,10 +542,11 @@ impl<'a> Checkbox<'a> {
             response = response.on_hover_cursor(CursorIcon::NotAllowed);
         }
 
-        // egui-natural activation (OPEN-1 implementation, not spec
-        // truth): pointer clicks and egui's focused-widget Space/Enter
-        // activation both arrive here as `clicked()`, including the
-        // synthetic Space pair a bound label forwards (spec §7.3).
+        // Activation (spec §7, OPEN-1(a) closed by S6 Work B): Space
+        // toggles on keyup (see `space_keyup_fire`), pointer clicks
+        // arrive here as `clicked()`, including the synthetic Space
+        // pair a bound label forwards (spec §7.3). Enter handling is
+        // CHK-INT-03's fix, not this one.
         let clicked = response.clicked() && !self.disabled;
         if clicked {
             *self.checked = !*self.checked;
@@ -872,6 +973,82 @@ mod tests {
         out.textures_delta.clear();
         assert!(!checked); // no pointer input, nothing toggled
         assert!(!changed);
+    }
+
+    #[test]
+    fn space_fires_on_keyup_not_keydown() {
+        // CHK-INT-02: native `<button>` behaviour (spec §7, OPEN-1(a)
+        // closed by S6 Work B) — Space toggles once, on keyup; no
+        // toggle on keydown, no hold-repeat. Mirrors the switch pin
+        // `space_fires_on_keyup_not_keydown` (SWI-INT-01), adapted to
+        // the checkbox's `run_pass` harness.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let key_event = |key: egui::Key, pressed: bool, repeat: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut checked = false;
+
+        // Frame 1: render, record id; then give the checkbox focus.
+        let mut id = egui::Id::NULL;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            id = Checkbox::new(&mut checked).id_salt("keyup").show(ui).id;
+        });
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        let mut frame = |ctx: &egui::Context, input: egui::RawInput| {
+            run_pass(ctx, input, |ui| {
+                let _ = Checkbox::new(&mut checked).id_salt("keyup").show(ui);
+            });
+            checked
+        };
+
+        // Space keydown: no toggle. Autorepeat keydown: no toggle. Hold
+        // frame with no events: no toggle.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true, false)));
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true, true)));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        // Space keyup: exactly one toggle. The frame after: no toggle.
+        assert!(frame(&ctx, key_event(egui::Key::Space, false, false)));
+        assert!(frame(&ctx, egui::RawInput::default()));
+        // A second press/release cycle toggles exactly once, on keyup.
+        assert!(frame(&ctx, key_event(egui::Key::Space, true, false)));
+        assert!(!frame(&ctx, key_event(egui::Key::Space, false, false)));
+        // Focus is retained after keyboard activation.
+        assert!(ctx.memory(|m| m.has_focus(id)));
+        // The label-forwarded synthetic Space pair still activates
+        // through the keyup handling (both halves in one frame).
+        assert!(frame(&ctx, space_press_input()));
+
+        // A disabled checkbox never toggles from Space, on either edge.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let _ = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("keyup_dis")
+                .show(ui);
+        });
+        let mut disabled_frame = |input: egui::RawInput| {
+            run_pass(&ctx, input, |ui| {
+                let _ = Checkbox::new(&mut checked)
+                    .disabled(true)
+                    .id_salt("keyup_dis")
+                    .show(ui);
+            });
+            checked
+        };
+        assert!(!disabled_frame(key_event(egui::Key::Space, true, false)));
+        assert!(!disabled_frame(key_event(egui::Key::Space, false, false)));
     }
 
     #[test]
