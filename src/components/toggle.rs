@@ -53,7 +53,12 @@
 //! The padding VALUES are frozen; the trigger mapping is the S1 proposal,
 //! pending S8 ratification.
 //!
-//! Keyboard: Space or Enter toggles (egui activates focused widgets).
+//! Keyboard (spec §7, OPEN-2 CLOSED by S6 Work B from public Radix Toggle
+//! source): Space toggles on KEYUP, Enter on keydown — the native
+//! `<button>` asymmetry (Radix attaches only `onClick`, no key handlers).
+//! egui reports a fake click on the keydown frame for both keys, so this
+//! build intervenes for Space (see `space_keyup_fire`, the button
+//! BTN-INT-04 shape); Enter is never touched.
 //! `:focus-visible` modality is deviation D1 (PROPOSED): the ring shows on
 //! any focus. No ARIA tree exists in egui (D2, PROPOSED): pressed/invalid
 //! state is exposed through the Rust API and rendered visually.
@@ -593,6 +598,82 @@ fn paint_toggle_fused_stroke(
     }
 }
 
+/// Space-keyup activation (spec §7, OPEN-2 closed by S6 Work B; TOG-INT-01;
+/// the button BTN-INT-04 / switch SWI-INT-01 shape).
+///
+/// Native `<button>` toggles on Space KEYUP; egui's `interact` reports a
+/// fake click whenever the focused widget sees `key_pressed(Space)`, so
+/// without intervention Space toggles on keydown (and re-toggles on every
+/// autorepeat). This helper, called before `interact` while the toggle
+/// holds focus, hides this frame's Space keydown events from `interact`,
+/// remembers that Space was pressed here ("armed"), and re-creates the
+/// keydown on the keyup frame so `interact` reports the click then.
+///
+/// Only the event list `interact` reads is touched: `keys_down` is
+/// computed in `begin_pass`, before widgets run, so `key_down(Space)` is
+/// unaffected. Enter events are never touched (Enter toggles on keydown,
+/// per spec). The synthetic keydown on the keyup frame can only fake-click
+/// the focused widget, and copies the release event's physical key and
+/// modifiers. A Space released without a preceding keydown on this
+/// toggle (focus arrived mid-hold) does not toggle; a stale armed flag
+/// is cleared on the first frame the toggle is shown with Space up.
+fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
+    let armed_id = id.with("space_armed");
+    let mut armed = ctx
+        .data_mut(|data| data.get_temp::<bool>(armed_id))
+        .unwrap_or(false);
+    ctx.input_mut(|input| {
+        let space_pressed = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+        let release = input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: false,
+                physical_key,
+                modifiers,
+                ..
+            } => Some((*physical_key, *modifiers)),
+            _ => None,
+        });
+        if space_pressed {
+            input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+            armed = true;
+        }
+        if let Some((physical_key, modifiers)) = release {
+            if armed {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Space,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            armed = false;
+        } else if !input.key_down(egui::Key::Space) {
+            armed = false;
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(armed_id, armed));
+}
+
 /// A shadcn toggle. See the [module docs](self) for an example.
 #[derive(Debug)]
 pub struct Toggle<'a> {
@@ -757,8 +838,19 @@ impl<'a> Toggle<'a> {
             None => ui.auto_id_with("shadcn_toggle"),
         };
         let (_, rect) = ui.allocate_space(desired);
+        // Space toggles on keyup, not keydown (spec §7, OPEN-2 closed by S6
+        // Work B; TOG-INT-01): hide this frame's Space keydown from
+        // `interact` and re-create it on the keyup frame. Only while
+        // focused and enabled — an unfocused toggle must not consume
+        // another widget's Space, and a disabled toggle never activates.
+        if !self.disabled && ui.ctx().memory(|m| m.has_focus(id)) {
+            space_keyup_fire(ui.ctx(), id);
+        }
         let response = ui.interact(rect, id, sense);
 
+        // Activation (spec §7, OPEN-2 closed by S6 Work B): Space toggles
+        // on keyup (see `space_keyup_fire`), Enter on keydown, pointer
+        // click on the click event — the native `<button>` asymmetry.
         if response.clicked() && !self.disabled {
             *self.pressed = !*self.pressed;
         }
@@ -1529,6 +1621,107 @@ mod tests {
             assert_eq!(r.rect.height(), metrics::height(ToggleSize::Default, style));
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn space_fires_on_keyup_not_keydown() {
+        // TOG-INT-01: native `<button>` behaviour (spec §7, OPEN-2 closed
+        // by S6 Work B) — Space toggles on keyup; Enter toggles on
+        // keydown. Mirrors the switch pin `space_fires_on_keyup_not_keydown`
+        // (SWI-INT-01), adapted to the toggle's `&mut bool` binding.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("toggle_space_keyup_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut pressed = false;
+
+        // Frame 1: render, record id; then give the toggle keyboard focus.
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            id = Toggle::new(&mut pressed).text("Bold").show(ui).id;
+        });
+        out.textures_delta.clear();
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        let mut frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+            });
+            out.textures_delta.clear();
+            pressed
+        };
+
+        // Space keydown: no toggle. Autorepeat keydown: no toggle. Hold
+        // frame with no events: no toggle.
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true)));
+        let repeat_down = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        assert!(!frame(&ctx, repeat_down));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        // Space keyup: exactly one toggle. The frame after: no toggle.
+        assert!(frame(&ctx, key_event(egui::Key::Space, false)));
+        assert!(frame(&ctx, egui::RawInput::default()));
+        // A second press/release cycle toggles exactly once, on keyup.
+        assert!(frame(&ctx, key_event(egui::Key::Space, true)));
+        assert!(!frame(&ctx, key_event(egui::Key::Space, false)));
+        // Enter still toggles on keydown, and does not toggle on keyup.
+        assert!(frame(&ctx, key_event(egui::Key::Enter, true)));
+        assert!(frame(&ctx, key_event(egui::Key::Enter, false)));
+        // Focus is retained after keyboard activation.
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // A disabled toggle never toggles from Space, on either edge.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut pressed = false;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed)
+                .text("Bold")
+                .disabled(true)
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        let mut disabled_frame = |input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                let _ = Toggle::new(&mut pressed)
+                    .text("Bold")
+                    .disabled(true)
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+            pressed
+        };
+        assert!(!disabled_frame(key_event(egui::Key::Space, true)));
+        assert!(!disabled_frame(key_event(egui::Key::Space, false)));
     }
 
     #[test]
