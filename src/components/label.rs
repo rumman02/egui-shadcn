@@ -419,14 +419,25 @@ impl Label {
             (rect, ui.interact(rect, id, sense))
         };
 
-        // Click forwarding (LBL-INT-01/02): the click is recorded for
-        // the next pass, when no click is in flight to surrender the
-        // focus request. The immediate request is kept too — it helps
-        // when the label runs AFTER its target — but on its own it
-        // never survives the click pass (see `record_pending_click`).
+        // Click forwarding (LBL-INT-01/02, CHK-INT-05): the click is
+        // recorded for the next pass, when no click is in flight to
+        // surrender the focus request — and the deferred forwarding is
+        // the SOLE focus granter. There is deliberately NO immediate
+        // focus request here: it is unconditional w.r.t. the TARGET's
+        // disabled state (gated only on the label's own), so for a
+        // disabled target it set focus for the rest of the click pass
+        // and any readout evaluated after the label painted
+        // "focused: true" for that frame — a visible lie under load,
+        // where one presented frame can linger for seconds. The
+        // deferred consume is gated by the target's enabled state (the
+        // target consumes its own pending click first in control-first
+        // order; in label-first order the target's `interact` clears
+        // the request before any readout), so the removal loses
+        // nothing for enabled targets: focus lands one pass later,
+        // before the synthetic Space pair is processed, and the
+        // activation is unchanged.
         if interactive && response.clicked() {
             if let Some(target) = self.for_id {
-                ui.memory_mut(|mem| mem.request_focus(target));
                 record_pending_click(ui.ctx(), target);
             }
         }
@@ -629,8 +640,11 @@ impl Label {
                         i.pointer.any_click()
                             && i.pointer.latest_pos().is_some_and(|p| row_rect.contains(p))
                     });
+                // No immediate focus request here either (CHK-INT-05):
+                // it would set focus for the rest of the click pass
+                // even for a disabled nested target. The deferred
+                // forwarding above is the sole focus granter.
                 if clicked {
-                    ui.memory_mut(|mem| mem.request_focus(target));
                     record_pending_click(ui.ctx(), target);
                 }
             }
