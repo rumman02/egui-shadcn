@@ -561,6 +561,25 @@ mod tests {
             .collect()
     }
 
+    /// One border stroke per item: collapses the clip-based fused stroke.
+    /// `paint_toggle_fused_stroke` paints Middle/Last items as THREE
+    /// `rect_stroke` shapes with the identical (rect, colour, radius) —
+    /// one main clip + two corner cells — differing only in clip rect, so
+    /// the raw `border_strokes` list holds 1 + 3 + 3 = 7 entries for a
+    /// 3-item fused group. Deduping exact triples (paint order preserved)
+    /// recovers one stroke per item on the rebuilt paint; on the old paint
+    /// (one shape per item) the dedupe is a no-op. Two distinct items can
+    /// never share a triple (distinct rects).
+    fn border_strokes_by_item(out: &egui::FullOutput) -> Vec<(Rect, Color32, CornerRadius)> {
+        let mut seen: Vec<(Rect, Color32, CornerRadius)> = Vec::new();
+        for stroke in border_strokes(out) {
+            if !seen.contains(&stroke) {
+                seen.push(stroke);
+            }
+        }
+        seen
+    }
+
     /// Fill shapes (non-transparent fill, no stroke, no blur) in paint
     /// order, with corner radii.
     fn fill_shapes(out: &egui::FullOutput) -> Vec<(Rect, CornerRadius)> {
@@ -579,13 +598,21 @@ mod tests {
             .collect()
     }
 
-    /// Shadow shapes (`Shape::Rect` with a blur — the `shadow-xs`
-    /// `RectShape::with_blur_width` paint).
+    /// Shadow quads: top-level `Shape::Mesh` shapes drawn from a non-font
+    /// texture, with their bounds in paint order. The shadow painter
+    /// (`paint_shadow_layers`) draws the cached shadow texture via
+    /// `painter.image`, which emits one `Mesh` per atlas quad (four corners
+    /// and four edges, no center) carrying the shadow texture id. Text is
+    /// `Shape::Text` — glyph meshes live inside it and use the font
+    /// texture (`TextureId::default()`) — so a non-default texture id on
+    /// a top-level mesh identifies shadow quads exactly.
     fn shadow_shapes(out: &egui::FullOutput) -> Vec<Rect> {
         out.shapes
             .iter()
             .filter_map(|clipped| match &clipped.shape {
-                egui::Shape::Rect(rs) if rs.blur_width > 0.0 => Some(rs.rect),
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    Some(mesh.calc_bounds())
+                }
                 _ => None,
             })
             .collect()
@@ -934,6 +961,9 @@ mod tests {
         // Spec §4.5 + S-1: fused items render shadow-none in both styles;
         // spaced outline items keep shadow-xs (Vega here — the base
         // recipe; nova spaced shadow is the toggle line's S-1 fix).
+        // Shadow reality (rebuilt toggle paint): `paint_shadow_layers`
+        // draws the cached shadow texture as 8 atlas quads per shadowed
+        // widget (4 corners + 4 edges, no center) — see `shadow_shapes`.
         let mut states = vec![false, false];
         let fused = run_frames_output(Style::Vega, Mode::Light, 3, |ui| {
             ToggleGroup::multiple(&mut states)
@@ -955,7 +985,35 @@ mod tests {
                 .item("B")
                 .show(ui);
         });
-        assert_eq!(shadow_shapes(&spaced).len(), 2);
+        // Each spaced item paints exactly its own 8-quad shadow: quads
+        // are attributed to items by intersection with the item's border
+        // rect (quads straddle the rect edge and never reach a neighbour
+        // — the 8px gap exceeds the shadow extent).
+        let quads = shadow_shapes(&spaced);
+        let borders = border_strokes_by_item(&spaced);
+        assert_eq!(borders.len(), 2);
+        for (rect, _, _) in &borders {
+            let item_quads: Vec<Rect> = quads
+                .iter()
+                .copied()
+                .filter(|q| q.intersects(*rect))
+                .collect();
+            assert_eq!(item_quads.len(), 8, "expected 8 atlas quads for {rect:?}");
+            // Every quad extends beyond the item rect: the shadow is a
+            // halo, not an interior paint (SEL-VIS-01).
+            for q in &item_quads {
+                assert!(
+                    q.min.x < rect.min.x
+                        || q.min.y < rect.min.y
+                        || q.max.x > rect.max.x
+                        || q.max.y > rect.max.y,
+                    "shadow quad {q:?} does not extend beyond {rect:?}"
+                );
+            }
+        }
+        // No quad is unattributed: the total is exactly the two items'
+        // quads (no stray shadow paint, no double-counting).
+        assert_eq!(quads.len(), 16);
     }
 
     #[test]
@@ -979,7 +1037,12 @@ mod tests {
                 .add_item(GroupItem::new("C"))
                 .show(ui);
         });
-        let borders = border_strokes(&out);
+        let raw = border_strokes(&out);
+        // Clip-based fused stroke: First paints 1 ring shape, Middle/Last
+        // paint 3 each (1 main clip + 2 corner cells) — see
+        // `border_strokes_by_item`.
+        assert_eq!(raw.len(), 7);
+        let borders = border_strokes_by_item(&out);
         assert_eq!(borders.len(), 3);
         assert_eq!(borders[1].1, destructive);
         assert_ne!(borders[0].1, destructive);
@@ -1003,7 +1066,12 @@ mod tests {
                 .add_item(GroupItem::new("C").size(ToggleSize::Lg))
                 .show(ui);
         });
-        let borders = border_strokes(&out);
+        let raw = border_strokes(&out);
+        // Clip-based fused stroke: First paints 1 ring shape, Middle/Last
+        // paint 3 each (1 main clip + 2 corner cells) — see
+        // `border_strokes_by_item`.
+        assert_eq!(raw.len(), 7);
+        let borders = border_strokes_by_item(&out);
         assert_eq!(borders.len(), 3);
         assert!((borders[0].0.height() - 32.0).abs() < 0.01);
         assert!((borders[1].0.height() - 36.0).abs() < 0.01);
@@ -1149,7 +1217,11 @@ mod tests {
                 .add_item(GroupItem::new("B").size(ToggleSize::Lg))
                 .show(ui);
         });
-        let borders = border_strokes(&out);
+        let raw = border_strokes(&out);
+        // Clip-based fused stroke: First paints 1 ring shape, Last paints
+        // 3 (1 main clip + 2 corner cells) — see `border_strokes_by_item`.
+        assert_eq!(raw.len(), 4);
+        let borders = border_strokes_by_item(&out);
         assert_eq!(borders.len(), 2);
         for (rect, _, _) in &borders {
             assert!((rect.height() - 32.0).abs() < 0.01);
