@@ -151,6 +151,17 @@ pub(crate) fn ring_width(style: Style) -> f32 {
     }
 }
 
+/// Radius passed to `circle_stroke` for the thumb halo (SLD-VIS-01).
+/// egui 0.37 renders a `circle_stroke` band entirely OUTSIDE the given
+/// radius ([r, r + width] — verified empirically from captures), so the
+/// ring must be passed the thumb radius itself for the band to start at
+/// the border-box edge (Tailwind outset `box-shadow` semantics: nova
+/// [6, 9], base [8, 12]). Passing `radius + width / 2.0` (the
+/// centred-stroke assumption) floats the band half a width outward.
+pub(crate) fn ring_stroke_radius(style: Style) -> f32 {
+    thumb_size(style) / 2.0
+}
+
 /// Thumb hit-area side per style (spec §3.5): under nova the `::after`
 /// pseudo-element (`after:-inset-2`) extends 8px beyond the 12px thumb box,
 /// giving a 28px grab area; under base the hit area is the thumb box itself.
@@ -834,9 +845,12 @@ impl<'a> Slider<'a> {
             .alpha;
             if ring_alpha > 0.003 {
                 let width = ring_width(style);
+                // SLD-VIS-01: `circle_stroke` renders the band OUTSIDE the
+                // given radius, so pass the thumb radius itself — the band
+                // then starts at the border-box edge (see `ring_stroke_radius`).
                 painter.circle_stroke(
                     center,
-                    radius + width / 2.0,
+                    ring_stroke_radius(style),
                     Stroke::new(width, color_alpha(c.ring, ring_alpha)),
                 );
             }
@@ -964,6 +978,34 @@ mod tests {
         // Disabled: no ring in any state, either style (§4.4).
         assert!(!thumb_ring_visible(Style::Vega, true, true, true, true));
         assert!(!thumb_ring_visible(Style::Nova, true, true, true, true));
+    }
+
+    #[test]
+    fn ring_stroke_radius_sits_on_the_border_box_edge_sld_vis_01() {
+        // SLD-VIS-01: egui 0.37 renders a `circle_stroke` band entirely
+        // OUTSIDE the given radius ([r, r + width]), so the stroke radius
+        // must equal the thumb radius for the halo to start exactly at the
+        // border-box edge (Tailwind outset `box-shadow` semantics). The
+        // rendered-band evidence is in the S9 report; this pins the input.
+        assert_eq!(ring_stroke_radius(Style::Nova), 6.0);
+        assert_eq!(ring_stroke_radius(Style::Vega), 8.0);
+        assert_eq!(
+            ring_stroke_radius(Style::Nova),
+            thumb_size(Style::Nova) / 2.0
+        );
+        assert_eq!(
+            ring_stroke_radius(Style::Vega),
+            thumb_size(Style::Vega) / 2.0
+        );
+        // The band's outer edge: radius + ring width (nova [6, 9], base [8, 12]).
+        assert_eq!(
+            ring_stroke_radius(Style::Nova) + ring_width(Style::Nova),
+            9.0
+        );
+        assert_eq!(
+            ring_stroke_radius(Style::Vega) + ring_width(Style::Vega),
+            12.0
+        );
     }
 
     #[test]
