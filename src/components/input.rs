@@ -96,9 +96,10 @@
 //! }
 //! ```
 
+use crate::components::attachment::mix;
 use crate::components::button::group;
 use crate::components::button::{fuse_radius, GroupOrientation, GroupPosition};
-use crate::theme::{color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use crate::utils::animation::{transition_alpha, transition_color_to, Easing, TransitionSpec};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
@@ -235,6 +236,29 @@ pub(crate) fn resolve_input_colors(
 /// ring (spec §4.5).
 pub(crate) fn ring_visible(focused: bool, invalid: bool, style: Style) -> bool {
     focused || (invalid && matches!(style, Style::Nova))
+}
+
+/// Whole-element group fade for one interior slot under
+/// `disabled:opacity-50` (spec §4.6; INP-VIS-01): the slot paints OPAQUE
+/// with `0.5 * (slot over fill over backdrop) + 0.5 * backdrop`, where
+/// `fill` is the animated pre-opacity (disabled-state) fill and `backdrop`
+/// is `p.background`. Follows the CHK-VIS-01 (`disabled_group_fade` in
+/// `checkbox.rs`) / TXT-VIS-02 (`disabled_border_color` in `textarea.rs`)
+/// shape.
+///
+/// Per-slot alpha halving double-fades the overlap pixels: a halved stroke
+/// over a halved fill read (239) nova-light where group fade requires
+/// (242), and halved glyphs over the faded fill read (129)/(182) where
+/// group fade requires (132)/(185). The fill itself keeps halving — it
+/// paints over the backdrop alone, where halving IS the group fade — and
+/// the ring and shadow keep halving for the same reason (they sit outside
+/// the rect). The precomposite is exact at every coverage: coverage `c`
+/// over the faded fill yields the group fade of the enabled pixel. The
+/// backdrop approximation (exact on the gallery page, where the panel fill
+/// is `p.background`) is the same recorded limitation as the
+/// checkbox/toggle precedents.
+fn disabled_group_fade(slot: Color32, fill: Color32, backdrop: Color32) -> Color32 {
+    mix(backdrop, blend(blend(backdrop, fill), slot), 0.5)
 }
 
 /// Paints `shadow-xs` (`0 1px 2px rgb(0 0 0 / 0.05)`, Tailwind v4 default),
@@ -497,11 +521,9 @@ impl<'a> Input<'a> {
             TransitionSpec::default(),
         )
         .color;
-        let text_color = if self.disabled {
-            color_alpha(animated_foreground, 0.5)
-        } else {
-            animated_foreground
-        };
+        // The disabled compositing for the glyph colour resolves after the
+        // fill below: it needs the pre-opacity fill for the group-fade
+        // precomposite (INP-VIS-01).
 
         // Spec §6: the transition PROPERTY SET differs by style, so the
         // spec each animator runs under differs by style too. Timing is
@@ -552,10 +574,24 @@ impl<'a> Input<'a> {
             input_fill_alpha(dark, self.disabled, style),
             color_spec.duration_secs,
         );
-        let mut fill = color_alpha(fill_rgb, fill_alpha);
+        // Kept before fading: the border, text, and hint precomposites
+        // (INP-VIS-01) consume the un-faded animated value.
+        let fill_animated = color_alpha(fill_rgb, fill_alpha);
+        let mut fill = fill_animated;
         if self.disabled {
             fill = color_alpha(fill, 0.5);
         }
+
+        // Disabled compositing (INP-VIS-01): the glyph colour precomposites
+        // the group fade OPAQUE against the backdrop instead of halving its
+        // alpha over the faded fill, which double-fades glyph cores (the
+        // per-slot path read (129) nova-light where group fade requires
+        // (132)). Enabled rendering is unchanged.
+        let text_color = if self.disabled {
+            disabled_group_fade(animated_foreground, fill_animated, p.background)
+        } else {
+            animated_foreground
+        };
 
         let is_empty = self.text.is_empty();
         // 14px Inter Regular (400): `md:text-sm` at all widths (D3,
@@ -613,15 +649,20 @@ impl<'a> Input<'a> {
         // overrides are per-widget (OPEN-6): selection colours
         // (`selection:bg-primary selection:text-primary-foreground` — the
         // theme-level selection does not match) and, when disabled, the
-        // hint colour faded to 50% (`placeholder:text-muted-foreground`
-        // composited at `disabled:opacity-50`).
+        // hint colour precomposited at the 50% group fade
+        // (`placeholder:text-muted-foreground` composited at
+        // `disabled:opacity-50`; INP-VIS-01, like the text colour).
         let out = ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = input_height(style);
             let visuals = ui.visuals_mut();
             visuals.selection.bg_fill = p.primary;
             visuals.selection.stroke = Stroke::new(1.0, p.primary_foreground);
             if self.disabled {
-                visuals.weak_text_color = Some(color_alpha(p.muted_foreground, 0.5));
+                visuals.weak_text_color = Some(disabled_group_fade(
+                    p.muted_foreground,
+                    fill_animated,
+                    p.background,
+                ));
             }
             edit.show(ui)
         });
@@ -647,11 +688,16 @@ impl<'a> Input<'a> {
             // animate under nova and snap under base. The slot never crosses
             // the transparent boundary, so `transition_color_to`'s caveat
             // does not apply. Disabled fade after animation.
-            let mut stroke_color =
+            let stroke_animated =
                 transition_color_to(ui.ctx(), id.with("border"), c.stroke.color, color_spec).color;
-            if self.disabled {
-                stroke_color = color_alpha(stroke_color, 0.5);
-            }
+            // INP-VIS-01: when disabled, the stroke precomposites the
+            // group fade (opaque) instead of halving its alpha over the
+            // faded fill. Enabled rendering is unchanged.
+            let stroke_color = if self.disabled {
+                disabled_group_fade(stroke_animated, fill_animated, p.background)
+            } else {
+                stroke_animated
+            };
             paint_input_fused_stroke(
                 painter,
                 rect,
@@ -908,6 +954,182 @@ mod tests {
         // fades them after animation.
         let nd = resolve_input_colors(&p, false, false, false, Style::Nova);
         assert_eq!(nd.stroke.color, p.input);
+    }
+
+    fn assert_color_near(actual: Color32, expected: Color32) {
+        // ±1 per channel: premultiplied rounding can differ by a level from
+        // the single-step derivation.
+        for (a, e) in [
+            (actual.r(), expected.r()),
+            (actual.g(), expected.g()),
+            (actual.b(), expected.b()),
+        ] {
+            assert!(
+                (a as i32 - e as i32).abs() <= 1,
+                "channel {a} vs {e} (actual {actual:?}, expected {expected:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_group_fade_matches_differential_model() {
+        // INP-VIS-01: every interior slot that paints over the fill must be
+        // the group-fade precomposite — 0.5 * (slot over fill over
+        // backdrop) + 0.5 * backdrop — not a halved-alpha slot over the
+        // faded fill. Synthetic opaque case, exact arithmetic: backdrop
+        // 200, fill 50, slot 100. Composite = 100 (opaque slot); group
+        // fade = 150.
+        let backdrop = Color32::from_rgb(200, 200, 200);
+        let fill = Color32::from_rgb(50, 50, 50);
+        let slot = Color32::from_rgb(100, 100, 100);
+        assert_eq!(
+            disabled_group_fade(slot, fill, backdrop),
+            Color32::from_rgb(150, 150, 150)
+        );
+        // Transparent fill: the precomposite fades the slot over the
+        // backdrop alone.
+        assert_eq!(
+            disabled_group_fade(slot, Color32::TRANSPARENT, backdrop),
+            Color32::from_rgb(150, 150, 150)
+        );
+        // Translucent slot (dark `input` token shape): the precomposite
+        // equals the differential formula — composite the enabled stack,
+        // then fade once. This pins the wiring, not just the arithmetic.
+        let translucent = color_alpha(Color32::from_rgb(255, 255, 255), 0.15);
+        let fill_composite = blend(backdrop, fill);
+        assert_eq!(
+            disabled_group_fade(translucent, fill, backdrop),
+            mix(backdrop, blend(fill_composite, translucent), 0.5)
+        );
+        // Real palette values: the four closing border values from the
+        // defect file / ruling 11 (group fade governs; the nova-dark (41)
+        // uses the disabled-state fill, per the TXT-VIS-01 amendment).
+        // The nova-light (242) is the discriminating slot: the old
+        // per-slot path read (239).
+        let light = palette(Mode::Light);
+        let dark = palette(Mode::Dark);
+        for (p, dark_mode, style, expected) in [
+            (&light, false, Style::Nova, 242u8),
+            (&light, false, Style::Vega, 242u8),
+            (&dark, true, Style::Nova, 41u8),
+            (&dark, true, Style::Vega, 33u8),
+        ] {
+            let fill_rule = color_alpha(p.input, input_fill_alpha(dark_mode, true, style));
+            let stroke = resolve_input_colors(p, dark_mode, false, false, style)
+                .stroke
+                .color;
+            assert_color_near(
+                disabled_group_fade(stroke, fill_rule, p.background),
+                Color32::from_rgb(expected, expected, expected),
+            );
+        }
+        // Invalid+disabled borders at the defect file's group-fade values.
+        for (p, dark_mode, style, expected) in [
+            (&light, false, Style::Nova, (243u8, 128u8, 133u8)),
+            (&dark, true, Style::Nova, (78u8, 40u8, 40u8)),
+            (&dark, true, Style::Vega, (132u8, 55u8, 56u8)),
+        ] {
+            let fill_rule = color_alpha(p.input, input_fill_alpha(dark_mode, true, style));
+            let stroke = resolve_input_colors(p, dark_mode, false, true, style)
+                .stroke
+                .color;
+            assert_color_near(
+                disabled_group_fade(stroke, fill_rule, p.background),
+                Color32::from_rgb(expected.0, expected.1, expected.2),
+            );
+        }
+        // Glyph slots: an opaque slot fades against the backdrop alone —
+        // the precomposite equals `mix(backdrop, slot, 0.5)` whatever the
+        // fill beneath it is. Numeric values: light text 132.5 -> 133
+        // (halves round away from zero), dark text 130, light placeholder
+        // 185, dark placeholder 85.5 -> 86 — all within ±1 of the S5
+        // derivation (132/130, 185/86).
+        for (p, dark_mode, expected_text, expected_hint) in
+            [(&light, false, 132u8, 185u8), (&dark, true, 130u8, 86u8)]
+        {
+            let fill_rule = color_alpha(p.input, input_fill_alpha(dark_mode, true, Style::Nova));
+            assert_eq!(
+                disabled_group_fade(p.foreground, fill_rule, p.background),
+                mix(p.background, p.foreground, 0.5)
+            );
+            assert_color_near(
+                disabled_group_fade(p.foreground, fill_rule, p.background),
+                Color32::from_rgb(expected_text, expected_text, expected_text),
+            );
+            assert_color_near(
+                disabled_group_fade(p.muted_foreground, fill_rule, p.background),
+                Color32::from_rgb(expected_hint, expected_hint, expected_hint),
+            );
+        }
+        // The precomposite is opaque: what sits beneath the slot cannot
+        // double-apply the fade.
+        let fill_rule = color_alpha(light.input, input_fill_alpha(false, true, Style::Nova));
+        let stroke = resolve_input_colors(&light, false, false, false, Style::Nova)
+            .stroke
+            .color;
+        assert_eq!(
+            disabled_group_fade(stroke, fill_rule, light.background).a(),
+            255
+        );
+    }
+
+    #[test]
+    fn disabled_border_shape_carries_group_fade_precomposite() {
+        // INP-VIS-01 regression pin (shape-level): a disabled input's
+        // emitted border stroke must carry the group-fade precomposite
+        // colour, in all 4 configs — not the halved-alpha stroke the old
+        // path painted. Resolver unit tests alone cannot catch a paint
+        // wiring regression (TXT-VIS-01 lesson), so this inspects the
+        // emitted shapes.
+        use egui::epaint::Shape;
+        fn flatten(shape: &Shape, acc: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(v) => v.iter().for_each(|s| flatten(s, acc)),
+                s => acc.push(s.clone()),
+            }
+        }
+        for mode in [Mode::Light, Mode::Dark] {
+            for style in [Style::Nova, Style::Vega] {
+                let preset = Preset::default().with_style(style);
+                let ctx = egui::Context::default();
+                preset.build(mode).install(&ctx);
+                let p = preset.build(mode).palette;
+                let mut text = String::new();
+                let mut rect = Rect::NOTHING;
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                    let mut ui = test_ui(ctx, "input_border_pin", 400.0);
+                    rect = Input::new(&mut text)
+                        .id_salt("border-pin")
+                        .disabled(true)
+                        .show(&mut ui)
+                        .rect;
+                });
+                let mut shapes: Vec<Shape> = Vec::new();
+                for clipped in &out.shapes {
+                    flatten(&clipped.shape, &mut shapes);
+                }
+                out.textures_delta.clear();
+                // The border: the 1px stroke on exactly the widget rect.
+                // (The frame fill rect has no stroke; shadow rects sit on
+                // expanded rects; no ring paints on a disabled input.)
+                let border = shapes.iter().find_map(|s| match s {
+                    Shape::Rect(r) if r.rect == rect && r.stroke.width == 1.0 => {
+                        Some(r.stroke.color)
+                    }
+                    _ => None,
+                });
+                let border = border.expect("disabled border stroke present");
+                let fill_rule = color_alpha(p.input, input_fill_alpha(mode.is_dark(), true, style));
+                let stroke = resolve_input_colors(&p, mode.is_dark(), false, false, style)
+                    .stroke
+                    .color;
+                assert_eq!(
+                    border,
+                    disabled_group_fade(stroke, fill_rule, p.background),
+                    "border stroke is the group-fade precomposite ({mode:?}/{style:?})"
+                );
+            }
+        }
     }
 
     #[test]
