@@ -60,8 +60,8 @@ use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
 use egui::{
-    Color32, CornerRadius, CursorIcon, EventFilter, FontId, Frame, Margin, Response, Stroke,
-    TextEdit, Ui, Vec2,
+    Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Frame, Key, Margin, Response,
+    Stroke, TextEdit, Ui, Vec2,
 };
 
 /// `min-h-16` — the smallest textarea height (64px, spec §3.1).
@@ -482,8 +482,85 @@ impl<'a> Textarea<'a> {
             ui.spacing_mut().extra_text_line_spacing = extra;
             edit.show(ui)
         });
-        let response = out.inner.response.response;
+        let output = out.inner;
+        let response = output.response.response;
         let rect = response.rect;
+
+        // TXT-INT-03: PageUp/PageDown paging (spec §7). egui 0.37 has NO
+        // framework handling for these keys in `TextEdit` (only the key
+        // definitions exist), so a focused textarea must move the caret
+        // itself. After `TextEdit::show` the events are still visible in
+        // `ui.input` (the builder only filters a copy), and the moved
+        // caret is written back through the documented `TextEditState`
+        // load-modify-store pattern, under `response.id` — the widget id
+        // `show()` computed, NOT the local `id` salt (the two differ).
+        //
+        // One page = the fully visible text rows in the current box (the
+        // box is content-sized, so every row is always visible and there
+        // is no scroll offset: the spec's "scrolls" leg is vacuous). The
+        // inset is `content_margin`'s vertical margin (8px `py-2` + 1px
+        // border); on the §3.2 ladder this yields 64px→2, 78px→3,
+        // 98px→4, 118px→5 rows. Row moves reuse the galley's own
+        // `cursor_up/down_one_row`, threading `h_pos` exactly as the
+        // arrow-key path does, and clamp idempotently at the document
+        // edges. Shift extends the selection (the anchor stays put); any
+        // ctrl/alt/command modifier disables paging. The events are left
+        // in the input list: nothing else consumes them, matching the
+        // arrow-key treatment.
+        if !self.disabled && response.has_focus() {
+            let moves: Vec<(bool, bool)> = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|event| {
+                        if let Event::Key {
+                            key,
+                            pressed,
+                            modifiers,
+                            ..
+                        } = event
+                        {
+                            let paging = matches!(key, Key::PageDown | Key::PageUp);
+                            let plain = !modifiers.ctrl
+                                && !modifiers.alt
+                                && !modifiers.command
+                                && !modifiers.mac_cmd;
+                            if *pressed && paging && plain {
+                                return Some((matches!(key, Key::PageDown), modifiers.shift));
+                            }
+                        }
+                        None
+                    })
+                    .collect()
+            });
+            if !moves.is_empty() {
+                let galley = output.galley;
+                let mut state = output.state;
+                let inset = content_margin(style).top as f32;
+                let page_rows = ((rect.height() - 2.0 * inset) / ROW_HEIGHT)
+                    .floor()
+                    .max(1.0) as usize;
+                if let Some(mut range) = state.cursor.range(&galley) {
+                    for (down, shift) in moves {
+                        let mut cursor = range.primary;
+                        let mut h_pos = range.h_pos;
+                        for _ in 0..page_rows {
+                            (cursor, h_pos) = if down {
+                                galley.cursor_down_one_row(&cursor, h_pos)
+                            } else {
+                                galley.cursor_up_one_row(&cursor, h_pos)
+                            };
+                        }
+                        range.primary = cursor;
+                        range.h_pos = h_pos;
+                        if !shift {
+                            range.secondary = cursor;
+                        }
+                    }
+                    state.cursor.set_char_range(Some(range));
+                    state.store(&ctx, response.id);
+                }
+            }
+        }
 
         // `disabled:cursor-not-allowed` (spec §4; D7 implementation note).
         if self.disabled && response.hovered() {
@@ -1401,6 +1478,199 @@ mod tests {
                 ctx.memory(|m| m.focused()),
                 Some(id),
                 "focus left the textarea after Tab {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn page_up_down_move_caret_by_page_txt_int_03() {
+        // TXT-INT-03 regression pin: spec §7 requires PageUp/PageDown to
+        // move the caret by one viewport page (the "scrolls" leg is
+        // vacuous for the content-sized box, where every row is always
+        // visible). egui 0.37 has NO PageUp/PageDown handling in
+        // `TextEdit`, so the component moves the cursor itself. The pin
+        // drives real frames through `show()` with real key events and
+        // proves movement BEHAVIOURALLY (a typed character lands at the
+        // moved caret), mirroring the S6 repro: Ctrl+Home, PageDown,
+        // type `M` (must land on a later line), PageUp, type `N` (must
+        // land back at the start). It FAILS on the stock TextEdit (no
+        // movement) and passes with the fix. Shift+PageDown must extend
+        // the selection; paging at the document edges must clamp
+        // without error; paging itself must never change the text.
+        use egui::widgets::text_edit::TextEditState;
+
+        fn frame(
+            ctx: &egui::Context,
+            input: egui::RawInput,
+            text: &mut String,
+        ) -> (egui::Id, bool) {
+            // One frame: show the textarea. Returns the widget id +
+            // whether it holds focus during this frame.
+            let mut id = egui::Id::unique("textarea_page_pin_unset");
+            let mut focused = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("textarea_page_pin"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let response = Textarea::new(text).id_salt("page-pin").show(ui);
+                id = response.id;
+                focused = response.has_focus();
+            });
+            out.textures_delta.clear();
+            (id, focused)
+        }
+
+        fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::RawInput {
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn text_event(s: &str) -> egui::RawInput {
+            egui::RawInput {
+                events: vec![egui::Event::Text(s.to_owned())],
+                ..Default::default()
+            }
+        }
+
+        fn cursor_index(ctx: &egui::Context, id: egui::Id) -> usize {
+            TextEditState::load(ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .map(|r| r.primary.index.0)
+                .expect("stored cursor range present")
+        }
+
+        fn selection(ctx: &egui::Context, id: egui::Id) -> (usize, usize) {
+            let range = TextEditState::load(ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .expect("stored cursor range present");
+            let [a, b] = range.sorted_cursors();
+            (a.index.0, b.index.0)
+        }
+
+        for style in [Style::Vega, Style::Nova] {
+            let preset = Preset {
+                style,
+                ..Preset::default()
+            };
+            let ctx = egui::Context::default();
+            preset.build(Mode::Light).install(&ctx);
+            let mut text = String::from("p1\np2\np3\np4\np5");
+
+            // Frame A: unfocused. Capture the widget id.
+            let (id, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
+            assert!(!focused, "unfocused at rest {style:?}");
+
+            // Focus the widget.
+            ctx.memory_mut(|m| m.request_focus(id));
+            let (_, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
+            assert!(focused, "focused after request {style:?}");
+
+            // Ctrl+Home: caret to the start.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::Home, true, egui::Modifiers::CTRL),
+                &mut text,
+            );
+            assert_eq!(cursor_index(&ctx, id), 0, "Ctrl+Home to start {style:?}");
+
+            // PageDown: one page = the 5 visible rows in the 118px box.
+            // The box is content-sized, so the viewport IS the whole
+            // document: 5 row-moves from row 0 reach the last row and
+            // the galley's edge clamp lands at the document end (14).
+            // The defect file's acceptance criterion is observed
+            // movement, not a specific distance.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::PageDown, true, egui::Modifiers::NONE),
+                &mut text,
+            );
+            assert_eq!(cursor_index(&ctx, id), 14, "PageDown one page {style:?}");
+            assert_eq!(
+                text, "p1\np2\np3\np4\np5",
+                "paging changes no text {style:?}"
+            );
+
+            // Typing lands at the moved caret: `M` at the end, on the
+            // last line.
+            let _ = frame(&ctx, text_event("M"), &mut text);
+            assert_eq!(
+                text, "p1\np2\np3\np4\np5M",
+                "M lands at the end of the last line {style:?}"
+            );
+
+            // PageUp: back to the start.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::PageUp, true, egui::Modifiers::NONE),
+                &mut text,
+            );
+            assert_eq!(cursor_index(&ctx, id), 0, "PageUp back to start {style:?}");
+
+            // Typing lands at the start: `N` before `p1`.
+            let _ = frame(&ctx, text_event("N"), &mut text);
+            assert_eq!(
+                text, "Np1\np2\np3\np4\np5M",
+                "N lands at the start {style:?}"
+            );
+
+            // PageUp at the top clamps: no movement, no text change.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::PageUp, true, egui::Modifiers::NONE),
+                &mut text,
+            );
+            assert_eq!(cursor_index(&ctx, id), 0, "PageUp clamps at top {style:?}");
+            assert_eq!(
+                text, "Np1\np2\np3\np4\np5M",
+                "clamped paging changes no text {style:?}"
+            );
+
+            // Ctrl+End, then PageDown at the bottom clamps.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::End, true, egui::Modifiers::CTRL),
+                &mut text,
+            );
+            assert_eq!(cursor_index(&ctx, id), 16, "Ctrl+End to end {style:?}");
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::PageDown, true, egui::Modifiers::NONE),
+                &mut text,
+            );
+            assert_eq!(
+                cursor_index(&ctx, id),
+                16,
+                "PageDown clamps at end {style:?}"
+            );
+
+            // Shift+PageDown extends the selection from the start to
+            // the document end (mirrors Shift+ArrowDown selection
+            // semantics): sorted range 0..16 in the 16-char text.
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::Home, true, egui::Modifiers::CTRL),
+                &mut text,
+            );
+            let _ = frame(
+                &ctx,
+                key_event(egui::Key::PageDown, true, egui::Modifiers::SHIFT),
+                &mut text,
+            );
+            assert_eq!(
+                selection(&ctx, id),
+                (0, 16),
+                "Shift+PageDown selects one page {style:?}"
             );
         }
     }
