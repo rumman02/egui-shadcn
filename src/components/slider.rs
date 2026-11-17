@@ -103,7 +103,7 @@
 //! ```
 
 use crate::components::button::GroupOrientation;
-use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
 use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
@@ -229,6 +229,26 @@ impl SliderColors {
             ring: color_alpha(self.ring, alpha),
         }
     }
+}
+
+/// Opaque group-fade composite for a disabled slot that paints OVER
+/// another faded layer (spec §4.4, N8; SLD-VIS-02).
+///
+/// CSS `opacity-50` composites the whole subtree first and fades it once.
+/// Painting the faded slot colour translucently over the already-faded
+/// Track lets the Track contribute twice (the N8 double fade): the dark
+/// disabled Range read 127 instead of 120, and the thumb fill let the
+/// Track show through as a ~46-level band. Compositing the already-faded
+/// slot colour opaquely against the panel background yields the
+/// composite-then-fade result (within a rounding level), because the slot
+/// is opaque in the enabled render: `blend(backdrop, faded_slot)`.
+///
+/// The backdrop is the panel background (`Palette::background`): exact
+/// wherever the slider paints over the panel, approximate over any other
+/// surface — the same limitation the checkbox/radio-group/input group-fade
+/// fixes carry (recorded for the wave pack).
+fn disabled_group_fade(faded_slot: Color32, backdrop: Color32) -> Color32 {
+    blend(backdrop, faded_slot)
 }
 
 /// Mirrors the base recipe: track `bg-muted`, range `bg-primary`, thumb
@@ -645,7 +665,20 @@ impl<'a> Slider<'a> {
             transition_spec,
         );
         let alpha = if self.disabled { 0.5 } else { 1.0 };
-        let c = resolved.faded(alpha);
+        let mut c = resolved.faded(alpha);
+        if self.disabled {
+            // SLD-VIS-02: the Range and the thumb fill paint OVER the
+            // faded Track, so they must be composited opaquely against
+            // the panel background — translucent paint lets the Track
+            // show through (double fade). The Track itself stays
+            // translucent: it paints directly over the panel, so its
+            // faded value is already the group composite (250/24, exact).
+            // The 1px border stays translucent: it paints over the fill,
+            // whose value is now uniform, so the border ink is uniform
+            // too (and unchanged where it was already correct).
+            c.range = disabled_group_fade(c.range, p.background);
+            c.thumb_fill = disabled_group_fade(c.thumb_fill, p.background);
+        }
 
         let vertical = self.orientation == GroupOrientation::Vertical;
         let thumb = thumb_size(style);
@@ -1028,6 +1061,50 @@ mod tests {
             resolve_slider_colors(&p, Style::Vega).faded(1.0).thumb_fill,
             Color32::WHITE
         );
+    }
+
+    #[test]
+    fn disabled_overpainted_slots_composite_opaquely_sld_vis_02() {
+        // SLD-VIS-02: the Range and the thumb fill paint OVER the faded
+        // Track, so their disabled colours must be the OPAQUE group-fade
+        // composites against the panel background — translucent paint
+        // lets the Track show through (dark Range 127 vs 120, fill band
+        // ~46 levels). The rendered-band evidence is in the S9 report;
+        // this pins the composite values.
+        for mode in [crate::theme::Mode::Light, crate::theme::Mode::Dark] {
+            let p = palette(mode);
+            let bg = p.background;
+            for slot in [p.primary, Color32::WHITE] {
+                let faded = color_alpha(slot, 0.5);
+                let composite = disabled_group_fade(faded, bg);
+                // Opaque: the discriminating property vs the old
+                // translucent paint (alpha 128).
+                assert_eq!(composite.a(), 255);
+                assert_ne!(composite, faded);
+                // Within a rounding level of the direct 50/50 mix.
+                let mix = |s: u8, b: u8| (0.5 * s as f32 + 0.5 * b as f32 + 0.5) as u8;
+                for (got, want) in [
+                    (composite.r(), mix(slot.r(), bg.r())),
+                    (composite.g(), mix(slot.g(), bg.g())),
+                    (composite.b(), mix(slot.b(), bg.b())),
+                ] {
+                    assert!((got as i16 - want as i16).abs() <= 1, "{got} vs {want}");
+                }
+            }
+        }
+        // Exact S5 group-fade composites for the default preset (the
+        // values S5/S10 judge in captures): Range 139 light / 120 dark,
+        // thumb fill 255 light / 133 dark.
+        let light = palette(crate::theme::Mode::Light);
+        let dark = palette(crate::theme::Mode::Dark);
+        let lr = disabled_group_fade(color_alpha(light.primary, 0.5), light.background);
+        assert_eq!((lr.r(), lr.g(), lr.b()), (139, 139, 139));
+        let dr = disabled_group_fade(color_alpha(dark.primary, 0.5), dark.background);
+        assert_eq!((dr.r(), dr.g(), dr.b()), (120, 120, 120));
+        let lf = disabled_group_fade(color_alpha(Color32::WHITE, 0.5), light.background);
+        assert_eq!((lf.r(), lf.g(), lf.b()), (255, 255, 255));
+        let df = disabled_group_fade(color_alpha(Color32::WHITE, 0.5), dark.background);
+        assert_eq!((df.r(), df.g(), df.b()), (133, 133, 133));
     }
 
     #[test]
