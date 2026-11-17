@@ -79,10 +79,11 @@
 //!     .show(ui);
 //! ```
 
+use crate::components::attachment::mix;
 use crate::components::button::GroupOrientation;
 use crate::components::label::{label_font, Label};
 use crate::theme::tokens::type_scale;
-use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
 use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
 use crate::utils::focus::paint_ring;
 use crate::utils::shadow::{
@@ -354,12 +355,42 @@ fn paint_radio_shadow(
     }
 }
 
+/// Whole-element group fade for one interior slot under
+/// `disabled:opacity-50` (spec §4.3; RAD-VIS-01): the slot paints OPAQUE
+/// with `0.5 * (slot over fill over backdrop) + 0.5 * backdrop`, where
+/// `fill` is the resolved (un-faded) fill and `backdrop` is
+/// `p.background`. Follows the CHK-VIS-01 (`disabled_group_fade` in
+/// `checkbox.rs`) / INP-VIS-01 shape.
+///
+/// Per-slot alpha halving double-fades the overlap pixels: a halved dot
+/// over a halved fill read (194) nova-light where group fade requires
+/// 252, and a halved border over a halved fill read (88) where group
+/// fade requires 139 (RAD-VIS-01). The fill itself keeps halving — it
+/// paints over the backdrop alone, where halving IS the group fade —
+/// and the ring keeps halving for the same reason (its band sits
+/// outside the rect, over the backdrop alone; S5 confirmed the disabled
+/// rings already match group fade exactly). The precomposite is exact
+/// at every coverage: coverage `c` over the faded fill yields the group
+/// fade of the enabled pixel at that coverage. The backdrop
+/// approximation (exact on the gallery page, where the panel fill is
+/// `p.background`) is the same recorded limitation as the
+/// checkbox/toggle/input precedents: on another backdrop the overlap
+/// pixels fade toward the theme background instead of the local fill.
+fn disabled_group_fade(slot: Color32, fill: Color32, backdrop: Color32) -> Color32 {
+    mix(backdrop, blend(blend(backdrop, fill), slot), 0.5)
+}
+
 /// Paints one radio item on the given rect (shared by group and standalone).
 ///
 /// `ring_color` is the animated ring color from [`animate_ring`]
 /// (transparent when the ring is hidden); every other slot paints its
 /// resolved color directly — border, fill, and dot SNAP per the narrow
 /// §6 ruling and never animate.
+///
+/// `backdrop` is the theme page background (`p.background`): when
+/// disabled, the border and dot pre-composite the whole-element group
+/// fade against it (see [`disabled_group_fade`]).
+#[allow(clippy::too_many_arguments)] // one paint call; params are the resolved slots + context.
 pub(crate) fn paint_radio(
     ui: &Ui,
     rect: Rect,
@@ -368,6 +399,7 @@ pub(crate) fn paint_radio(
     disabled: bool,
     dark: bool,
     style: Style,
+    backdrop: Color32,
 ) {
     if !ui.is_rect_visible(rect) {
         return;
@@ -380,16 +412,21 @@ pub(crate) fn paint_radio(
         paint_radio_shadow(painter, rect, corner, style, dark, disabled);
     }
 
-    // `disabled:opacity-50`: one composition point — every painted slot
-    // halves, so no slot double-fades.
+    // `disabled:opacity-50` (spec §4.3, CSS `opacity` semantics): the
+    // WHOLE element composites at 50% over the backdrop. The fill fades
+    // by halving its alpha (it paints over the backdrop alone, where
+    // halving IS the group fade), while the border and dot — which paint
+    // OVER the fill — pre-composite OPAQUE via `disabled_group_fade`:
+    // halving each slot double-fades the overlap pixels (RAD-VIS-01).
+    // The ring keeps halving: it paints over the backdrop alone.
     let mut fill = colors.fill;
     let mut stroke = colors.stroke;
     let mut dot = colors.dot;
     let mut ring = ring_color;
     if disabled {
         fill = color_alpha(fill, 0.5);
-        stroke.color = color_alpha(stroke.color, 0.5);
-        dot = color_alpha(dot, 0.5);
+        stroke.color = disabled_group_fade(colors.stroke.color, colors.fill, backdrop);
+        dot = disabled_group_fade(colors.dot, colors.fill, backdrop);
         ring = color_alpha(ring, 0.5);
     }
 
@@ -538,6 +575,7 @@ impl<'a> RadioGroupItem<'a> {
             self.disabled,
             theme.mode.is_dark(),
             theme.style,
+            p.background,
         );
 
         response
@@ -778,7 +816,16 @@ fn render_items(
         // The ring animator runs every frame, even when the ring is
         // hidden (see `animate_ring`).
         let ring = animate_ring(ui.ctx(), item_id, &colors);
-        paint_radio(ui, circle_rect, &colors, ring, item_disabled, dark, style);
+        paint_radio(
+            ui,
+            circle_rect,
+            &colors,
+            ring,
+            item_disabled,
+            dark,
+            style,
+            p.background,
+        );
 
         // Clicking selects (radios never uncheck).
         if response.clicked() && !item_disabled && *selected != Some(i) {
@@ -1166,6 +1213,88 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn disabled_group_fade_rad_vis_01() {
+        // RAD-VIS-01: a disabled item composites as a GROUP at 50% over
+        // the backdrop (spec §4.3, CSS `opacity` semantics). The border
+        // and dot — which paint OVER the fill — pre-composite OPAQUE:
+        // `0.5 * (slot over fill over backdrop) + 0.5 * backdrop`.
+        // Per-slot alpha halving double-faded the overlap pixels (dot
+        // (194) / border (88) nova-light; group fade requires 252/139).
+        // Hand-computed literals below (premultiplied `mix` rounds
+        // halves away from zero, so 252.5 -> 253 and 16.5 -> 17 —
+        // within the ±1 differential tolerance the captures are judged
+        // by, as in the CHK-VIS-01 precedent). This pin supports the
+        // fix; the differential capture re-run is the closing evidence.
+        let white = Color32::WHITE;
+        let dark_bg = Color32::from_rgb(10, 10, 10);
+        // Light checked (nova): fill/stroke primary (23), dot
+        // primary-foreground (250) over white.
+        assert_eq!(
+            disabled_group_fade(
+                Color32::from_rgb(23, 23, 23),
+                Color32::from_rgb(23, 23, 23),
+                white
+            ),
+            Color32::from_rgb(139, 139, 139)
+        );
+        assert_eq!(
+            disabled_group_fade(
+                Color32::from_rgb(250, 250, 250),
+                Color32::from_rgb(23, 23, 23),
+                white
+            ),
+            Color32::from_rgb(253, 253, 253)
+        );
+        // Dark checked (nova): fill/stroke primary (229), dot
+        // primary-foreground (23) over (10).
+        assert_eq!(
+            disabled_group_fade(
+                Color32::from_rgb(229, 229, 229),
+                Color32::from_rgb(229, 229, 229),
+                dark_bg
+            ),
+            Color32::from_rgb(120, 120, 120)
+        );
+        assert_eq!(
+            disabled_group_fade(
+                Color32::from_rgb(23, 23, 23),
+                Color32::from_rgb(229, 229, 229),
+                dark_bg
+            ),
+            Color32::from_rgb(17, 17, 17)
+        );
+        // Dark checked (base shape): translucent `input/30` fill under
+        // an opaque dot (229) — the fill composite feeds the slot, so
+        // the dot still lands on the group fade of the opaque dot.
+        let fill_30 = color_alpha(Color32::WHITE, 0.3);
+        assert_eq!(
+            disabled_group_fade(Color32::from_rgb(229, 229, 229), fill_30, dark_bg),
+            Color32::from_rgb(120, 120, 120)
+        );
+        // Dark invalid+checked (base shape): opaque destructive stroke
+        // over the translucent fill — full-coverage group fade. (The
+        // S5 sampled pixel sat at AA coverage 0.95, so its differential
+        // expectation (126, 53, 54) is the coverage-weighted value,
+        // which this opaque precomposite reproduces exactly at that
+        // coverage.)
+        assert_eq!(
+            disabled_group_fade(Color32::from_rgb(255, 100, 103), fill_30, dark_bg),
+            Color32::from_rgb(133, 55, 57)
+        );
+        // Light unchecked: transparent fill — the stroke lands on the
+        // group fade of the stroke over the backdrop alone (242), the
+        // value S5 confirmed already matched.
+        assert_eq!(
+            disabled_group_fade(
+                Color32::from_rgb(229, 229, 229),
+                Color32::TRANSPARENT,
+                white
+            ),
+            Color32::from_rgb(242, 242, 242)
+        );
     }
 
     #[test]
