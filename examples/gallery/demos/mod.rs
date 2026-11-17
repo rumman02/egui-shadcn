@@ -3609,59 +3609,421 @@ pub fn input_otp_demo(ui: &mut egui::Ui) {
 }
 
 pub fn native_select_demo(ui: &mut egui::Ui) {
+    // `SelectOptGroup` is pub in the component module but NOT re-exported in
+    // `components/mod.rs` (S1 flag F1 — the re-export is a merge-time
+    // one-liner). Import the full path here; do not add the re-export.
+    use egui_shadcn_ui::components::native_select::SelectOptGroup;
+
+    // Every section prints the rect the trigger actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // Header: recipe position, stated honestly (spec §§0, 2.3, 3, 4, 6, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Native select — native <select> port. Active recipe: {recipe} (style: {}, mode: {mode}). Heights 36/32px base, 32/28px nova (default/sm); radii 8px base, 10/8px nova.",
+        theme.style.name()
+    ));
+    ui.label("Frozen: N5 nova-dark invalid border destructive/50; invalid rest ring 3px under nova ONLY (base: focus-gated); disabled = whole-wrapper group fade (ruling 7); shadow-xs under ALL styles incl. nova (LAYER); no-selection = D4 placeholder convention (ruling 4, port invention); single-select only (OPEN-8). PROVISIONAL: OPEN-2 invalid+focus precedence (invalid-wins as built — S8 decides; S5 records the combined cell findings-only). Popup = port design D1 per the 12 decided values (ruling 9): popover fill, 36px rows, accent hover/selected, shadow-md, max 8 visible rows + scroll, trigger width, radius md + 4px margins, 1px border stroke. Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-3); property sets per ruling 6 (base: text+ring animate, border/fill snap; nova: colours animate, ring snaps).");
+
+    // Index layout: 0-10 §1 trigger states, 11-14 §2 optgroups, 15-16 §3
+    // long lists, 17 §4 empty state, 18-19 §5 disabled rows, 20 §6 keyboard
+    // target, 21 §7 hover target, 22 §8 long label (clip). One select per
+    // line: no `ui.horizontal` rows, so no 36px interact-size row artifact
+    // pollutes the rects.
     let store = egui::Id::unique("native_select_demo_values");
-    let mut values: [Option<usize>; 3] = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(store).unwrap_or([None, Some(0), Some(1)]));
-
-    ui.label("Default");
-    ui.add_space(4.0);
-    NativeSelect::new(&mut values[0])
-        .id_salt("ns_demo_1")
-        .options(["Light", "Dark", "System"])
-        .placeholder("Pick a theme")
-        .show(ui);
-    ui.small(format!("selected: {:?}", values[0]));
-
-    ui.add_space(12.0);
-    ui.label("Small with a selection");
-    ui.add_space(4.0);
-    NativeSelect::new(&mut values[2])
-        .id_salt("ns_demo_2")
-        .size(NativeSelectSize::Sm)
-        .width(240.0)
-        .option("engine")
-        .option("web")
-        .option("native")
-        .show(ui);
-
-    ui.add_space(12.0);
-    ui.label("Disabled and invalid");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        NativeSelect::new(&mut values[1])
-            .id_salt("ns_demo_disabled")
-            .disabled(true)
-            .options(["Light", "Dark"])
-            .show(ui);
-        NativeSelect::new(&mut values[1])
-            .id_salt("ns_demo_invalid")
-            .invalid(true)
-            .options(["Light", "Dark"])
-            .show(ui);
+    let mut values: [Option<usize>; 23] = ui.ctx().data_mut(|d| {
+        d.get_temp(store).unwrap_or([
+            Some(0),
+            Some(1),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(0),
+            None,
+            Some(0),
+            Some(0),
+            None,
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(0),
+        ])
     });
 
+    // 1. Trigger states (spec §2/§3/§4): default + sm, resting, selected,
+    // placeholder, empty, disabled, invalid.
     ui.add_space(12.0);
-    ui.label("Options with one disabled");
-
+    ui.label("1. Trigger states — default + sm sizes, resting/selected/placeholder/empty/disabled/invalid (spec §2/§3/§4)");
     ui.add_space(4.0);
-    NativeSelect::new(&mut values[2])
-        .id_salt("ns_demo_disabled_opt")
-        .width(220.0)
+    let r = NativeSelect::new(&mut values[0])
+        .id_salt("s3-default")
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default selected: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[1])
+        .id_salt("s3-sm")
+        .size(NativeSelectSize::Sm)
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "sm selected: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[2])
+        .id_salt("s3-placeholder")
+        .options(["Light", "Dark", "System"])
+        .placeholder("Pick a theme")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "default no selection + placeholder (D4, muted-foreground): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[3])
+        .id_salt("s3-placeholder-sm")
+        .size(NativeSelectSize::Sm)
+        .options(["Light", "Dark", "System"])
+        .placeholder("Pick a theme")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "sm no selection + placeholder (D4): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[4])
+        .id_salt("s3-empty-trigger")
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "no selection, no placeholder — renders EMPTY, geometry unchanged (ruling 4): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[5])
+        .id_salt("s3-disabled")
+        .disabled(true)
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled + selected — text foreground @ 50% composite, N11 (group fade, ruling 7): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[6])
+        .id_salt("s3-disabled-placeholder")
+        .disabled(true)
+        .options(["Light", "Dark", "System"])
+        .placeholder("Pick a theme")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled + no selection — D4 colour composited at 50%: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[7])
+        .id_salt("s3-invalid")
+        .invalid(true)
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid — destructive border (nova dark: /50, N5); 3px rest ring under NOVA only: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[8])
+        .id_salt("s3-invalid-sm")
+        .size(NativeSelectSize::Sm)
+        .invalid(true)
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid sm: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[9])
+        .id_salt("s3-invalid-disabled")
+        .invalid(true)
+        .disabled(true)
+        .options(["Light", "Dark", "System"])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "invalid + disabled — invalid colours composited at 50%: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let resp = NativeSelect::new(&mut values[10])
+        .id_salt("s3-invalid-focus")
+        .invalid(true)
+        .options(["Light", "Dark", "System"])
+        .show(ui);
+    let focus_id = resp.id;
+    let focused = ui.ctx().memory(|m| m.has_focus(focus_id));
+    let r = resp.rect;
+    ui.label(format!(
+        "invalid + focus probe — PROVISIONAL (OPEN-2): invalid-wins as built, S8 decides, S5 findings-only; focused: {focused}; {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 2. Optgroups (N10, spec §2.5/§8/§10): grouped, mixed flat+group,
+    // empty group, only-empty-group.
+    ui.add_space(12.0);
+    ui.label("2. Optgroups — grouped select, mixed flat+group, empty group (N10; headers 36px, muted-foreground, non-interactive; ruling 9 item 7)");
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[11])
+        .id_salt("s3-optgroups")
+        .optgroups([
+            SelectOptGroup::with_options(
+                "Fruits",
+                [SelectOption::new("Apple"), SelectOption::new("Banana")],
+            ),
+            SelectOptGroup::with_options(
+                "Vegetables",
+                [SelectOption::new("Carrot"), SelectOption::new("Daikon")],
+            )
+            .disabled(true),
+        ])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "grouped: 2 groups, second group DISABLED (disables all its options): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[12])
+        .id_salt("s3-mixed")
+        .option("Ungrouped first")
+        .optgroup(SelectOptGroup::with_options(
+            "Grouped",
+            [SelectOption::new("Alpha"), SelectOption::new("Beta")],
+        ))
+        .option("Ungrouped last")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "mixed flat + group in insertion order (flat indices count options only): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[13])
+        .id_salt("s3-empty-group")
+        .optgroups([
+            SelectOptGroup::new("Empty group"),
+            SelectOptGroup::with_options(
+                "Colors",
+                [SelectOption::new("Red"), SelectOption::new("Green")],
+            ),
+        ])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "empty group renders its header with no rows, beside a populated group: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[14])
+        .id_salt("s3-only-empty-group")
+        .optgroup(SelectOptGroup::new("Nothing here"))
+        .placeholder("Only an empty group")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "ONLY an empty group: popup shows the header only, no \"No options\" row (S1 interpretation, S8 ratifies): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 3. Long lists (ruling 9 item 6): max 8 visible rows + internal scroll.
+    ui.add_space(12.0);
+    ui.label("3. Long lists — popup max-height + internal scroll (ruling 9 item 6: max 8 visible rows of 36px + 4px margins; longer lists scroll)");
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[15])
+        .id_salt("s3-long-list")
+        .options([
+            "Option 1",
+            "Option 2",
+            "Option 3",
+            "Option 4",
+            "Option 5",
+            "Option 6",
+            "Option 7",
+            "Option 8",
+            "Option 9",
+            "Option 10",
+            "Option 11",
+            "Option 12",
+        ])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "12 options — popup scrolls internally (also the PageUp/PageDown target): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[16])
+        .id_salt("s3-eight-options")
+        .options([
+            "Option 1", "Option 2", "Option 3", "Option 4", "Option 5", "Option 6", "Option 7",
+            "Option 8",
+        ])
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "exactly 8 options — the max-visible boundary, no scroll needed: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 4. Empty state (ruling 9 item 9): zero options.
+    ui.add_space(12.0);
+    ui.label("4. Empty state — zero options (ruling 9 item 9: popup opens with ONE non-interactive \"No options\" row in muted-foreground)");
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[17])
+        .id_salt("s3-zero-options")
+        .placeholder("Choose an option")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "zero-option select (160px width floor; placeholder + padding may exceed it): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 5. Disabled rows (ruling 9 item 8): per-slot halving INSIDE popup rows
+    // — NOT the trigger group fade. Plus the §10 disabled-selected case.
+    ui.add_space(12.0);
+    ui.label("5. Disabled rows — per-slot halving INSIDE popup rows (ruling 9 item 8; NOT ruling 7 group fade, which governs the trigger only)");
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[18])
+        .id_salt("s3-disabled-rows")
         .option("Push notifications")
         .option_disabled("Email digest (unavailable)")
         .option("Nothing")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "one disabled option among enabled ones: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[19])
+        .id_salt("s3-disabled-selected")
+        .option("Available")
+        .option_disabled("Unavailable (selected)")
+        .option("Other")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "disabled option HOLDING the value (spec §10: trigger renders its label per the normal foreground rule; arrows/type-ahead skip it): {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    // 6. Keyboard target (spec §7.1). Label F1 rule: the widget id comes
+    // from the control's returned `Response::id`, never a guessed scope id.
+    ui.add_space(12.0);
+    ui.label("6. Keyboard target — Tab here; arrows change the selection when closed, move the highlight when open; Enter confirms, Escape closes (spec §7.1). F4: settle 2+ frames after focusing before sending keys.");
+    ui.add_space(4.0);
+    let resp = NativeSelect::new(&mut values[20])
+        .id_salt("s3-keyboard")
+        .options(["Alpha", "Beta", "Gamma", "Delta"])
+        .placeholder("Keyboard target")
         .show(ui);
+    let focus_id = resp.id;
+    let focused = ui.ctx().memory(|m| m.has_focus(focus_id));
+    let r = resp.rect;
+    ui.label(format!(
+        "keyboard target: {:.1} x {:.1} px; focused: {focused}; selected: {:?}",
+        r.width(),
+        r.height(),
+        values[20]
+    ));
+
+    // 7. Hover target (spec §4.2): dark hover fill `input/50`; light mode
+    // has NO hover rule. Hover readout via `rect_contains_pointer` (radio
+    // S3 precedent) — the trigger response's `hovered()` is not trusted
+    // with the pointer parked.
+    ui.add_space(12.0);
+    ui.label("7. Hover target — dark: fill becomes input/50 on hover; light: NO hover change (spec §4.2)");
+    ui.add_space(4.0);
+    let resp = NativeSelect::new(&mut values[21])
+        .id_salt("s3-hover")
+        .options(["Light", "Dark", "System"])
+        .show(ui);
+    let hovered = ui.rect_contains_pointer(resp.rect);
+    let r = resp.rect;
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; hovered: {hovered}",
+        r.width(),
+        r.height()
+    ));
+
+    // 8. Long label (spec §10): trigger truncation is an S1 decision —
+    // CLIP, no ellipsis (D-NS2, S8 ratifies).
+    ui.add_space(12.0);
+    ui.label("8. Long label — explicit narrow width; trigger text CLIPS, no ellipsis (D-NS2, S1 decision, S8 ratifies)");
+    ui.add_space(4.0);
+    let r = NativeSelect::new(&mut values[22])
+        .id_salt("s3-long-label")
+        .width(160.0)
+        .option("A very long option label that exceeds the trigger width")
+        .option("Short")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "long label, 160px width: {:.1} x {:.1} px",
+        r.width(),
+        r.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("S5/S6/S7 handoff: F4 — settle 2+ frames after focusing the trigger (click or Tab) before sending Escape/arrows, or keys misbehave for focus-lock reasons (egui 0.37). Popup targets: 36px rows, max 8 visible + internal scroll (§3), trigger width, radius md + 4px margins, shadow-md, accent hover/selected/highlight, muted-foreground headers + \"No options\" row. Tab calibration is NOT measured here — S6 establishes the stop inventory via the §6 focused: readout. OPEN-1 keyboard details stay OPEN; the combined invalid+focus cell (§1) is findings-only (OPEN-2 provisional). Disabled triggers never open a popup.");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
