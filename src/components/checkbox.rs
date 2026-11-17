@@ -83,10 +83,12 @@
 //! while held (the native `<button>` rule — Radix adds no Space
 //! handler). egui fires Space on keydown, so this build intervenes
 //! (see `space_keyup_fire`, the button BTN-INT-04 shape) to toggle on
-//! keyup. The remaining settled rows (Enter must not toggle, click
-//! focuses, label composition) are implemented by the S9 fixes for
-//! CHK-INT-01/03/04; until those land, this build's behaviour on those
-//! rows is egui-natural, not spec truth. Label-click composition
+//! keyup. Enter never toggles: the build suppresses Enter keydown
+//! events before `interact` (see `suppress_enter_activation`,
+//! CHK-INT-03), the Radix `preventDefault()` equivalent. The remaining
+//! settled rows (click focuses, label composition) are implemented by
+//! the S9 fixes for CHK-INT-01/04; until those land, this build's
+//! behaviour on those rows is egui-natural, not spec truth. Label-click composition
 //! (spec §7.3): the label side is settled — a label click fires a click
 //! on the control AND focuses it. The checkbox needs no forwarding code
 //! of its own: the label requests focus on the checkbox's returned
@@ -373,8 +375,8 @@ fn paint_checkbox_shadow(
 ///
 /// Only the event list `interact` reads is touched: `keys_down` is
 /// computed in `begin_pass`, before widgets run, so `key_down(Space)` is
-/// unaffected. Enter events are never touched (Enter handling is
-/// CHK-INT-03's fix, not this one). The synthetic keydown on the keyup
+/// unaffected. Enter events are never touched here (Enter suppression
+/// is `suppress_enter_activation`, CHK-INT-03). The synthetic keydown on the keyup
 /// frame can only fake-click the focused widget, and copies the release
 /// event's physical key and modifiers. A Space released without a
 /// preceding keydown on this checkbox (focus arrived mid-hold) does not
@@ -440,6 +442,43 @@ fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
         }
     });
     ctx.data_mut(|data| data.insert_temp(armed_id, armed));
+}
+
+/// Enter suppression (spec §7, OPEN-1(b) closed by S6 Work B;
+/// CHK-INT-03; the event-list shape of `space_keyup_fire`).
+///
+/// Radix Checkbox explicitly preventDefaults Enter: "According to WAI
+/// ARIA, Checkboxes don't activate on enter keypress" — Enter must
+/// NEVER toggle, on any edge. egui's `interact` reports a fake click
+/// whenever the focused widget sees `key_pressed(Enter)` (the keydown
+/// frame, including autorepeat), so without intervention Enter toggles
+/// exactly like Space. This helper, called before `interact` while the
+/// checkbox holds focus, hides this frame's Enter keydown events
+/// (including repeats) from `interact` and synthesizes nothing: Enter
+/// is a complete no-op for the focused checkbox — no toggle, no focus
+/// change.
+///
+/// Only the event list `interact` reads is touched: `keys_down` is
+/// computed in `begin_pass`, before widgets run, so `key_down(Enter)` is
+/// unaffected. The release events are left in place — nothing in
+/// `interact` acts on a key release. The gate in `show` (focused and
+/// enabled) is what keeps Enter working for every other widget: only
+/// the focused widget can fake-click via Enter, so hiding the events
+/// only while this checkbox holds focus changes no other widget's Enter
+/// handling.
+fn suppress_enter_activation(ctx: &egui::Context) {
+    ctx.input_mut(|input| {
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+    });
 }
 
 /// A shadcn checkbox. See the [module docs](self) for an example.
@@ -528,11 +567,14 @@ impl<'a> Checkbox<'a> {
         // Space toggles on keyup, not keydown (spec §7, OPEN-1(a)
         // closed by S6 Work B; CHK-INT-02): hide this frame's Space
         // keydown from `interact` and re-create it on the keyup frame.
-        // Only while focused and enabled — an unfocused checkbox must
-        // not consume another widget's Space, and a disabled checkbox
-        // never activates.
+        // Enter never toggles (spec §7, OPEN-1(b) closed by S6 Work B;
+        // CHK-INT-03): hide this frame's Enter keydown from `interact`
+        // and synthesize nothing. Only while focused and enabled — an
+        // unfocused checkbox must not consume another widget's keys,
+        // and a disabled checkbox never activates.
         if !self.disabled && ui.ctx().memory(|m| m.has_focus(id)) {
             space_keyup_fire(ui.ctx(), id);
+            suppress_enter_activation(ui.ctx());
         }
         let mut response = ui.interact(rect, id, sense);
 
@@ -542,11 +584,12 @@ impl<'a> Checkbox<'a> {
             response = response.on_hover_cursor(CursorIcon::NotAllowed);
         }
 
-        // Activation (spec §7, OPEN-1(a) closed by S6 Work B): Space
-        // toggles on keyup (see `space_keyup_fire`), pointer clicks
-        // arrive here as `clicked()`, including the synthetic Space
-        // pair a bound label forwards (spec §7.3). Enter handling is
-        // CHK-INT-03's fix, not this one.
+        // Activation (spec §7, OPEN-1(a)–(b) closed by S6 Work B):
+        // Space toggles on keyup (see `space_keyup_fire`), pointer
+        // clicks arrive here as `clicked()`, including the synthetic
+        // Space pair a bound label forwards (spec §7.3). Enter never
+        // reaches here: it is suppressed before `interact` (see
+        // `suppress_enter_activation`, CHK-INT-03).
         let clicked = response.clicked() && !self.disabled;
         if clicked {
             *self.checked = !*self.checked;
@@ -1049,6 +1092,83 @@ mod tests {
         };
         assert!(!disabled_frame(key_event(egui::Key::Space, true, false)));
         assert!(!disabled_frame(key_event(egui::Key::Space, false, false)));
+    }
+
+    #[test]
+    fn enter_never_toggles() {
+        // CHK-INT-03: Radix Checkbox preventDefaults Enter (spec §7,
+        // OPEN-1(b) closed by S6 Work B; WAI-ARIA: checkboxes don't
+        // activate on Enter) — Enter never toggles, on any edge.
+        // Mirrors the Space pin above, plus the Space path kept working.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let key_event = |key: egui::Key, pressed: bool, repeat: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut checked = false;
+
+        // Frame 1: render, record id; then give the checkbox focus.
+        let mut id = egui::Id::NULL;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            id = Checkbox::new(&mut checked).id_salt("enter").show(ui).id;
+        });
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        let mut frame = |ctx: &egui::Context, input: egui::RawInput| {
+            run_pass(ctx, input, |ui| {
+                let _ = Checkbox::new(&mut checked).id_salt("enter").show(ui);
+            });
+            checked
+        };
+
+        // Enter keydown: no toggle. Autorepeat keydown: no toggle. Hold
+        // frame with no events: no toggle. Enter keyup: no toggle. The
+        // frame after: no toggle. A second press/release cycle: no toggle.
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, true, false)));
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, true, true)));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, false, false)));
+        assert!(!frame(&ctx, egui::RawInput::default()));
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, true, false)));
+        assert!(!frame(&ctx, key_event(egui::Key::Enter, false, false)));
+        // Focus is retained after Enter (it is a no-op, not a blur).
+        assert!(ctx.memory(|m| m.has_focus(id)));
+        // Space still toggles exactly once, on keyup (CHK-INT-02
+        // unregressed by the Enter suppression).
+        assert!(!frame(&ctx, key_event(egui::Key::Space, true, false)));
+        assert!(frame(&ctx, key_event(egui::Key::Space, false, false)));
+        // The label-forwarded synthetic Space pair still activates.
+        assert!(!frame(&ctx, space_press_input()));
+
+        // A disabled checkbox never toggles from Enter, on either edge.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let _ = Checkbox::new(&mut checked)
+                .disabled(true)
+                .id_salt("enter_dis")
+                .show(ui);
+        });
+        let mut disabled_frame = |input: egui::RawInput| {
+            run_pass(&ctx, input, |ui| {
+                let _ = Checkbox::new(&mut checked)
+                    .disabled(true)
+                    .id_salt("enter_dis")
+                    .show(ui);
+            });
+            checked
+        };
+        assert!(!disabled_frame(key_event(egui::Key::Enter, true, false)));
+        assert!(!disabled_frame(key_event(egui::Key::Enter, false, false)));
     }
 
     #[test]
