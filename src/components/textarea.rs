@@ -60,7 +60,8 @@ use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
 use egui::{
-    Color32, CornerRadius, CursorIcon, FontId, Frame, Margin, Response, Stroke, TextEdit, Ui, Vec2,
+    Color32, CornerRadius, CursorIcon, EventFilter, FontId, Frame, Margin, Response, Stroke,
+    TextEdit, Ui, Vec2,
 };
 
 /// `min-h-16` — the smallest textarea height (64px, spec §3.1).
@@ -426,6 +427,22 @@ impl<'a> Textarea<'a> {
             .desired_rows(self.rows)
             .min_size(Vec2::new(width, TEXTAREA_MIN_HEIGHT))
             .char_limit(self.char_limit)
+            // TXT-INT-01: spec §7 requires Escape to be a no-op for a
+            // focused textarea. egui's `Focus::begin_pass` clears focus
+            // on unmodified Escape unless the focused widget's event
+            // filter matches the event, so claim Escape in the filter —
+            // the same shape `button.rs` uses for its focus-lock filter.
+            // The multiline defaults are restated in full (arrows
+            // captured, Tab NOT captured: Tab is focus traversal, never
+            // `\t`, spec §7). The TextEdit event loop has no Escape
+            // action, so the key becomes a true no-op: focus, caret, and
+            // text unchanged.
+            .event_filter(EventFilter {
+                tab: false,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+            })
             // Explicit frame REPLACES the default TextEdit frame (opaque
             // `text_edit_bg_color` fill + state-dependent stroke): the
             // fill is the resolved component fill, the stroke is NONE (the
@@ -1291,6 +1308,100 @@ mod tests {
             if let Some(text_idx) = shapes.iter().position(|s| matches!(s, Shape::Text(_))) {
                 assert!(fill_idx < text_idx, "fill paints under glyphs ({mode:?})");
             }
+        }
+    }
+
+    #[test]
+    fn escape_is_noop_for_focused_textarea_txt_int_01() {
+        // TXT-INT-01 regression pin: spec §7 requires Escape to be a
+        // no-op for a focused textarea — focus AND text unchanged.
+        // egui's `Focus::begin_pass` clears focus on unmodified Escape
+        // unless the focused widget's event filter matches the event,
+        // so the pin drives real frames through `show()` with a real
+        // Escape event in the RawInput: it FAILS on the stock TextEdit
+        // filter (`escape: false`) and passes with the fix. A Tab frame
+        // guards the other half of the filter: Tab must still move
+        // focus away (spec §7 traversal, never `\t`).
+        fn frame(
+            ctx: &egui::Context,
+            input: egui::RawInput,
+            text: &mut String,
+        ) -> (egui::Id, bool) {
+            // One frame: show the textarea plus a focusable button (the
+            // Tab target). Returns the textarea id + whether it holds
+            // focus during this frame.
+            let mut id = egui::Id::unique("textarea_escape_pin_unset");
+            let mut focused = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("textarea_escape_pin"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let response = Textarea::new(text).id_salt("escape-pin").show(ui);
+                id = response.id;
+                focused = response.has_focus();
+                ui.button("tab-target");
+            });
+            out.textures_delta.clear();
+            (id, focused)
+        }
+
+        fn key_event(key: egui::Key, pressed: bool) -> egui::RawInput {
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            }
+        }
+
+        for style in [Style::Vega, Style::Nova] {
+            let preset = Preset {
+                style,
+                ..Preset::default()
+            };
+            let ctx = egui::Context::default();
+            preset.build(Mode::Light).install(&ctx);
+            let mut text = String::from("hello");
+
+            // Frame A: unfocused. Capture the widget id.
+            let (id, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
+            assert!(!focused, "unfocused at rest {style:?}");
+
+            // Focus the widget; frame B installs the focus-lock filter
+            // (`set_focus_lock_filter` requires focus held last frame).
+            ctx.memory_mut(|m| m.request_focus(id));
+            let (_, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
+            assert!(focused, "focused after request {style:?}");
+
+            // Frame C: unmodified Escape press. Focus AND text unchanged.
+            let (_, focused) = frame(&ctx, key_event(egui::Key::Escape, true), &mut text);
+            assert!(focused, "Escape must not clear focus {style:?}");
+            assert_eq!(text, "hello", "Escape must not change text {style:?}");
+
+            // Frame D: the Escape release changes nothing either.
+            let (_, focused) = frame(&ctx, key_event(egui::Key::Escape, false), &mut text);
+            assert!(focused, "Escape release must not clear focus {style:?}");
+
+            // Frame E: Tab. Focus moves at end-of-pass, so the move is
+            // observed in the following frame.
+            let _ = frame(&ctx, key_event(egui::Key::Tab, true), &mut text);
+            let (_, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
+            assert!(
+                !focused,
+                "Tab must still move focus away {style:?} (filter keeps tab: false)"
+            );
+            assert_ne!(
+                ctx.memory(|m| m.focused()),
+                Some(id),
+                "focus left the textarea after Tab {style:?}"
+            );
         }
     }
 
