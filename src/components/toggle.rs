@@ -466,6 +466,16 @@ fn content_plan(has_icon: bool, icon_w: f32, text_w: f32, gap: f32) -> ContentPl
     }
 }
 
+/// Content start offset from the rect's left edge: the left padding
+/// plus half of any min-width slack, split evenly inside the content
+/// box (the rect minus the per-side padding). With asymmetric padding
+/// (N16 under nova) and an exactly-sized rect, the content starts
+/// exactly at `pad_l`; symmetric cases reduce to centring (TOG-VIS-01).
+fn content_cursor_x(rect_w: f32, pad_l: f32, pad_r: f32, total_w: f32) -> f32 {
+    let slack = (rect_w - pad_l - pad_r - total_w).max(0.0);
+    pad_l + slack * 0.5
+}
+
 /// `shadow-xs` for the outline variant, via the LAYER resolution
 /// ([`ShadowSlot::ToggleOutline`]: Xs under all styles — nova is silent,
 /// so the base value survives per Decision S-1). Paints in every state
@@ -875,8 +885,15 @@ impl<'a> Toggle<'a> {
                 );
             }
 
-            // Content: [icon] gap [text], centred — the same plan (and
-            // the same single gap value) as the width computation (N6).
+            // Content: [icon] gap [text] in the content box — the rect
+            // minus the per-side padding (N16: asymmetric under nova
+            // with the icon-inline trigger). Any min-width slack is
+            // split evenly inside the content box, so symmetric and
+            // min-width cases stay centred while the asymmetric case
+            // starts exactly at the left padding (TOG-VIS-01: centring
+            // the block in the full rect split the 2/4px reduction
+            // across both sides). Same plan (and the same single gap
+            // value) as the width computation (N6).
             let icon_size = metrics::icon_size(size, style);
             let text = self.text.as_deref().unwrap_or("");
             let text_w = text_galley.as_ref().map_or(0.0, |g| g.size().x);
@@ -887,7 +904,8 @@ impl<'a> Toggle<'a> {
                 metrics::gap(size, style),
             );
             let center = rect.center();
-            let cursor = center.x - plan.total_w * 0.5;
+            let (pad_l, pad_r) = self.padding_sides(style);
+            let cursor = rect.min.x + content_cursor_x(rect.width(), pad_l, pad_r, plan.total_w);
 
             if let Some(icon) = self.icon {
                 let icon_rect = Rect::from_center_size(
@@ -1352,6 +1370,26 @@ mod tests {
             metrics::padding_sides(ToggleSize::Sm, Style::Vega, true, true),
             (6.0, 6.0)
         );
+    }
+
+    #[test]
+    fn content_cursor_starts_at_left_padding_tog_vis_01() {
+        // TOG-VIS-01: centring the content block in the full rect
+        // painted the N16 icon-side padding as the average of the two
+        // sides (9/8 instead of 8/6). The content box starts at pad_l;
+        // min-width slack splits evenly inside it.
+        let close = |v: f32, e: f32| assert!((v - e).abs() < 0.001, "{v} != {e}");
+        // Asymmetric, exactly sized: the §3 rows (widths from the S5
+        // readouts; total_w = width - pads). The centred formula would
+        // give 9.0 / 8.0 here.
+        close(content_cursor_x(96.6, 8.0, 10.0, 78.6), 8.0);
+        close(content_cursor_x(87.6, 6.0, 10.0, 71.6), 6.0);
+        // Symmetric, exactly sized: identical to centring.
+        close(content_cursor_x(98.6, 10.0, 10.0, 78.6), 10.0);
+        // Min-width slack splits evenly: centred overall.
+        close(content_cursor_x(40.0, 10.0, 10.0, 16.0), 12.0);
+        // Over-full rect (narrow container): no negative slack.
+        close(content_cursor_x(30.0, 10.0, 10.0, 16.0), 10.0);
     }
 
     #[test]
