@@ -104,6 +104,7 @@ use crate::utils::animation::{transition_alpha, transition_color_to, Easing, Tra
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
+use egui::text::CCursorRange;
 use egui::{
     Align2, Color32, CornerRadius, FontId, Frame, Margin, Painter, Pos2, Rect, Response, Stroke,
     TextEdit, Ui, Vec2,
@@ -666,8 +667,39 @@ impl<'a> Input<'a> {
             }
             edit.show(ui)
         });
-        let response = out.inner.response.response;
+        let output = out.inner;
+        let response = output.response.response;
         let rect = response.rect;
+
+        // INP-INT-01: a triple-click whose three press/release pairs arrive
+        // in a SINGLE frame (the normal case under slow rendering: the pairs
+        // queue behind one long pass and drain together) is misread by
+        // `TextEdit`. The frame's releases carry counts 1, 2, 3, so BOTH
+        // `double_clicked()` and `triple_clicked()` are true (the
+        // `button_*_clicked` predicates are frame-global `.any()` over the
+        // release events), and `pointer_interaction` checks the double
+        // branch FIRST — the word wins and the line (all text, for a
+        // single-line input) is never selected. When the framework DID
+        // count a triple, restore the triple outcome: select all, stored
+        // back under the widget id (the documented `TextEditState`
+        // mutate-and-store pattern; `TextEdit::show` already stored its
+        // state, so this overwrite wins for the next frame). This changes
+        // nothing on a fast machine (there the triple branch already ran
+        // and the range is identical), never fires for a double (no
+        // count-3 release), and keeps the framework's `!shift` gate
+        // (shift-click extends the selection instead). It does NOT repair
+        // count demotion from frame-time gap straddling: when the pairs
+        // straddle the 300ms frame-time window the framework never counts
+        // 3, and no per-event timestamp exists to recover the physical
+        // click times — that residue is environmental (see the defect
+        // file).
+        if !self.disabled && response.triple_clicked() && !ui.input(|i| i.modifiers.shift) {
+            let mut state = output.state;
+            state
+                .cursor
+                .set_char_range(Some(CCursorRange::select_all(&output.galley)));
+            state.store(ui.ctx(), response.id);
+        }
 
         if ui.is_rect_visible(rect) {
             let focused = response.has_focus() && !self.disabled;
@@ -1279,5 +1311,133 @@ mod tests {
         });
         out.textures_delta.clear();
         assert!(!focused);
+    }
+
+    // INP-INT-01 pins: drive the REAL `Input::show` + `TextEdit` through
+    // `ctx.run_ui` with crafted pointer-event frames. The click position
+    // lands inside the first word ("Hello"); word selection is chars
+    // 0..5, select-all is 0..14. A settle pass follows every click frame:
+    // focus requested by the click lands on the next pass, and the
+    // stored selection is only kept once the widget has focus.
+    fn click_input(time: f64, pos: Pos2, pairs: usize) -> egui::RawInput {
+        let mut input = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            ..Default::default()
+        };
+        input.events.push(egui::Event::PointerMoved(pos));
+        for _ in 0..pairs {
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        input
+    }
+
+    fn settle_input(time: f64) -> egui::RawInput {
+        egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            ..Default::default()
+        }
+    }
+
+    fn run_click_sequence(
+        salt: &'static str,
+        text: &mut String,
+        pairs_per_frame: Vec<usize>,
+    ) -> Option<egui::text::CCursorRange> {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        // Pass 1: layout + stable widget id.
+        let mut out = ctx.run_ui(settle_input(1.0), |ctx| {
+            let mut ui = test_ui(ctx, salt, 400.0);
+            let r = Input::new(text).id_salt("pin").show(&mut ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        let pos = Pos2::new(rect.left() + 20.0, rect.center().y);
+        // Click frames 100ms apart in frame time (fast-machine spacing);
+        // the caller controls how the pairs distribute across frames.
+        for (i, pairs) in pairs_per_frame.into_iter().enumerate() {
+            let frame = click_input(1.1 + i as f64 * 0.1, pos, pairs);
+            let mut out = ctx.run_ui(frame, |ctx| {
+                let mut ui = test_ui(ctx, salt, 400.0);
+                let _ = Input::new(text).id_salt("pin").show(&mut ui);
+            });
+            out.textures_delta.clear();
+        }
+        // Settle pass: focus lands, the stored selection persists.
+        let mut out = ctx.run_ui(settle_input(2.0), |ctx| {
+            let mut ui = test_ui(ctx, salt, 400.0);
+            let _ = Input::new(text).id_salt("pin").show(&mut ui);
+        });
+        out.textures_delta.clear();
+        TextEdit::load_state(&ctx, id).and_then(|s| s.cursor.char_range())
+    }
+
+    #[test]
+    fn triple_click_coalesced_in_one_frame_selects_all() {
+        // INP-INT-01 (M2): all three pairs in ONE frame — the normal
+        // delivery under slow rendering. Before the fix the double
+        // branch shadowed the triple and only the word was selected.
+        let mut text = String::from("Hello, shadcn!");
+        let range = run_click_sequence("input_tclick_coalesced", &mut text, vec![3]);
+        assert_eq!(
+            range,
+            Some(CCursorRange::select_all_str("Hello, shadcn!")),
+            "coalesced triple-click selects all text"
+        );
+    }
+
+    #[test]
+    fn triple_click_split_across_fast_frames_selects_all() {
+        // Control: the framework path. Three frames with 100ms frame-time
+        // gaps (a fast machine) select all WITHOUT the override — the
+        // fix must not disturb this path.
+        let mut text = String::from("Hello, shadcn!");
+        let range = run_click_sequence("input_tclick_split", &mut text, vec![1, 1, 1]);
+        assert_eq!(
+            range,
+            Some(CCursorRange::select_all_str("Hello, shadcn!")),
+            "split triple-click with small frame-time gaps selects all text"
+        );
+    }
+
+    #[test]
+    fn double_click_in_one_frame_selects_word_only() {
+        // Control: the override must not fire for a double — no count-3
+        // release exists, so the word (and only the word) is selected.
+        let mut text = String::from("Hello, shadcn!");
+        let range = run_click_sequence("input_dclick_coalesced", &mut text, vec![2]);
+        assert_eq!(
+            range,
+            Some(CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(5)
+            )),
+            "coalesced double-click selects the word only"
+        );
+    }
+
+    #[test]
+    fn single_click_places_caret_without_selection() {
+        // Control: one pair places a caret (an empty range), no selection.
+        let mut text = String::from("Hello, shadcn!");
+        let range = run_click_sequence("input_click_single", &mut text, vec![1]);
+        let range = range.expect("a caret range is stored");
+        assert!(range.is_empty(), "single click selects nothing: {range:?}");
     }
 }
