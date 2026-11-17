@@ -110,7 +110,9 @@ use crate::utils::animation::{transition_alpha, TransitionSpec};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
-use egui::{Color32, CornerRadius, Key, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
+use egui::{
+    Color32, CornerRadius, EventFilter, Key, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
+};
 
 /// `size-4` — the (base) thumb diameter; nova renders `size-3` (12pt).
 pub const SLIDER_THUMB_SIZE: f32 = 16.0;
@@ -865,6 +867,37 @@ impl<'a> Slider<'a> {
                 if !response.has_focus() {
                     continue;
                 }
+                // Claim both arrow axes for the focused thumb
+                // (SLD-INT-04). egui 0.37 `Focus::begin_pass` sets a
+                // cardinal `focus_direction` on every unmodified arrow
+                // press whose target widget's `EventFilter` does not
+                // claim the arrow, and `Focus::end_pass` then moves
+                // focus to the spatially nearest widget in that
+                // direction — AFTER the UI pass already stepped the
+                // value. So the first arrow stepped the right thumb,
+                // the ring faded (focus moved), and later arrows acted
+                // on whatever focus landed on (misroute) or on a
+                // track/gap id with no key handling (silent drop).
+                // Home/End/PageUp/Shift+arrows never set a focus
+                // direction, which is why they kept the ring. The
+                // filter latches only after two consecutive focused
+                // frames (`Memory::set_focus_lock_filter`), so this
+                // runs every frame the thumb has focus — the stock
+                // `slider_core::keyboard_steps` pattern. Both axes are
+                // claimed for both orientations: all four arrows step
+                // in both orientations (spec §8.1, W-3). `tab` stays
+                // unclaimed (Tab navigation, W-9) and `escape` stays
+                // unclaimed (Escape clearing focus is SLD-INT-07's).
+                ui.memory_mut(|mem| {
+                    mem.set_focus_lock_filter(
+                        response.id,
+                        EventFilter {
+                            horizontal_arrows: true,
+                            vertical_arrows: true,
+                            ..Default::default()
+                        },
+                    );
+                });
                 let pressed_key = ui.input(|inp| {
                     [
                         Key::ArrowRight,
@@ -1162,6 +1195,230 @@ mod tests {
                 stroke_color,
                 Some(want.thumb_stroke.color),
                 "t={time}: stroke must snap"
+            );
+        }
+    }
+
+    #[test]
+    fn consecutive_arrows_stay_on_the_focused_thumb_sld_int_04() {
+        // SLD-INT-04 (horizontal axis): consecutive arrow presses must
+        // keep acting on the focused thumb, with NO re-acquire between
+        // presses. Mechanism (egui 0.37 `Focus::begin_pass` /
+        // `end_pass`, `memory/mod.rs`): an unmodified arrow press on a
+        // focused widget whose `EventFilter` does not claim the arrow
+        // sets a cardinal `focus_direction`, and `end_pass` then moves
+        // focus to the spatially nearest widget in that direction —
+        // AFTER the UI pass already stepped the value. So the first
+        // arrow steps the right thumb, the ring fades (focus moved),
+        // and the next arrows act on whatever focus landed on
+        // (misroute) or nowhere (drop). Home/End/PageUp/Shift+arrows
+        // never set a focus direction, which is why S6 saw them keep
+        // the ring. The fix claims both arrow axes via
+        // `set_focus_lock_filter` (the stock `slider_core::keyboard_steps`
+        // pattern), so `begin_pass` leaves focus alone. This pin drives
+        // two side-by-side sliders: the right-hand one sits inside the
+        // Right focus cone of the left-hand thumb, so an unclaimed
+        // arrow demonstrably misroutes (the S6 probe-2 shape). Focus is
+        // granted via `request_focus` (the rendered probes cover the
+        // real Tab path); two settle frames let the filter latch
+        // (`set_focus_lock_filter` requires two consecutive focused
+        // frames). RED before the fix: focus moves to the right-hand
+        // slider at the end of the first arrow pass, so the target
+        // stalls at 51 and the neighbour steps instead.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut a = 50.0f32;
+        let mut b = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, a: &mut f32, b: &mut f32, time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui_a = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int04_a"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::new(a)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int04-a")
+                        .show(ui_a);
+                    let ui_b = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int04_b"),
+                        egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                            Pos2::new(300.0, 0.0),
+                            Vec2::new(200.0, 24.0),
+                        )),
+                    );
+                    Slider::new(b)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int04-b")
+                        .show(ui_b);
+                });
+                out.textures_delta.clear();
+            };
+
+        // Frame 1: register both sliders.
+        run_frame(&ctx, &mut a, &mut b, 1.0, vec![]);
+        // Focus the left-hand thumb directly (the rendered probes cover
+        // the Tab path); the mechanism under test is identical however
+        // focus was gained. The thumb id chain mirrors `show()`: the Ui
+        // scope id, the salt, "thumb", and the usize index.
+        let thumb_a = egui::Id::unique("slider_int04_a")
+            .with("int04-a")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_a));
+        // Two settle frames: the focus-lock filter latches only after
+        // two consecutive focused frames.
+        run_frame(&ctx, &mut a, &mut b, 1.1, vec![]);
+        run_frame(&ctx, &mut a, &mut b, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_a));
+
+        // Five consecutive ArrowRight presses, NO re-acquire between them.
+        for k in 1..=5 {
+            let t = 1.2 + f64::from(k) * 0.2;
+            run_frame(
+                &ctx,
+                &mut a,
+                &mut b,
+                t,
+                vec![key_event(Key::ArrowRight, true)],
+            );
+            assert_eq!(a, 50.0 + k as f32, "press {k}: target must step");
+            assert_eq!(b, 50.0, "press {k}: neighbour must not move");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb_a),
+                "press {k}: focus must stay on the thumb"
+            );
+            run_frame(
+                &ctx,
+                &mut a,
+                &mut b,
+                t + 0.1,
+                vec![key_event(Key::ArrowRight, false)],
+            );
+        }
+
+        // Tab still moves focus away (the filter claims arrows only).
+        run_frame(&ctx, &mut a, &mut b, 2.5, vec![key_event(Key::Tab, true)]);
+        assert_ne!(ctx.memory(|m| m.focused()), Some(thumb_a));
+    }
+
+    #[test]
+    fn consecutive_vertical_arrows_stay_on_the_focused_thumb_sld_int_04() {
+        // SLD-INT-04 (vertical axis): the same mechanism as the
+        // horizontal pin, with the neighbour BELOW the target so an
+        // unclaimed ArrowDown demonstrably misroutes. Pins the
+        // `vertical_arrows` half of the filter: Up/Down step in both
+        // orientations (spec §8.1, W-3), so both axes must be claimed.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut a = 50.0f32;
+        let mut b = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, a: &mut f32, b: &mut f32, time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui_a = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int04_v_a"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::new(a)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int04-va")
+                        .show(ui_a);
+                    let ui_b = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int04_v_b"),
+                        egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                            Pos2::new(0.0, 100.0),
+                            Vec2::new(200.0, 24.0),
+                        )),
+                    );
+                    Slider::new(b)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int04-vb")
+                        .show(ui_b);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut a, &mut b, 1.0, vec![]);
+        let thumb_a = egui::Id::unique("slider_int04_v_a")
+            .with("int04-va")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_a));
+        run_frame(&ctx, &mut a, &mut b, 1.1, vec![]);
+        run_frame(&ctx, &mut a, &mut b, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_a));
+
+        // Five consecutive ArrowDown presses, NO re-acquire between them.
+        for k in 1..=5 {
+            let t = 1.2 + f64::from(k) * 0.2;
+            run_frame(
+                &ctx,
+                &mut a,
+                &mut b,
+                t,
+                vec![key_event(Key::ArrowDown, true)],
+            );
+            assert_eq!(a, 50.0 - k as f32, "press {k}: target must step");
+            assert_eq!(b, 50.0, "press {k}: neighbour must not move");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb_a),
+                "press {k}: focus must stay on the thumb"
+            );
+            run_frame(
+                &ctx,
+                &mut a,
+                &mut b,
+                t + 0.1,
+                vec![key_event(Key::ArrowDown, false)],
             );
         }
     }
