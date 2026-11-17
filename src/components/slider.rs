@@ -84,7 +84,10 @@
 //! move 10 × step (W-2, one named place); thumbs clamp to their neighbours
 //! without pushing or swapping (W-5); track presses move the nearest thumb
 //! and begin a drag (W-6a/W-6b); every thumb is a Tab stop in value order
-//! (W-9). Default step is 1% of the range (W-1, OPEN-1, one named constant).
+//! (W-9). Pointerdown on a thumb focuses it, and every user-driven value
+//! change re-focuses the changed thumb (Radix focus model, SLD-INT-03),
+//! so arrow keys act on the thumb just clicked or dragged. Default step
+//! is 1% of the range (W-1, OPEN-1, one named constant).
 //! S6 Work B confirms or corrects each assumption from Radix source.
 //!
 //! # Platform limits (spec §11, proposed deviations)
@@ -777,6 +780,23 @@ impl<'a> Slider<'a> {
             };
             let response = ui.interact(hit_rect, id.with("thumb").with(i), sense);
             if response.dragged() {
+                // SLD-INT-03: pointerdown focuses the thumb (Radix
+                // focus model: pointerdown focuses the thumb, and every
+                // user-driven value change re-focuses the changed
+                // thumb). egui 0.37's `interact` never grants focus on
+                // a pointer press — it only surrenders focus when the
+                // pointer presses elsewhere — so the widget must
+                // request focus itself. The clicked-block shape used
+                // by button/checkbox/toggle cannot work here: the
+                // thumb uses `Sense::drag()`, which never reports
+                // `clicked()`. For a drag-only widget `dragged()` is
+                // true on the press frame itself (`interaction.rs`:
+                // "just sensitive to drags, so we can mark it as
+                // dragged right away"), so gating on `dragged()`
+                // covers pointerdown AND every drag frame. Disabled
+                // thumbs use `Sense::hover()`, which never reports a
+                // drag, so no focus request can fire for them.
+                response.request_focus();
                 self.set_value_from_fraction(i, pointer_fraction(ui), &mut changed);
             }
             thumb_responses.push(response);
@@ -792,6 +812,10 @@ impl<'a> Slider<'a> {
             let nearest = nearest_thumb_index(&fractions, fraction);
             ui.ctx()
                 .data_mut(|d| d.insert_temp(active_thumb_id, nearest));
+            // SLD-INT-03: a track press grabs the nearest thumb — focus
+            // it (Radix re-focus rule: the value change re-focuses the
+            // changed thumb).
+            thumb_responses[nearest].request_focus();
             self.set_value_from_fraction(nearest, fraction, &mut changed);
         } else if !self.disabled && track_response.dragged() {
             let fraction = pointer_fraction(ui);
@@ -799,9 +823,29 @@ impl<'a> Slider<'a> {
             let nearest = active
                 .filter(|index| *index < n)
                 .unwrap_or_else(|| nearest_thumb_index(&fractions, fraction));
+            // SLD-INT-03: re-focus the active thumb on every value
+            // change during a track drag (Radix re-focus rule).
+            thumb_responses[nearest].request_focus();
             self.set_value_from_fraction(nearest, fraction, &mut changed);
         }
         if track_response.drag_stopped() {
+            // SLD-INT-03: re-focus the grabbed thumb on release. The
+            // press frame moved the thumb under the pointer, but the
+            // release frame's hit test uses the pre-jump rect, so
+            // `get_response` surrenders the press-frame focus as a
+            // "click elsewhere" during the thumb interacts above.
+            // Re-requesting here — after the interacts, before paint
+            // — restores it, so the ring stays after the pointer
+            // leaves. Guarded on an actual pointer release so an
+            // Escape-aborted drag (SLD-INT-07's territory) does not
+            // re-focus: Escape clears focus in `begin_pass`, before
+            // this pass runs.
+            if !self.disabled && ui.input(|i| i.pointer.any_released()) {
+                let active = ui.ctx().data_mut(|d| d.get_temp::<usize>(active_thumb_id));
+                if let Some(index) = active.filter(|index| *index < n) {
+                    thumb_responses[index].request_focus();
+                }
+            }
             ui.ctx()
                 .data_mut(|d| d.remove_temp::<usize>(active_thumb_id));
         }
@@ -1421,6 +1465,429 @@ mod tests {
                 vec![key_event(Key::ArrowDown, false)],
             );
         }
+    }
+
+    #[test]
+    fn click_focuses_the_thumb_sld_int_03() {
+        // SLD-INT-03 (click): a pointer press on a thumb must focus it
+        // (Radix: pointerdown focuses the thumb manually), so the ring
+        // stays after the pointer leaves and arrow keys act on it.
+        // Mechanism (egui 0.37 `interact`/`get_response`): `interact`
+        // NEVER grants focus on a pointer click — it only surrenders
+        // focus when the pointer presses elsewhere — so the widget
+        // must call `request_focus` itself. The clicked-block shape
+        // used by button/checkbox/toggle CANNOT work here: the thumb
+        // uses `Sense::drag()`, which senses drags but not clicks, so
+        // `clicked()` is never true for it (`interaction.rs`:
+        // `potential_click_id` comes from `hits.click` only). The fix
+        // requests focus on the drag path instead: for a drag-only
+        // widget `dragged()` is true on the press frame itself
+        // (`interaction.rs`: "just sensitive to drags, so we can mark
+        // it as dragged right away"), so gating on `dragged()` covers
+        // pointerdown AND every drag frame. This pin asserts focus on
+        // the PRESS frame — before any release — which a clicked-only
+        // shape could never satisfy. RED before the fix: focus stays
+        // None after the press.
+        use egui::{Event, Key, Modifiers, PointerButton};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int03_click"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int03-click")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        // Frame 1: register the slider. Thumb centre at value 50 is
+        // (100, 12): the track spans the full 200px rect width.
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int03_click")
+            .with("int03-click")
+            .with("thumb")
+            .with(0usize);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+
+        // Hover, then press: focus must land on the PRESS frame.
+        run_frame(
+            &ctx,
+            &mut value,
+            1.1,
+            vec![Event::PointerMoved(Pos2::new(100.0, 12.0))],
+        );
+        run_frame(
+            &ctx,
+            &mut value,
+            1.2,
+            vec![button(Pos2::new(100.0, 12.0), true)],
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "press on the thumb must focus it (pointerdown focus)"
+        );
+        // Release in place: focus stays, value unchanged (a click
+        // grabs the thumb in place).
+        run_frame(
+            &ctx,
+            &mut value,
+            1.3,
+            vec![button(Pos2::new(100.0, 12.0), false)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        assert_eq!(value, 50.0);
+
+        // Two settle frames: the INT-04 focus-lock filter latches only
+        // after two consecutive focused frames.
+        run_frame(&ctx, &mut value, 1.4, vec![]);
+        run_frame(&ctx, &mut value, 1.5, vec![]);
+
+        // Arrows now act on the clicked thumb, with NO re-acquire.
+        run_frame(
+            &ctx,
+            &mut value,
+            1.6,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 51.0, "Right after click must step the thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        run_frame(
+            &ctx,
+            &mut value,
+            1.7,
+            vec![key_event(Key::ArrowRight, false)],
+        );
+        run_frame(
+            &ctx,
+            &mut value,
+            1.8,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 52.0, "second Right must stay on the thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+    }
+
+    #[test]
+    fn drag_focuses_the_dragged_thumb_sld_int_03() {
+        // SLD-INT-03 (drag): dragging a thumb must focus it, and the
+        // focus must be present DURING the drag — before any release.
+        // A clicked-block shape could never satisfy this: a drag
+        // release carries no `Click` (`is_decidedly_dragging`), and
+        // the drag-only thumb never reports `clicked()` at all (see
+        // the click pin). RED before the fix: focus stays None
+        // throughout the drag and the post-drag arrows go nowhere.
+        use egui::{Event, Key, Modifiers, PointerButton};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int03_drag"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int03-drag")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int03_drag")
+            .with("int03-drag")
+            .with("thumb")
+            .with(0usize);
+
+        // Press on the thumb: focused on the press frame.
+        run_frame(
+            &ctx,
+            &mut value,
+            1.1,
+            vec![button(Pos2::new(100.0, 12.0), true)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        // Drag +30px: value moves to 65, focus present MID-DRAG
+        // (before any release — the clicked-shape discriminator).
+        run_frame(
+            &ctx,
+            &mut value,
+            1.2,
+            vec![Event::PointerMoved(Pos2::new(130.0, 12.0))],
+        );
+        assert!(
+            (value - 65.0).abs() < 0.01,
+            "drag must move to 65, got {value}"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "focus must be present during the drag"
+        );
+        // Release: focus stays on the dragged thumb.
+        run_frame(
+            &ctx,
+            &mut value,
+            1.3,
+            vec![button(Pos2::new(130.0, 12.0), false)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        assert!((value - 65.0).abs() < 0.01);
+
+        // Two settle frames for the INT-04 filter latch.
+        run_frame(&ctx, &mut value, 1.4, vec![]);
+        run_frame(&ctx, &mut value, 1.5, vec![]);
+
+        // Arrows act on the dragged thumb, with NO re-acquire.
+        run_frame(
+            &ctx,
+            &mut value,
+            1.6,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 66.0, "Right after drag must step the thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        run_frame(
+            &ctx,
+            &mut value,
+            1.7,
+            vec![key_event(Key::ArrowRight, false)],
+        );
+        run_frame(&ctx, &mut value, 1.8, vec![key_event(Key::ArrowLeft, true)]);
+        assert_eq!(value, 65.0, "Left must stay on the dragged thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+    }
+
+    #[test]
+    fn track_press_focuses_the_nearest_thumb_sld_int_03() {
+        // SLD-INT-03 (track press): pressing the track grabs the
+        // nearest thumb and moves it to the pointer (W-6a); the Radix
+        // re-focus rule (every user-driven value change re-focuses the
+        // changed thumb) requires the grabbed thumb to end up focused.
+        // Press at (150, 12): outside the thumb hit rect, on the track.
+        // RED before the fix: the value moves to 75 but focus stays None.
+        use egui::{Event, Key, Modifiers, PointerButton};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int03_track"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int03-track")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int03_track")
+            .with("int03-track")
+            .with("thumb")
+            .with(0usize);
+
+        run_frame(
+            &ctx,
+            &mut value,
+            1.1,
+            vec![button(Pos2::new(150.0, 12.0), true)],
+        );
+        assert!(
+            (value - 75.0).abs() < 0.01,
+            "track press must move to 75, got {value}"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "track press must focus the grabbed thumb"
+        );
+        run_frame(
+            &ctx,
+            &mut value,
+            1.2,
+            vec![button(Pos2::new(150.0, 12.0), false)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        run_frame(&ctx, &mut value, 1.3, vec![]);
+        run_frame(&ctx, &mut value, 1.4, vec![]);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.5,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 76.0, "Right after track press must step");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+    }
+
+    #[test]
+    fn disabled_thumb_never_focuses_on_pointer_press_sld_int_03() {
+        // Disabled sliders take no focus and no input (spec §8.4,
+        // W-10): the hover-only sense never reports a drag, so no
+        // focus request fires. Press + release on the thumb centre:
+        // focus stays None, the value is unchanged, arrows stay inert.
+        use egui::{Event, Key, Modifiers, PointerButton};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int03_disabled"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .disabled(true)
+                    .id_salt("int03-disabled")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.1,
+            vec![button(Pos2::new(100.0, 12.0), true)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.2,
+            vec![Event::PointerMoved(Pos2::new(130.0, 12.0))],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.3,
+            vec![button(Pos2::new(130.0, 12.0), false)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        assert_eq!(value, 50.0);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.4,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 50.0, "arrows must stay inert when disabled");
     }
 
     #[test]
