@@ -43,9 +43,11 @@
 //! * The focus ring shows on any egui focus — proposed deviation D1 (the
 //!   approved button-D3 `:focus-visible` modality class).
 //! * Triple-click selects the line/paragraph (spec §7): the component
-//!   counts presses in wall-clock time, because egui 0.37's frame-time
-//!   click counting + double-before-triple branch order make a batched
-//!   triple-click select the word instead (TXT-INT-02).
+//!   counts presses by pass-processing wall time, because egui 0.37's
+//!   frame-time click counting + double-before-triple branch order make
+//!   a batched triple-click select the word instead (TXT-INT-02). This
+//!   repairs coalesced delivery; frame-time straddling (M1) still
+//!   demotes — a documented environmental limitation.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -290,8 +292,16 @@ const MULTI_CLICK_DIST: f32 = 6.0;
 /// pass's releases carry counts 1, 2 AND 3, so `double_clicked()` is
 /// true and the word branch shadows the line branch: the
 /// triple-click deterministically selects the word. Counting the
-/// presses in wall-clock time (the platform convention) restores the
-/// frozen §7 row on every machine, fast or slow.
+/// presses by pass-processing wall time repairs that coalesced case
+/// (M2): presses arriving in one pass chain with ~zero gaps, so the
+/// component selects the paragraph itself. It does NOT repair
+/// frame-time straddling (M1): when the click-bearing passes are
+/// more than 300 ms apart in processing time, this counter demotes
+/// exactly like the framework's, because events carry no timestamps
+/// and pass-processing time diverges from physical press time by the
+/// render latency. M1 is a documented environmental limitation (see
+/// the input INP-INT-01 report §1/§6 for the shared analysis); on a
+/// fast machine the straddling residue vanishes.
 #[derive(Clone, Copy, Default)]
 struct TripleClickSeq {
     /// Presses in the current sequence (resets on any gap).
@@ -636,8 +646,10 @@ impl<'a> Textarea<'a> {
         // frame-time click counting + double-before-triple branch
         // order make a batched triple-click deterministically select
         // the word (see `TripleClickSeq`). The component therefore
-        // counts modifier-free primary presses in wall-clock time
-        // and selects the paragraph itself. When the framework's own
+        // counts modifier-free primary presses by pass-processing
+        // wall time and selects the paragraph itself, repairing the
+        // coalesced case; straddled passes still demote (M1 — see
+        // `TripleClickSeq`). When the framework's own
         // count already produced the line (fast machine, one click
         // per pass), the override writes the identical range and is
         // a no-op — including for the double/triple drag anchor,
@@ -1872,8 +1884,9 @@ mod tests {
         // events) deterministically selects the WORD: the pass's
         // releases carry counts 1, 2 AND 3, `double_clicked()` is
         // true, and the word branch shadows the line branch. The
-        // component counts presses in wall-clock time and selects
-        // the line itself. The pin drives real pointer frames
+        // component counts presses by pass-processing wall time and
+        // selects the line itself (coalesced case; straddled passes
+        // still demote — M1, see `TripleClickSeq`). The pin drives real pointer frames
         // through `show()` and proves the selection BEHAVIOURALLY
         // (typing over it replaces the whole line). It FAILS on the
         // stock behaviour (word selected) and passes with the fix.
