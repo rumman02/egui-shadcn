@@ -34,6 +34,15 @@
 //! disabled fills, narrows the dark invalid border to `destructive/50` (N5),
 //! and replaces the transition with `transition-colors`.
 //!
+//! Geometry (border-box): 36px tall / 8px radius / 12px horizontal padding
+//! under base, 32px / 10px / 10px under nova; the 1px border paints inside
+//! the border box. In a group, non-first children drop their leading border
+//! edge through a fused-stroke painter (the ring painted through a clip
+//! that excludes the leading edge plus clipped corner cells; the fill
+//! paints on the full rect — border removal, never a draw-rect inset).
+//! There is no hover or active visual: hovering changes nothing, and
+//! pressing adds nothing beyond the focus state the click itself causes.
+//!
 //! The underlying widget is a restyled [`egui::TextEdit`] whose theme frame
 //! is replaced with an explicit [`egui::Frame`] carrying the resolved fill
 //! and the padding: egui's default `TextEdit` frame paints an opaque
@@ -46,8 +55,14 @@
 //! 3px band immediately outside it. Hint text renders in
 //! `muted-foreground` via the theme's weak text colour
 //! (`placeholder:text-muted-foreground`); selection colours are overridden
-//! per-widget to `primary` / `primary-foreground` (see OPEN-6 below), and
-//! the caret renders in `foreground` via the theme cursor stroke.
+//! per-widget to `primary` / `primary-foreground` (see OPEN-6 below),
+//! rendering at light bg (23) / text (250) and dark bg (229) / text (23)
+//! as re-derived from fresh captures (S10), and the caret renders in
+//! `foreground` via the theme cursor stroke. Disabled compositing is
+//! whole-element group fade (CSS `opacity` semantics): the interior slots
+//! precomposite as the enabled render over the pre-opacity fill and fade
+//! once over the backdrop, while the fill, ring, and shadow halve over
+//! the backdrop alone — where halving IS the group fade (INP-VIS-01).
 //!
 //! Animation (§6) reverses by style: base `transition-[color,box-shadow]`
 //! fades the ring and animates the text colour while border/fill colours
@@ -57,6 +72,22 @@
 //! snapshot-verified. The disabled 50% compositing snaps in both styles:
 //! opacity is in neither transition set, so the fade is applied after
 //! animation.
+//!
+//! Keyboard and pointer behaviour follows the native single-line matrix
+//! through `TextEdit`, verified in all four style/theme combinations
+//! (S6/S10): clicks focus and place the caret; double-click selects the
+//! word; triple-click selects all text (when the framework counts a
+//! triple in a coalesced frame, the component restores the select-all
+//! outcome — INP-INT-01); Tab never inserts a character; undo/redo and
+//! word jumps match the native capability. Two observed behaviours are
+//! NOT frozen spec rules: Escape and Enter clear focus (gate G4), and
+//! pasted newline sequences map to exactly one space each (gate G5).
+//! Under very slow rendering, click pairs straddling the framework's
+//! 300ms frame-time window demote the click count before the component
+//! can see a triple — a documented environmental limitation of the
+//! framework's untimestamped events, not a component defect. IME
+//! behaviour is unjudged (OPEN-10; no IME in the verification
+//! environment).
 //!
 //! Proposed deviations (PROPOSED, never approved — Expert Reviewer decides):
 //! D1 `:focus-visible` modality (ring on any focus, geometry unchanged),
@@ -119,7 +150,8 @@ pub const INPUT_HEIGHT: f32 = crate::theme::tokens::spacing::CONTROL;
 /// §3.3, OPEN-5): the original declares `w-full` and the containing block
 /// always supplies a width in CSS; an egui horizontal layout has no
 /// containing-block width, so the port falls back to this value. Kept
-/// unchanged by the S1 rebuild; S5 judges the gallery rendering.
+/// unchanged by the S1 rebuild; S5 verified the gallery rendering (the
+/// 160pt fallback renders exact in all four style/theme combinations).
 pub const INPUT_FALLBACK_WIDTH: f32 = 160.0;
 
 /// Outer height (`h-9` base recipe; nova `.cn-input` `h-8`).
