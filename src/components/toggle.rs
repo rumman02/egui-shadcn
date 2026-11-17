@@ -58,7 +58,10 @@
 //! `<button>` asymmetry (Radix attaches only `onClick`, no key handlers).
 //! egui reports a fake click on the keydown frame for both keys, so this
 //! build intervenes for Space (see `space_keyup_fire`, the button
-//! BTN-INT-04 shape); Enter is never touched.
+//! BTN-INT-04 shape); Enter is never touched. A direct click focuses AND
+//! toggles (TOG-INT-02): egui's `interact` never grants focus on a pointer
+//! click, so `show` requests focus explicitly on `clicked()` (the button
+//! BTN-INT-01 shape); press-drag-off-release focuses nothing.
 //! `:focus-visible` modality is deviation D1 (PROPOSED): the ring shows on
 //! any focus. No ARIA tree exists in egui (D2, PROPOSED): pressed/invalid
 //! state is exposed through the Rust API and rendered visually.
@@ -851,8 +854,18 @@ impl<'a> Toggle<'a> {
         // Activation (spec §7, OPEN-2 closed by S6 Work B): Space toggles
         // on keyup (see `space_keyup_fire`), Enter on keydown, pointer
         // click on the click event — the native `<button>` asymmetry.
+        // A direct click ALSO focuses the toggle (TOG-INT-02): egui's
+        // `interact` never grants focus on a pointer click (it only
+        // surrenders focus elsewhere), so request it explicitly on click
+        // — the button BTN-INT-01 / checkbox CHK-INT-01 shape. Gating on
+        // `clicked()` (the release frame) keeps press-drag-off-release a
+        // no-op, and the disabled gate rides the existing binding, so a
+        // disabled toggle takes neither toggle nor focus. Requesting
+        // before painting lets `has_focus()` below see the focus on the
+        // click frame itself, so the ring (D1: any focus) shows at once.
         if response.clicked() && !self.disabled {
             *self.pressed = !*self.pressed;
+            response.request_focus();
         }
 
         if ui.is_rect_visible(rect) {
@@ -1722,6 +1735,192 @@ mod tests {
         };
         assert!(!disabled_frame(key_event(egui::Key::Space, true)));
         assert!(!disabled_frame(key_event(egui::Key::Space, false)));
+    }
+
+    #[test]
+    fn click_focuses_and_toggles() {
+        // TOG-INT-02: native `<button>` behaviour (spec §7, settled by S6
+        // Work B from public Radix Toggle source) — a direct click focuses
+        // AND toggles. Mirrors the button pin
+        // `click_moves_keyboard_focus_to_the_button` (BTN-INT-01) and the
+        // checkbox pin (CHK-INT-01), adapted to the toggle's `&mut bool`
+        // binding.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("toggle_click_focus_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let pointer_event = |pos: Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let move_event = |pos: Pos2| egui::RawInput {
+            events: vec![egui::Event::PointerMoved(pos)],
+            ..Default::default()
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut pressed = false;
+
+        // Frame 1: render, record rect + id; nothing focused yet.
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Toggle::new(&mut pressed).text("Bold").show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+
+        // Press alone: no toggle, no focus.
+        let center = rect.center();
+        let mut out = ctx.run_ui(pointer_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Toggle::new(&mut pressed).text("Bold").show(ui);
+            assert!(!r.clicked());
+        });
+        out.textures_delta.clear();
+        assert!(!pressed);
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+
+        // Release on the toggle: click + toggle + focus on the click frame.
+        let mut clicked = false;
+        let mut out = ctx.run_ui(pointer_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = Toggle::new(&mut pressed).text("Bold").show(ui).clicked();
+        });
+        out.textures_delta.clear();
+        assert!(clicked, "press + release must register a click");
+        assert!(pressed, "click must toggle");
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "click must move keyboard focus to the toggle"
+        );
+
+        // Space after a click: keydown no toggle (TOG-INT-01), keyup
+        // exactly one toggle, focus retained.
+        let mut out = ctx.run_ui(key_event(egui::Key::Space, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        assert!(pressed);
+        let mut out = ctx.run_ui(key_event(egui::Key::Space, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        assert!(!pressed);
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // A second click toggles back, focus retained.
+        let mut out = ctx.run_ui(pointer_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        let mut out = ctx.run_ui(pointer_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        assert!(pressed);
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Press-drag-off-release: no toggle, no focus. Fresh context so
+        // the first click's focus does not leak in.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut pressed = false;
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Toggle::new(&mut pressed).text("Bold").show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        let center = rect.center();
+        let far = center + Vec2::new(150.0, 0.0);
+        let mut out = ctx.run_ui(pointer_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        let mut out = ctx.run_ui(move_event(far), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed).text("Bold").show(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = false;
+        let mut out = ctx.run_ui(pointer_event(far, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = Toggle::new(&mut pressed).text("Bold").show(ui).clicked();
+        });
+        out.textures_delta.clear();
+        assert!(!clicked, "drag-off release must not register a click");
+        assert!(!pressed);
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+
+        // A disabled toggle takes neither toggle nor focus when clicked.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut pressed = false;
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = Toggle::new(&mut pressed)
+                .text("Bold")
+                .disabled(true)
+                .show(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        let center = rect.center();
+        let mut out = ctx.run_ui(pointer_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = Toggle::new(&mut pressed)
+                .text("Bold")
+                .disabled(true)
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = false;
+        let mut out = ctx.run_ui(pointer_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = Toggle::new(&mut pressed)
+                .text("Bold")
+                .disabled(true)
+                .show(ui)
+                .clicked();
+        });
+        out.textures_delta.clear();
+        assert!(!clicked);
+        assert!(!pressed);
+        assert!(!ctx.memory(|m| m.has_focus(id)));
     }
 
     #[test]
