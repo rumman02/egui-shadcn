@@ -42,6 +42,10 @@
 //!   (150ms, cubic-bezier(0.4, 0, 0.2, 1)) are used and labelled INTERIM.
 //! * The focus ring shows on any egui focus — proposed deviation D1 (the
 //!   approved button-D3 `:focus-visible` modality class).
+//! * Triple-click selects the line/paragraph (spec §7): the component
+//!   counts presses in wall-clock time, because egui 0.37's frame-time
+//!   click counting + double-before-triple branch order make a batched
+//!   triple-click select the word instead (TXT-INT-02).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -60,8 +64,8 @@ use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
 use egui::{
-    Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Frame, Key, Margin, Response,
-    Stroke, TextEdit, Ui, Vec2,
+    Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Frame, Key, Margin,
+    PointerButton, Pos2, Response, Stroke, TextEdit, Ui, Vec2,
 };
 
 /// `min-h-16` — the smallest textarea height (64px, spec §3.1).
@@ -263,6 +267,67 @@ fn paint_textarea_shadow(
             dark,
         );
     }
+}
+
+/// Multi-click window for triple-click detection (TXT-INT-02): mirrors
+/// egui's `InputOptions::max_double_click_delay` default (0.3s,
+/// `input_state/mod.rs:116`).
+const MULTI_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Multi-click radius for triple-click detection (TXT-INT-02): mirrors
+/// egui's `InputOptions::max_click_dist` default (6px,
+/// `input_state/mod.rs:114`).
+const MULTI_CLICK_DIST: f32 = 6.0;
+
+/// Wall-clock multi-click sequence state (TXT-INT-02).
+///
+/// egui 0.37 counts clicks in FRAME time (`PointerState::begin_pass`
+/// stamps one time per pass; `last_click_time` updates only on
+/// release), and `TextCursorState::pointer_interaction` checks
+/// `double_clicked()` before `triple_clicked()`. When two or more
+/// clicks batch into one pass — the norm under slow frames, and
+/// whenever the event loop wakes to a queued triple-click — the
+/// pass's releases carry counts 1, 2 AND 3, so `double_clicked()` is
+/// true and the word branch shadows the line branch: the
+/// triple-click deterministically selects the word. Counting the
+/// presses in wall-clock time (the platform convention) restores the
+/// frozen §7 row on every machine, fast or slow.
+#[derive(Clone, Copy, Default)]
+struct TripleClickSeq {
+    /// Presses in the current sequence (resets on any gap).
+    count: u32,
+    /// The last counted press (wall-clock time + position).
+    last_press: Option<(std::time::Instant, Pos2)>,
+    /// A triple-click whose release has not been seen yet: the
+    /// release frame re-applies the line selection, covering the
+    /// press/release frame split where the framework's demoted
+    /// double branch would otherwise overwrite it with the word.
+    armed: Option<(std::time::Instant, Pos2)>,
+}
+
+/// Selects the paragraph around the stored click cursor (TXT-INT-02).
+///
+/// Called after `TextEdit::show` when a triple-click is detected: the
+/// framework has already placed the caret (or the word selection) at
+/// the click position, so the paragraph is read off the stored cursor
+/// — the secondary end sits safely inside the clicked line (the word
+/// start after a double-click branch, or the caret itself). Writes
+/// back through the documented load-modify-store pattern, under the
+/// widget id. No-ops when no cursor state is stored.
+fn select_clicked_line(ctx: &egui::Context, id: egui::Id, galley: &egui::text::Galley) {
+    let Some(mut state) = egui::widgets::text_edit::TextEditState::load(ctx, id) else {
+        return;
+    };
+    let Some(range) = state.cursor.range(galley) else {
+        return;
+    };
+    let cursor = range.secondary;
+    let begin = galley.cursor_begin_of_paragraph(&cursor);
+    let end = galley.cursor_end_of_paragraph(&cursor);
+    state
+        .cursor
+        .set_char_range(Some(egui::text_selection::CCursorRange::two(begin, end)));
+    state.store(ctx, id);
 }
 
 /// A shadcn textarea. See the [module docs](self) for an example.
@@ -485,6 +550,11 @@ impl<'a> Textarea<'a> {
         let output = out.inner;
         let response = output.response.response;
         let rect = response.rect;
+        // Hoisted for the TXT-INT-02 block below: both post-`show`
+        // handlers need the galley (paging moves rows, triple-click
+        // selects a paragraph), and `output.galley` can only move out
+        // once. The TXT-INT-03 block below is otherwise unchanged.
+        let galley = output.galley;
 
         // TXT-INT-03: PageUp/PageDown paging (spec §7). egui 0.37 has NO
         // framework handling for these keys in `TextEdit` (only the key
@@ -533,7 +603,6 @@ impl<'a> Textarea<'a> {
                     .collect()
             });
             if !moves.is_empty() {
-                let galley = output.galley;
                 let mut state = output.state;
                 let inset = content_margin(style).top as f32;
                 let page_rows = ((rect.height() - 2.0 * inset) / ROW_HEIGHT)
@@ -560,6 +629,97 @@ impl<'a> Textarea<'a> {
                     state.store(&ctx, response.id);
                 }
             }
+        }
+
+        // TXT-INT-02: triple-click line selection (spec §7). egui 0.37
+        // implements the line path (`select_line_at`), but its
+        // frame-time click counting + double-before-triple branch
+        // order make a batched triple-click deterministically select
+        // the word (see `TripleClickSeq`). The component therefore
+        // counts modifier-free primary presses in wall-clock time
+        // and selects the paragraph itself. When the framework's own
+        // count already produced the line (fast machine, one click
+        // per pass), the override writes the identical range and is
+        // a no-op — including for the double/triple drag anchor,
+        // which `set_char_range` only clears when the sorted range
+        // changes. Single-click, double-click, drag, shift-click
+        // extension, and keys are untouched: only a third press
+        // inside the window + radius acts, and the armed release
+        // re-application is consumed by the first release frame.
+        if !self.disabled && response.has_focus() {
+            let mut seq = ctx.data_mut(|data| {
+                data.get_temp::<TripleClickSeq>(response.id.with("tclick_seq"))
+                    .unwrap_or_default()
+            });
+            let now = std::time::Instant::now();
+            // Expire a stale armed triple: it may only re-apply on
+            // the release frame immediately following the third
+            // press, never on a later unrelated release.
+            if seq
+                .armed
+                .is_some_and(|(armed_at, _)| now.duration_since(armed_at) >= MULTI_CLICK_WINDOW)
+            {
+                seq.armed = None;
+            }
+            let mut apply_line = false;
+            ui.input(|i| {
+                for event in &i.events {
+                    match event {
+                        Event::Key { .. } | Event::Text(_) => {
+                            // Any keyboard activity breaks a click
+                            // sequence and invalidates a pending
+                            // re-application. (A Shift press also
+                            // keeps shift-click extension entirely in
+                            // the framework's hands.)
+                            seq.count = 0;
+                            seq.last_press = None;
+                            seq.armed = None;
+                        }
+                        Event::PointerButton {
+                            pos,
+                            button: PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        } => {
+                            if *pressed {
+                                if !modifiers.is_none() || !rect.contains(*pos) {
+                                    seq.count = 0;
+                                    seq.last_press = None;
+                                    seq.armed = None;
+                                } else {
+                                    let chained = seq.last_press.is_some_and(|(at, at_pos)| {
+                                        now.duration_since(at) < MULTI_CLICK_WINDOW
+                                            && pos.distance(at_pos) <= MULTI_CLICK_DIST
+                                    });
+                                    seq.count = if chained { seq.count + 1 } else { 1 };
+                                    seq.last_press = Some((now, *pos));
+                                    if seq.count >= 3 {
+                                        apply_line = true;
+                                        seq.armed = Some((now, *pos));
+                                    }
+                                }
+                            } else if let Some((armed_at, armed_pos)) = seq.armed {
+                                // The release frame: re-apply the line
+                                // selection if this release completes
+                                // the armed triple (same window +
+                                // radius). The armed state is consumed
+                                // either way — one re-application max.
+                                if now.duration_since(armed_at) < MULTI_CLICK_WINDOW
+                                    && pos.distance(armed_pos) <= MULTI_CLICK_DIST
+                                {
+                                    apply_line = true;
+                                }
+                                seq.armed = None;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            if apply_line && !galley.rows.is_empty() {
+                select_clicked_line(&ctx, response.id, &galley);
+            }
+            ctx.data_mut(|data| data.insert_temp(response.id.with("tclick_seq"), seq));
         }
 
         // `disabled:cursor-not-allowed` (spec §4; D7 implementation note).
@@ -1700,5 +1860,285 @@ mod tests {
         // rows() clamps to at least one row.
         let mut t3 = String::new();
         assert_eq!(Textarea::new(&mut t3).rows(0).rows, 1);
+    }
+
+    #[test]
+    fn triple_click_selects_the_line_txt_int_02() {
+        // TXT-INT-02 regression pin: spec §7 requires triple-click to
+        // select the line/paragraph under the cursor. egui 0.37 counts
+        // clicks in FRAME time and `pointer_interaction` checks
+        // `double_clicked()` before `triple_clicked()`, so a
+        // triple-click batched into one pass (slow frames / queued
+        // events) deterministically selects the WORD: the pass's
+        // releases carry counts 1, 2 AND 3, `double_clicked()` is
+        // true, and the word branch shadows the line branch. The
+        // component counts presses in wall-clock time and selects
+        // the line itself. The pin drives real pointer frames
+        // through `show()` and proves the selection BEHAVIOURALLY
+        // (typing over it replaces the whole line). It FAILS on the
+        // stock behaviour (word selected) and passes with the fix.
+        // Double-click word selection, single-click caret placement,
+        // cross-frame triples, slow-click separation, and the
+        // last-line case are pinned alongside: the fix must change
+        // ONLY the triple-click row.
+        use egui::widgets::text_edit::TextEditState;
+
+        fn frame(
+            ctx: &egui::Context,
+            input: egui::RawInput,
+            text: &mut String,
+        ) -> (egui::Id, bool, Rect) {
+            let mut id = egui::Id::unique("textarea_tclick_pin_unset");
+            let mut focused = false;
+            let mut rect = Rect::NOTHING;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("textarea_tclick_pin"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let response = Textarea::new(text).id_salt("tclick-pin").show(ui);
+                id = response.id;
+                focused = response.has_focus();
+                rect = response.rect;
+            });
+            out.textures_delta.clear();
+            (id, focused, rect)
+        }
+
+        fn pointer_input(time: f64, events: Vec<egui::Event>) -> egui::RawInput {
+            egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            }
+        }
+
+        fn click_at(pos: Pos2) -> Vec<egui::Event> {
+            // One full click: move (hover/focus), press, release.
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        }
+
+        fn selection(ctx: &egui::Context, id: egui::Id) -> (usize, usize) {
+            let range = TextEditState::load(ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .expect("stored cursor range present");
+            let [a, b] = range.sorted_cursors();
+            (a.index.0, b.index.0)
+        }
+
+        fn text_event(time: f64, s: &str) -> egui::RawInput {
+            egui::RawInput {
+                time: Some(time),
+                events: vec![egui::Event::Text(s.to_owned())],
+                ..Default::default()
+            }
+        }
+
+        // Three lines, two words each: word and line selections
+        // differ, so the pin discriminates them.
+        // "alpha beta\ngamma delta\nepsilon zeta"
+        //  0         11          23           35
+        const TEXT: &str = "alpha beta\ngamma delta\nepsilon zeta";
+
+        for style in [Style::Vega, Style::Nova] {
+            let preset = Preset {
+                style,
+                ..Preset::default()
+            };
+            // Text starts at rect.min + content margin (padding-x +
+            // 1px border horizontally, 9px vertically); rows are
+            // 20px. These offsets land inside "gamma" (row 1) and
+            // "epsilon" (row 2) respectively.
+            let margin_x = padding_x(style) + 1.0;
+
+            // --- Batched triple-click, focused box (the VM case):
+            // all three clicks in ONE pass. The framework selects
+            // the word here; the fix must select the line. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let (_, focused, _) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                assert!(focused, "focused after request {style:?}");
+                let mut events = Vec::new();
+                for _ in 0..3 {
+                    events.extend(click_at(pos));
+                }
+                let _ = frame(&ctx, pointer_input(0.05, events), &mut text);
+                assert_eq!(
+                    selection(&ctx, id),
+                    (11, 22),
+                    "batched triple-click selects the line {style:?}"
+                );
+                let _ = frame(&ctx, text_event(0.10, "X"), &mut text);
+                assert_eq!(
+                    text, "alpha beta\nX\nepsilon zeta",
+                    "typing replaces the whole line {style:?}"
+                );
+            }
+
+            // --- Batched triple-click, UNFOCUSED box: the first
+            // click focuses; the line must still win. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                let mut events = Vec::new();
+                for _ in 0..3 {
+                    events.extend(click_at(pos));
+                }
+                let (_, focused, _) = frame(&ctx, pointer_input(0.05, events), &mut text);
+                assert!(focused, "click focuses the box {style:?}");
+                assert_eq!(
+                    selection(&ctx, id),
+                    (11, 22),
+                    "unfocused batched triple-click selects the line {style:?}"
+                );
+            }
+
+            // --- Double-click control: the word, unchanged. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let _ = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let mut events = Vec::new();
+                for _ in 0..2 {
+                    events.extend(click_at(pos));
+                }
+                let _ = frame(&ctx, pointer_input(0.05, events), &mut text);
+                assert_eq!(
+                    selection(&ctx, id),
+                    (11, 16),
+                    "double-click still selects the word {style:?}"
+                );
+                let _ = frame(&ctx, text_event(0.10, "Y"), &mut text);
+                assert_eq!(
+                    text, "alpha beta\nY delta\nepsilon zeta",
+                    "typing replaces the word only {style:?}"
+                );
+            }
+
+            // --- Single-click control: caret only, no selection. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let _ = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let _ = frame(&ctx, pointer_input(0.05, click_at(pos)), &mut text);
+                let (a, b) = selection(&ctx, id);
+                assert_eq!(a, b, "single click selects nothing {style:?}");
+                assert!(
+                    (11..=16).contains(&a),
+                    "caret lands inside the clicked word {style:?}: {a}"
+                );
+            }
+
+            // --- Cross-frame triple-click (the fast-machine case):
+            // one click per pass; the wall-clock counter chains
+            // them into a triple. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let _ = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                for (i, t) in [0.05, 0.10, 0.15].into_iter().enumerate() {
+                    let _ = frame(&ctx, pointer_input(t, click_at(pos)), &mut text);
+                    if i < 2 {
+                        // No line selection before the third press.
+                        assert_ne!(
+                            selection(&ctx, id),
+                            (11, 22),
+                            "no line selection before the third click {style:?}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    selection(&ctx, id),
+                    (11, 22),
+                    "cross-frame triple-click selects the line {style:?}"
+                );
+            }
+
+            // --- Slow clicks: a 350ms real-time gap breaks the
+            // sequence, so the two fast clicks after it select the
+            // WORD, not the line. Frame times advance past the
+            // window too, so the framework agrees. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 14.0, rect.top() + 9.0 + 30.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let _ = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let _ = frame(&ctx, pointer_input(0.05, click_at(pos)), &mut text);
+                std::thread::sleep(std::time::Duration::from_millis(350));
+                let _ = frame(&ctx, pointer_input(0.45, click_at(pos)), &mut text);
+                let _ = frame(&ctx, pointer_input(0.50, click_at(pos)), &mut text);
+                assert_eq!(
+                    selection(&ctx, id),
+                    (11, 16),
+                    "slow clicks select the word, not the line {style:?}"
+                );
+            }
+
+            // --- Last-line triple-click: no trailing newline; the
+            // line still selects whole. ---
+            {
+                let ctx = egui::Context::default();
+                preset.build(Mode::Light).install(&ctx);
+                let mut text = String::from(TEXT);
+                let (id, _, rect) = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let pos = Pos2::new(rect.left() + margin_x + 30.0, rect.top() + 9.0 + 50.0);
+                ctx.memory_mut(|m| m.request_focus(id));
+                let _ = frame(&ctx, pointer_input(0.0, vec![]), &mut text);
+                let mut events = Vec::new();
+                for _ in 0..3 {
+                    events.extend(click_at(pos));
+                }
+                let _ = frame(&ctx, pointer_input(0.05, events), &mut text);
+                assert_eq!(
+                    selection(&ctx, id),
+                    (23, 35),
+                    "last-line triple-click selects the line {style:?}"
+                );
+                let _ = frame(&ctx, text_event(0.10, "W"), &mut text);
+                assert_eq!(
+                    text, "alpha beta\ngamma delta\nW",
+                    "typing replaces the last line {style:?}"
+                );
+            }
+        }
     }
 }
