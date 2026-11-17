@@ -110,6 +110,17 @@
 //! pinned by a test whose name says so. S5 must not treat it as the spec
 //! value until OPEN-4 closes.
 //!
+//! Field-label focus suppression (spec §4.8, nova only): when the
+//! checkbox sits inside a FieldLabel choice card, the card sets
+//! [`Checkbox::suppress_focus_indication`] each frame from its own
+//! focus-inside state; the checkbox then paints no ring and forces its
+//! border to `input` (unchecked) / `primary` (checked), winning over
+//! invalid and focus alike. The composition belongs to the field line;
+//! standalone S5/S6 do not test it. The indeterminate corner (border
+//! `input`) and the suppression-wins precedence are PROVISIONAL
+//! (coordinator ruling 12); field S8 / the Expert Reviewer may revise
+//! them.
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -213,6 +224,18 @@ pub(crate) struct CheckboxColors {
 /// invalid > focused); they are implementation rationale, NOT snapshot
 /// evidence, and S5 must not treat them as spec values until OPEN-4
 /// closes.
+///
+/// Suppression (spec §4.8, nova only): when `suppressed`, the ring is
+/// killed and the border is forced to `input` (unchecked) / `primary`
+/// (checked), winning over invalid and focus alike. Under the base
+/// recipe the flag is a no-op. The indeterminate corner (border
+/// `input`, via the unchecked leg — indeterminate renders the unchecked
+/// recipe plus the icon) and the suppression-wins precedence are
+/// PROVISIONAL (coordinator ruling 12).
+// Eight positional state flags, matching the file's established resolver
+// shape (cf. `#[allow(clippy::too_many_arguments)]` elsewhere in the
+// crate); a state bundle would churn every call site for no gain.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_checkbox_colors(
     p: &Palette,
     dark: bool,
@@ -221,8 +244,10 @@ pub(crate) fn resolve_checkbox_colors(
     invalid: bool,
     focused: bool,
     disabled: bool,
+    suppressed: bool,
 ) -> CheckboxColors {
     let nova = style == Style::Nova;
+    let suppressed_nova = suppressed && nova;
     // A disabled control cannot hold `:focus-visible` (spec §4.3 +
     // OPEN-1 disabled rows): the focus border/ring never show disabled.
     // The nova invalid rest ring is NOT focus-gated, so it still shows
@@ -243,7 +268,18 @@ pub(crate) fn resolve_checkbox_colors(
     } else {
         color_alpha(p.ring, 0.5)
     };
-    let stroke_color = if checked {
+    let stroke_color = if suppressed_nova {
+        // §4.8 (suppression, nova only): the field-label card's
+        // `group-has-*` rules force the border — `primary` when checked,
+        // `input` when unchecked (indeterminate resolves as unchecked,
+        // so it takes `input` — PROVISIONAL corner, ruling 12).
+        // Suppression wins over invalid and focus alike.
+        if checked {
+            p.primary
+        } else {
+            p.input
+        }
+    } else if checked {
         // `data-[state=checked]:border-primary` / `data-checked:border-primary`.
         // FROZEN for nova invalid+checked; PROVISIONAL (OPEN-4) for base
         // invalid+checked and for focus+checked in both styles.
@@ -266,7 +302,9 @@ pub(crate) fn resolve_checkbox_colors(
         fill,
         stroke: Stroke::new(1.0, stroke_color),
         ring,
-        ring_shown: focused || (invalid && nova),
+        // Suppression kills the ring unconditionally under nova (§4.8),
+        // including the nova invalid rest ring.
+        ring_shown: !suppressed_nova && (focused || (invalid && nova)),
         icon,
         shadow_shown: true,
     }
@@ -493,6 +531,7 @@ pub struct Checkbox<'a> {
     indeterminate: bool,
     disabled: bool,
     invalid: bool,
+    suppress_focus_indication: bool,
     id_salt: Option<String>,
 }
 
@@ -504,6 +543,7 @@ impl<'a> Checkbox<'a> {
             indeterminate: false,
             disabled: false,
             invalid: false,
+            suppress_focus_indication: false,
             id_salt: None,
         }
     }
@@ -538,6 +578,26 @@ impl<'a> Checkbox<'a> {
     /// base recipe it shows only when focused (spec §4.5).
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Suppresses the checkbox's own focus indication (ring + border
+    /// recolor) when the checkbox sits inside a FieldLabel choice card
+    /// that shows the focus indication itself. This is the checkbox-side
+    /// mechanism for the nova rules
+    /// `group-has-[:focus-visible]/field-label:ring-0
+    /// group-has-[:focus-visible]/field-label:not-data-checked:border-input
+    /// group-has-[:focus-visible]/field-label:data-checked:border-primary`
+    /// (`style-nova.css:284`; spec §4.8): the composing card sets this
+    /// flag each frame from its own focus-inside state. The field line
+    /// owns the composition contract. Nova-only; a no-op under the base
+    /// recipe. Suppression wins over invalid and focus alike (the
+    /// literal rule reading: `ring-0` + forced border). PROVISIONAL
+    /// corners (coordinator ruling 12): indeterminate → border `input`;
+    /// invalid + suppression → suppression wins; field S8 / the Expert
+    /// Reviewer may revise them.
+    pub fn suppress_focus_indication(mut self, suppress: bool) -> Self {
+        self.suppress_focus_indication = suppress;
         self
     }
 
@@ -667,6 +727,7 @@ impl<'a> Checkbox<'a> {
                 self.invalid,
                 focused,
                 self.disabled,
+                self.suppress_focus_indication,
             );
             let on = resolve_checkbox_colors(
                 &p,
@@ -676,6 +737,7 @@ impl<'a> Checkbox<'a> {
                 self.invalid,
                 focused,
                 self.disabled,
+                self.suppress_focus_indication,
             );
             let current = if checked { on } else { off };
             // Fill leg: a boolean drive on `checked` plus a premultiplied
@@ -808,6 +870,7 @@ mod tests {
         invalid: bool,
         focused: bool,
         disabled: bool,
+        suppressed: bool,
     ) -> CheckboxColors {
         let p = palette(mode);
         resolve_checkbox_colors(
@@ -818,6 +881,7 @@ mod tests {
             invalid,
             focused,
             disabled,
+            suppressed,
         )
     }
 
@@ -826,14 +890,14 @@ mod tests {
         for mode in [Mode::Light, Mode::Dark] {
             for style in [BASE_STYLE, Style::Nova] {
                 let p = palette(mode);
-                let c = colors(mode, style, true, false, false, false);
+                let c = colors(mode, style, true, false, false, false, false);
                 assert_eq!(c.fill, p.primary);
                 assert_eq!(c.stroke.color, p.primary);
                 assert_eq!(c.icon, p.primary_foreground);
             }
         }
         let p = palette(Mode::Light);
-        let u = colors(Mode::Light, BASE_STYLE, false, false, false, false);
+        let u = colors(Mode::Light, BASE_STYLE, false, false, false, false, false);
         assert_eq!(u.fill, Color32::TRANSPARENT);
         assert_eq!(u.stroke.color, p.input);
         assert_eq!(u.icon, p.foreground);
@@ -843,7 +907,7 @@ mod tests {
     fn dark_unchecked_uses_input_30() {
         let dark = palette(Mode::Dark);
         for style in [BASE_STYLE, Style::Nova] {
-            let u = colors(Mode::Dark, style, false, false, false, false);
+            let u = colors(Mode::Dark, style, false, false, false, false, false);
             assert_eq!(u.fill, color_alpha(dark.input, 0.3));
         }
     }
@@ -855,7 +919,7 @@ mod tests {
         for mode in [Mode::Light, Mode::Dark] {
             for style in [BASE_STYLE, Style::Nova] {
                 let p = palette(mode);
-                let f = colors(mode, style, false, false, true, false);
+                let f = colors(mode, style, false, false, true, false, false);
                 assert_eq!(f.stroke.color, p.ring);
                 assert!(f.ring_shown);
                 assert_eq!(f.ring, color_alpha(p.ring, 0.5));
@@ -863,7 +927,7 @@ mod tests {
         }
         // Unfocused + valid: no ring in either style.
         for style in [BASE_STYLE, Style::Nova] {
-            assert!(!colors(Mode::Light, style, false, false, false, false).ring_shown);
+            assert!(!colors(Mode::Light, style, false, false, false, false, false).ring_shown);
         }
     }
 
@@ -877,7 +941,7 @@ mod tests {
         let dark = palette(Mode::Dark);
         // (a) Base invalid+checked border: checked wins (provisional).
         assert_eq!(
-            colors(Mode::Light, BASE_STYLE, true, true, false, false)
+            colors(Mode::Light, BASE_STYLE, true, true, false, false, false)
                 .stroke
                 .color,
             p.primary
@@ -885,7 +949,7 @@ mod tests {
         // (b) Focus+invalid border: invalid wins (provisional), both styles.
         for style in [BASE_STYLE, Style::Nova] {
             assert_eq!(
-                colors(Mode::Light, style, false, true, true, false)
+                colors(Mode::Light, style, false, true, true, false, false)
                     .stroke
                     .color,
                 p.destructive
@@ -894,7 +958,7 @@ mod tests {
         // (d) Focus+checked border: checked wins (provisional), both styles.
         for style in [BASE_STYLE, Style::Nova] {
             assert_eq!(
-                colors(Mode::Light, style, true, false, true, false)
+                colors(Mode::Light, style, true, false, true, false, false)
                     .stroke
                     .color,
                 p.primary
@@ -902,13 +966,92 @@ mod tests {
         }
         // (c) Focus+invalid ring colour: invalid wins (provisional).
         assert_eq!(
-            colors(Mode::Light, BASE_STYLE, false, true, true, false).ring,
+            colors(Mode::Light, BASE_STYLE, false, true, true, false, false).ring,
             color_alpha(p.destructive, 0.2)
         );
         assert_eq!(
-            colors(Mode::Dark, Style::Nova, false, true, true, false).ring,
+            colors(Mode::Dark, Style::Nova, false, true, true, false, false).ring,
             color_alpha(dark.destructive, 0.4)
         );
+    }
+
+    #[test]
+    fn suppressed_focused_nova_no_ring_forced_border() {
+        // Spec §4.8 (nova only): suppression kills the ring and forces
+        // the border to `input` (unchecked) / `primary` (checked) while
+        // focused. The headline §4.8 pin (coordinator ruling 12).
+        for mode in [Mode::Light, Mode::Dark] {
+            let p = palette(mode);
+            let unchecked = colors(mode, Style::Nova, false, false, true, false, true);
+            assert!(!unchecked.ring_shown);
+            assert_eq!(unchecked.stroke.color, p.input);
+            let checked = colors(mode, Style::Nova, true, false, true, false, true);
+            assert!(!checked.ring_shown);
+            assert_eq!(checked.stroke.color, p.primary);
+        }
+    }
+
+    #[test]
+    fn unsuppressed_focused_nova_unchanged() {
+        // The flag defaults off, and off means no behaviour change: a
+        // focused unsuppressed nova checkbox keeps its ring + `ring`
+        // border (spec §4.5).
+        for mode in [Mode::Light, Mode::Dark] {
+            let p = palette(mode);
+            let c = colors(mode, Style::Nova, false, false, true, false, false);
+            assert!(c.ring_shown);
+            assert_eq!(c.stroke.color, p.ring);
+        }
+    }
+
+    #[test]
+    fn suppressed_under_base_is_noop() {
+        // Nova-only (ruling 12, switch D4 / radio-group D6 shape): under
+        // the base recipe the flag changes nothing — every state
+        // resolves identically with the flag on or off.
+        for mode in [Mode::Light, Mode::Dark] {
+            for checked in [false, true] {
+                for invalid in [false, true] {
+                    for focused in [false, true] {
+                        for disabled in [false, true] {
+                            let off = colors(
+                                mode, BASE_STYLE, checked, invalid, focused, disabled, false,
+                            );
+                            let on =
+                                colors(mode, BASE_STYLE, checked, invalid, focused, disabled, true);
+                            assert_eq!(off.fill, on.fill);
+                            assert_eq!(off.stroke.color, on.stroke.color);
+                            assert_eq!(off.stroke.width, on.stroke.width);
+                            assert_eq!(off.ring, on.ring);
+                            assert_eq!(off.ring_shown, on.ring_shown);
+                            assert_eq!(off.icon, on.icon);
+                            assert_eq!(off.shadow_shown, on.shadow_shown);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn suppressed_invalid_nova_suppression_wins_provisional() {
+        // PROVISIONAL corner (ruling 12): invalid + suppression →
+        // suppression wins — no ring (not even the nova invalid rest
+        // ring, disabled or not) and the forced border (unchecked:
+        // `input`, NOT `destructive`/`destructive/50`, in either mode).
+        for mode in [Mode::Light, Mode::Dark] {
+            let p = palette(mode);
+            for focused in [false, true] {
+                for disabled in [false, true] {
+                    let unchecked = colors(mode, Style::Nova, false, true, focused, disabled, true);
+                    assert!(!unchecked.ring_shown);
+                    assert_eq!(unchecked.stroke.color, p.input);
+                    let checked = colors(mode, Style::Nova, true, true, focused, disabled, true);
+                    assert!(!checked.ring_shown);
+                    assert_eq!(checked.stroke.color, p.primary);
+                }
+            }
+        }
     }
 
     #[test]
@@ -918,7 +1061,7 @@ mod tests {
         for mode in [Mode::Light, Mode::Dark] {
             let p = palette(mode);
             assert_eq!(
-                colors(mode, Style::Nova, true, true, false, false)
+                colors(mode, Style::Nova, true, true, false, false, false)
                     .stroke
                     .color,
                 p.primary
@@ -929,15 +1072,15 @@ mod tests {
     #[test]
     fn nova_dark_invalid_border_fades() {
         let dark = palette(Mode::Dark);
-        let base = colors(Mode::Dark, BASE_STYLE, false, true, false, false);
+        let base = colors(Mode::Dark, BASE_STYLE, false, true, false, false, false);
         assert_eq!(base.stroke.color, dark.destructive);
-        let nova = colors(Mode::Dark, Style::Nova, false, true, false, false);
+        let nova = colors(Mode::Dark, Style::Nova, false, true, false, false, false);
         // `dark:aria-invalid:border-destructive/50`
         assert_eq!(nova.stroke.color, color_alpha(dark.destructive, 0.5));
         // Light keeps the full destructive border in both styles.
         let p = palette(Mode::Light);
         assert_eq!(
-            colors(Mode::Light, Style::Nova, false, true, false, false)
+            colors(Mode::Light, Style::Nova, false, true, false, false, false)
                 .stroke
                 .color,
             p.destructive
@@ -953,11 +1096,11 @@ mod tests {
         let dark = palette(Mode::Dark);
         for style in [BASE_STYLE, Style::Nova] {
             assert_eq!(
-                colors(Mode::Light, style, false, true, false, false).ring,
+                colors(Mode::Light, style, false, true, false, false, false).ring,
                 color_alpha(p.destructive, 0.2)
             );
             assert_eq!(
-                colors(Mode::Dark, style, false, true, false, false).ring,
+                colors(Mode::Dark, style, false, true, false, false, false).ring,
                 color_alpha(dark.destructive, 0.4)
             );
         }
@@ -970,24 +1113,24 @@ mod tests {
         // so the invalid ring shows without focus under nova only.
         for mode in [Mode::Light, Mode::Dark] {
             // Invalid + unfocused: nova shows, base does not.
-            assert!(colors(mode, Style::Nova, false, true, false, false).ring_shown);
-            assert!(!colors(mode, BASE_STYLE, false, true, false, false).ring_shown);
+            assert!(colors(mode, Style::Nova, false, true, false, false, false).ring_shown);
+            assert!(!colors(mode, BASE_STYLE, false, true, false, false, false).ring_shown);
             // Invalid + focused: both show (the focus rule supplies the
             // width under base).
-            assert!(colors(mode, Style::Nova, false, true, true, false).ring_shown);
-            assert!(colors(mode, BASE_STYLE, false, true, true, false).ring_shown);
+            assert!(colors(mode, Style::Nova, false, true, true, false, false).ring_shown);
+            assert!(colors(mode, BASE_STYLE, false, true, true, false, false).ring_shown);
             // Invalid + checked + unfocused: same split (checked does not
             // affect ring visibility).
-            assert!(colors(mode, Style::Nova, true, true, false, false).ring_shown);
-            assert!(!colors(mode, BASE_STYLE, true, true, false, false).ring_shown);
+            assert!(colors(mode, Style::Nova, true, true, false, false, false).ring_shown);
+            assert!(!colors(mode, BASE_STYLE, true, true, false, false, false).ring_shown);
         }
         // Disabled: the focus ring never shows (a disabled control
         // cannot hold `:focus-visible`), but the nova invalid rest ring
         // still shows (it is not focus-gated; §4.3 fades it to 50%).
-        assert!(!colors(Mode::Light, Style::Nova, false, false, true, true).ring_shown);
-        assert!(!colors(Mode::Light, BASE_STYLE, false, false, true, true).ring_shown);
-        assert!(colors(Mode::Light, Style::Nova, false, true, false, true).ring_shown);
-        assert!(!colors(Mode::Light, BASE_STYLE, false, true, false, true).ring_shown);
+        assert!(!colors(Mode::Light, Style::Nova, false, false, true, true, false).ring_shown);
+        assert!(!colors(Mode::Light, BASE_STYLE, false, false, true, true, false).ring_shown);
+        assert!(colors(Mode::Light, Style::Nova, false, true, false, true, false).ring_shown);
+        assert!(!colors(Mode::Light, BASE_STYLE, false, true, false, true, false).ring_shown);
     }
 
     #[test]
@@ -1001,7 +1144,7 @@ mod tests {
                         for focused in [false, true] {
                             for disabled in [false, true] {
                                 assert!(
-                                    colors(mode, style, checked, invalid, focused, disabled)
+                                    colors(mode, style, checked, invalid, focused, disabled, false)
                                         .shadow_shown,
                                     "shadow dropped: {mode:?} {style:?} checked={checked} invalid={invalid} focused={focused} disabled={disabled}"
                                 );
@@ -1392,10 +1535,12 @@ mod tests {
             .indeterminate(true)
             .disabled(true)
             .invalid(true)
+            .suppress_focus_indication(true)
             .id_salt("cb");
         assert!(cb.indeterminate);
         assert!(cb.disabled);
         assert!(cb.invalid);
+        assert!(cb.suppress_focus_indication);
         assert_eq!(cb.id_salt.as_deref(), Some("cb"));
     }
 
@@ -1522,6 +1667,131 @@ mod tests {
             added[0].starts_with("Mesh"),
             "added shape is not the icon mesh: {}",
             added[0]
+        );
+    }
+
+    #[test]
+    fn suppressed_indeterminate_adds_only_the_icon_shape() {
+        // PROVISIONAL corner (ruling 12): indeterminate + suppression →
+        // border `input`. Indeterminate renders the unchecked recipe
+        // plus the `Check` icon, so the suppressed indeterminate render
+        // must contain every suppressed unchecked shape in order, plus
+        // exactly the icon's image shape — the border is the suppressed
+        // unchecked border (`input`, pinned by
+        // `suppressed_focused_nova_no_ring_forced_border`).
+        // `Preset::default()` is nova, so suppression is active here.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        let plain = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            Checkbox::new(&mut checked)
+                .suppress_focus_indication(true)
+                .id_salt("ind_supp")
+                .show(ui);
+        });
+        let mixed = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            Checkbox::new(&mut checked)
+                .indeterminate(true)
+                .suppress_focus_indication(true)
+                .id_salt("ind_supp")
+                .show(ui);
+        });
+        let plain_dbg: Vec<String> = plain
+            .shapes
+            .iter()
+            .map(|s| format!("{:?}", s.shape))
+            .collect();
+        let mixed_dbg: Vec<String> = mixed
+            .shapes
+            .iter()
+            .map(|s| format!("{:?}", s.shape))
+            .collect();
+        // Subsequence alignment, as in
+        // `indeterminate_adds_only_the_icon_shape`.
+        let mut plain_idx = 0;
+        let mut added: Vec<&String> = Vec::new();
+        for shape in &mixed_dbg {
+            if plain_idx < plain_dbg.len() && shape == &plain_dbg[plain_idx] {
+                plain_idx += 1;
+            } else {
+                added.push(shape);
+            }
+        }
+        assert_eq!(
+            plain_idx,
+            plain_dbg.len(),
+            "indeterminate changed a suppressed unchecked shape"
+        );
+        assert_eq!(added.len(), 1, "indeterminate added shapes: {added:?}");
+        assert!(
+            added[0].starts_with("Mesh"),
+            "added shape is not the icon mesh: {}",
+            added[0]
+        );
+    }
+
+    #[test]
+    fn suppressed_focused_nova_paints_no_ring() {
+        // Spec §4.8, paint level: a suppressed focused checkbox under
+        // nova renders EXACTLY the unfocused render — no ring shapes
+        // appear and the border does not recolor (the suppressed border
+        // target equals the rest border, so no transition leg starts).
+        // The unsuppressed control proves the harness actually focuses:
+        // its focused render gains the ring shapes (the ring snaps under
+        // nova — the shadow spec is 0s — so no time advance is needed
+        // for the control to be live). `Preset::default()` is nova.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut checked = false;
+        let shapes_dbg = |out: egui::FullOutput| {
+            out.shapes
+                .iter()
+                .map(|s| format!("{:?}", s.shape))
+                .collect::<Vec<_>>()
+        };
+        // Suppressed leg: unfocused render, then focus, then focused
+        // render.
+        let mut id = egui::Id::NULL;
+        let rest = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            id = Checkbox::new(&mut checked)
+                .suppress_focus_indication(true)
+                .id_salt("supp_focus")
+                .show(ui)
+                .id;
+        });
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+        let focused = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked)
+                .suppress_focus_indication(true)
+                .id_salt("supp_focus")
+                .show(ui);
+            assert!(r.has_focus(), "suppressed leg lost focus");
+        });
+        assert_eq!(
+            shapes_dbg(rest),
+            shapes_dbg(focused),
+            "suppression changed the focused render"
+        );
+        // Unsuppressed control: the focused render MUST differ (ring).
+        let mut id2 = egui::Id::NULL;
+        let rest2 = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            id2 = Checkbox::new(&mut checked).id_salt("supp_ctrl").show(ui).id;
+        });
+        ctx.memory_mut(|m| m.request_focus(id2));
+        let focused2 = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked).id_salt("supp_ctrl").show(ui);
+            assert!(r.has_focus(), "control leg lost focus");
+        });
+        let rest2_dbg = shapes_dbg(rest2);
+        let focused2_dbg = shapes_dbg(focused2);
+        assert_ne!(
+            rest2_dbg, focused2_dbg,
+            "control: focus changed nothing — harness is vacuous"
+        );
+        assert!(
+            focused2_dbg.len() > rest2_dbg.len(),
+            "control: focused render gained no shapes"
         );
     }
 
