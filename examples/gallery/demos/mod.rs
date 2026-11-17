@@ -3042,44 +3042,260 @@ pub fn input_demo(ui: &mut egui::Ui) {
 }
 
 pub fn textarea_demo(ui: &mut egui::Ui) {
+    // Header: recipe position, stated honestly (spec §§2, 6, 10, 11 +
+    // the transition narrow-reading coordinator ruling).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Textarea — single element, no variants. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Base: field-sizing-content, min-h 64px, radius 8px, padding-x 12px, transition-[color,box-shadow]. Nova: radius 10px, padding-x 10px, transition-colors, invalid rest ring, /50 dark invalid border, disabled fills. OPEN-1: 150ms + cubic-bezier(0.4, 0, 0.2, 1) are interim framework defaults. OPEN-2: invalid-wins precedence is interim. OPEN-3: field-sizing edges (trailing newline, overflow) open. D5 single-size rendering (14px/20px at all widths) is PROPOSED. TXT-ANM-01 pending S9: base border/fill changes currently animate; the narrow-reading ruling requires snaps (ring fades under base).");
+
+    // Demo state: one backing string per textarea, so editing one never
+    // moves another, and every textarea carries a distinct id_salt so S6
+    // probes have stable ids. Initial values are the §3.2 ladder cases.
     let store = egui::Id::unique("textarea_demo_values");
-    let mut values: Vec<String> = ui.ctx().data_mut(|d| {
-        d.get_temp::<Vec<String>>(store)
-            .unwrap_or_else(|| vec![String::new(); 4])
-    });
+    let mut values: Vec<String> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Vec<String>>(store))
+        .filter(|v| v.len() == 17)
+        .unwrap_or_else(|| {
+            vec![
+                String::new(), // 0: §1 empty
+                "One line of text.".to_owned(), // 1: §1 one line
+                "Line one\nLine two\nLine three".to_owned(), // 2: §1 three lines
+                "Line one\nLine two\nLine three\nLine four".to_owned(), // 3: §1 four lines
+                "Line one\nLine two\nLine three\nLine four\nLine five".to_owned(), // 4: §1 five lines
+                "Growth target\nline two\nline three\nline four".to_owned(), // 5: §2 growth
+                String::new(), // 6: §3 focus target
+                String::new(), // 7: §4 invalid, empty
+                "Invalid with content\nsecond line".to_owned(), // 8: §4 invalid, content
+                String::new(), // 9: §5 disabled, empty
+                "Disabled with content\nsecond line".to_owned(), // 10: §5 disabled, content
+                String::new(), // 11: §6 placeholder
+                String::new(), // 12: §6 placeholder, focusable
+                String::new(), // 13: §7 rows(5), empty
+                "Row one\nRow two\nRow three\nRow four".to_owned(), // 14: §7 rows(1), content
+                "Wrapping grows this box on the §3.2 ladder: one long line soft-wraps into several visual rows at 300px wide, and the height follows max(64, 18 + 20 x N).".to_owned(), // 15: §7 narrow
+                String::new(), // 16: §8 hover target
+            ]
+        });
 
-    ui.label("Default (min-h-16, w-full)");
-    ui.add_space(4.0);
-    Textarea::new(&mut values[0]).show(ui);
+    // Newline-separated line count (0 when empty). Soft wraps add visual
+    // rows beyond this count; S5 derives visual rows from the height.
+    let line_count = |s: &str| {
+        if s.is_empty() {
+            0
+        } else {
+            s.matches('\n').count() + 1
+        }
+    };
 
+    // 1. Empty + content heights (spec §3.2 ladder).
     ui.add_space(12.0);
-    ui.label("With placeholder");
+    ui.label("1. Empty + content heights (spec §3.2: height = max(64, 18 + 20 x N) px; 0-2 rows 64px, 3 rows 78px, 4 rows 98px, 5 rows 118px)");
     ui.add_space(4.0);
-    Label::new("Your message").show(ui);
-    Textarea::new(&mut values[1])
-        .placeholder("Type your message here.")
+    let r = Textarea::new(&mut values[0]).id_salt("s3-empty").show(ui);
+    ui.label(format!(
+        "empty: {:.1} x {:.1} px; lines: {}; expect the 64px floor",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[0])
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[1]).id_salt("s3-one").show(ui);
+    ui.label(format!(
+        "one line: {:.1} x {:.1} px; lines: {}; expect 64px",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[1])
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[2]).id_salt("s3-three").show(ui);
+    ui.label(format!(
+        "three lines: {:.1} x {:.1} px; lines: {}; expect 78px",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[2])
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[3]).id_salt("s3-four").show(ui);
+    ui.label(format!(
+        "four lines: {:.1} x {:.1} px; lines: {}; expect 98px",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[3])
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[4]).id_salt("s3-five").show(ui);
+    ui.label(format!(
+        "five lines: {:.1} x {:.1} px; lines: {}; expect 118px",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[4])
+    ));
+
+    // 2. Growth (spec §3.4; D3 VOID — true content-sized growth).
+    ui.add_space(12.0);
+    ui.label("2. Growth (spec §3.4, D3 VOID — true content-sized growth)");
+    ui.label("S6 drives growth/shrink by editing: typing new lines grows the box on the §3.2 ladder; deleting shrinks it back to the 64px floor. No internal scrollbar for fitted content.");
+    ui.add_space(4.0);
+    let r = Textarea::new(&mut values[5]).id_salt("s3-growth").show(ui);
+    ui.label(format!(
+        "growth target: {:.1} x {:.1} px; lines: {}; edit me",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[5])
+    ));
+
+    // 3. Focus target (spec §4), with clear space above and below.
+    ui.add_space(12.0);
+    ui.label("3. Focus target (spec §4: border ring + 3px ring/50 ring outside the border box)");
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[6]).id_salt("s3-focus").show(ui);
+    ui.add_space(8.0);
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; focused: {}",
+        r.rect.width(),
+        r.rect.height(),
+        r.has_focus()
+    ));
+
+    // 4. Invalid (spec §4, N5 SETTLED).
+    ui.add_space(12.0);
+    ui.label("4. Invalid (spec §4, N5 SETTLED: nova shows the 3px rest ring unfocused + /50 dark border; base shows the destructive border with NO unfocused ring)");
+    ui.add_space(4.0);
+    let r = Textarea::new(&mut values[7])
+        .invalid(true)
+        .id_salt("s3-invalid-empty")
         .show(ui);
+    ui.label(format!(
+        "invalid, empty: {:.1} x {:.1} px",
+        r.rect.width(),
+        r.rect.height()
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[8])
+        .invalid(true)
+        .id_salt("s3-invalid-content")
+        .show(ui);
+    ui.label(format!(
+        "invalid, with content: {:.1} x {:.1} px; lines: {}",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[8])
+    ));
 
+    // 5. Disabled (spec §4).
     ui.add_space(12.0);
-    ui.label("Rows (grows with content)");
+    ui.label("5. Disabled (spec §4: whole element at 50% — nova fills composite at effective 25% light / 40% dark, base dark 15%; faded shadow; not-allowed cursor)");
     ui.add_space(4.0);
-    Textarea::new(&mut values[2]).rows(5).width(360.0).show(ui);
+    let r = Textarea::new(&mut values[9])
+        .disabled(true)
+        .id_salt("s3-disabled-empty")
+        .show(ui);
+    ui.label(format!(
+        "disabled, empty: {:.1} x {:.1} px",
+        r.rect.width(),
+        r.rect.height()
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[10])
+        .disabled(true)
+        .id_salt("s3-disabled-content")
+        .show(ui);
+    ui.label(format!(
+        "disabled, with content: {:.1} x {:.1} px; lines: {}",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[10])
+    ));
 
+    // 6. Placeholder (spec §4).
     ui.add_space(12.0);
-    ui.label("States");
+    ui.label("6. Placeholder (spec §4: muted-foreground, same size/line-height as body text; focus does not hide it — no focus:placeholder-* rule)");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Textarea::new(&mut values[3])
-            .disabled(true)
-            .width(200.0)
-            .placeholder("Disabled")
-            .show(ui);
-        Textarea::new(&mut values[3])
-            .invalid(true)
-            .width(200.0)
-            .placeholder("Invalid")
-            .show(ui);
-    });
+    let r = Textarea::new(&mut values[11])
+        .placeholder("Type your message here.")
+        .id_salt("s3-placeholder")
+        .show(ui);
+    ui.label(format!(
+        "placeholder, empty: {:.1} x {:.1} px; value length: {} chars",
+        r.rect.width(),
+        r.rect.height(),
+        values[11].chars().count()
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[12])
+        .placeholder("Click here, then check the placeholder stays visible while focused.")
+        .id_salt("s3-placeholder-focus")
+        .show(ui);
+    ui.label(format!(
+        "placeholder, focusable: {:.1} x {:.1} px; value length: {} chars; focused: {}",
+        r.rect.width(),
+        r.rect.height(),
+        values[12].chars().count(),
+        r.has_focus()
+    ));
+
+    // 7. Rows + width (spec §3.2/§3.4/§8; D5 PROPOSED).
+    ui.add_space(12.0);
+    ui.label("7. Rows + width (spec §3.2/§3.4/§8; D5 PROPOSED: 14px text / 20px rows at all widths, including the 300px box below the 768px md breakpoint)");
+    ui.add_space(4.0);
+    let r = Textarea::new(&mut values[13])
+        .rows(5)
+        .id_salt("s3-rows5")
+        .show(ui);
+    ui.label(format!(
+        "rows(5), empty: {:.1} x {:.1} px; rows is a minimum — expect the 118px floor",
+        r.rect.width(),
+        r.rect.height()
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[14])
+        .rows(1)
+        .id_salt("s3-rows1")
+        .show(ui);
+    ui.label(format!(
+        "rows(1), four lines: {:.1} x {:.1} px; lines: {}; growth beyond the 1-row minimum — expect 98px",
+        r.rect.width(),
+        r.rect.height(),
+        line_count(&values[14])
+    ));
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[15])
+        .width(300.0)
+        .id_salt("s3-narrow")
+        .show(ui);
+    ui.label(format!(
+        "narrow, 300px wide: {:.1} x {:.1} px; {} chars on one line; wrapping grows the box on the §3.2 ladder",
+        r.rect.width(),
+        r.rect.height(),
+        values[15].chars().count()
+    ));
+
+    // 8. Hover target (spec §4: no hover rule), with clear space above
+    // and below.
+    ui.add_space(12.0);
+    ui.label(
+        "8. Hover target (spec §4: NO hover rule — hovering must render identically to resting)",
+    );
+    ui.add_space(8.0);
+    let r = Textarea::new(&mut values[16]).id_salt("s3-hover").show(ui);
+    ui.add_space(8.0);
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; hovered: {}",
+        r.rect.width(),
+        r.rect.height(),
+        r.hovered()
+    ));
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
