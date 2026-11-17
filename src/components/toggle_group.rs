@@ -100,10 +100,10 @@
 //! ```
 
 use crate::components::button::{group, GroupOrientation};
-use crate::components::toggle::{Toggle, ToggleSize, ToggleVariant};
+use crate::components::toggle::{metrics, Toggle, ToggleSize, ToggleVariant};
 use crate::icons::Icon;
 use crate::theme::{ShadcnTheme, Style};
-use egui::{InnerResponse, Ui};
+use egui::{vec2, Align, InnerResponse, Layout, Ui};
 
 /// One Tailwind spacing unit in points: `--spacing = 0.25rem` at the
 /// default 16px root (framework default, spec §0).
@@ -391,10 +391,44 @@ impl<'a> ToggleGroup<'a> {
         }
 
         let inner = match self.orientation {
-            GroupOrientation::Horizontal => ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                self.render_items(ui);
-            }),
+            GroupOrientation::Horizontal => {
+                // TGG-VIS-01: `Ui::horizontal` seeds the row at
+                // `interact_size.y` (36pt) and centers each widget in the
+                // frame height seen so far; a taller item placed later
+                // grows the row downward, leaving earlier shorter items
+                // 2px above the final row center. Seed the row at the
+                // tallest resolved item height (floored at
+                // `interact_size.y`, preserving the 36px row-rect floor)
+                // so every item centers on the final row height. This
+                // replicates `Ui::horizontal` exactly apart from the seed
+                // height (same layout, same RTL branch, no wrapping).
+                let style = ShadcnTheme::of_ui(ui).style;
+                let tallest = self
+                    .items
+                    .iter()
+                    .map(|item| {
+                        metrics::height(
+                            resolve_context(self.size, item.size, ToggleSize::Default),
+                            style,
+                        )
+                    })
+                    .fold(0.0f32, f32::max);
+                let row_h = ui.spacing().interact_size.y.max(tallest);
+                let layout = if ui.layout().prefer_right_to_left() {
+                    Layout::right_to_left(Align::Center)
+                } else {
+                    Layout::left_to_right(Align::Center)
+                }
+                .with_main_wrap(false);
+                ui.allocate_ui_with_layout(
+                    vec2(ui.available_size_before_wrap().x, row_h),
+                    layout,
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        self.render_items(ui);
+                    },
+                )
+            }
             GroupOrientation::Vertical => ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = gap;
                 self.render_items(ui);
@@ -974,6 +1008,132 @@ mod tests {
         assert!((borders[0].0.height() - 32.0).abs() < 0.01);
         assert!((borders[1].0.height() - 36.0).abs() < 0.01);
         assert!((borders[2].0.height() - 40.0).abs() < 0.01);
+    }
+
+    /// Spec §3.2 (`items-center`) + §8.1: mixed-height items are
+    /// vertically centered — every item's vertical center equals the
+    /// group's vertical center (the tallest item's center). TGG-VIS-01:
+    /// with the tallest item LAST, shorter items placed earlier kept the
+    /// center of the 36pt seed row instead of the final row center
+    /// (2px high under base styles). Spaced groups: each item paints
+    /// exactly one border stroke in both the old and the rebuilt toggle
+    /// paint (position `Only`, no clip cells), so these pins hold on the
+    /// merged tree too.
+    fn centered_border_rects(style: Style, sizes: [ToggleSize; 3]) -> Vec<Rect> {
+        let mut states = vec![false, false, false];
+        let out = run_frames_output(style, Mode::Light, 3, |ui| {
+            ToggleGroup::multiple(&mut states)
+                .id_salt("tg_centering")
+                .variant(ToggleVariant::Outline)
+                .spacing(2.0)
+                .add_item(GroupItem::new("A").size(sizes[0]))
+                .add_item(GroupItem::new("B").size(sizes[1]))
+                .add_item(GroupItem::new("C").size(sizes[2]))
+                .show(ui);
+        });
+        let mut rects: Vec<Rect> = border_strokes(&out)
+            .into_iter()
+            .map(|(r, _, _)| r)
+            .collect();
+        assert_eq!(rects.len(), 3, "expected one border stroke per item");
+        rects.sort_by(|a, b| a.min.x.partial_cmp(&b.min.x).unwrap());
+        rects
+    }
+
+    #[test]
+    fn mixed_heights_center_on_final_row_height_tallest_last() {
+        // TGG-VIS-01: tallest item last (the §6a demo order). Pre-fix the
+        // Sm/Default centers sat 2px above the Lg center under Vega.
+        let rects = centered_border_rects(
+            Style::Vega,
+            [ToggleSize::Sm, ToggleSize::Default, ToggleSize::Lg],
+        );
+        assert!((rects[0].height() - 32.0).abs() < 0.01);
+        assert!((rects[1].height() - 36.0).abs() < 0.01);
+        assert!((rects[2].height() - 40.0).abs() < 0.01);
+        let center = rects[2].center().y;
+        for (i, rect) in rects.iter().enumerate() {
+            assert!(
+                (rect.center().y - center).abs() < 0.01,
+                "item {i} center {} != tallest center {center}",
+                rect.center().y
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_heights_center_tallest_first() {
+        // Tallest item first: centered pre-fix too; the fix must not move it.
+        let rects = centered_border_rects(
+            Style::Vega,
+            [ToggleSize::Lg, ToggleSize::Default, ToggleSize::Sm],
+        );
+        let center = rects[0].center().y;
+        for (i, rect) in rects.iter().enumerate() {
+            assert!(
+                (rect.center().y - center).abs() < 0.01,
+                "item {i} center {} != tallest center {center}",
+                rect.center().y
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_heights_center_tallest_middle() {
+        let rects = centered_border_rects(
+            Style::Vega,
+            [ToggleSize::Sm, ToggleSize::Lg, ToggleSize::Default],
+        );
+        let center = rects[1].center().y;
+        for (i, rect) in rects.iter().enumerate() {
+            assert!(
+                (rect.center().y - center).abs() < 0.01,
+                "item {i} center {} != tallest center {center}",
+                rect.center().y
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_heights_center_nova() {
+        // Nova heights (28/32/36) never exceed the 36pt seed row, so
+        // centering held pre-fix; the fix must keep it exact.
+        let rects = centered_border_rects(
+            Style::Nova,
+            [ToggleSize::Sm, ToggleSize::Default, ToggleSize::Lg],
+        );
+        assert!((rects[0].height() - 28.0).abs() < 0.01);
+        assert!((rects[1].height() - 32.0).abs() < 0.01);
+        assert!((rects[2].height() - 36.0).abs() < 0.01);
+        let center = rects[2].center().y;
+        for (i, rect) in rects.iter().enumerate() {
+            assert!(
+                (rect.center().y - center).abs() < 0.01,
+                "item {i} center {} != tallest center {center}",
+                rect.center().y
+            );
+        }
+    }
+
+    #[test]
+    fn uniform_heights_centered() {
+        let rects = centered_border_rects(
+            Style::Vega,
+            [
+                ToggleSize::Default,
+                ToggleSize::Default,
+                ToggleSize::Default,
+            ],
+        );
+        let center = rects[0].center().y;
+        for (i, rect) in rects.iter().enumerate() {
+            assert!((rect.height() - 36.0).abs() < 0.01);
+            assert!(
+                (rect.center().y - center).abs() < 0.01,
+                "item {i} center {} != row center {center}",
+                rect.center().y
+            );
+        }
     }
 
     #[test]
