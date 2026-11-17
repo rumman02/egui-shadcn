@@ -24,7 +24,8 @@
 //! whole-element `disabled:opacity-50` (see the frozen spec §2.3 for the
 //! per-property derivation).
 //!
-//! Behaviour notes (frozen spec `~/workspace/batch-b/specs/textarea-spec.md`):
+//! Behaviour notes (frozen spec `~/workspace/batch-b/specs/textarea-spec.md`,
+//! verified final state — Batch B S10 PASS, all four style/mode configs):
 //!
 //! * Type size is `text-base ... md:text-sm`: 14px/20px governs at `md`+
 //!   widths (≥768px) and 16px/24px below. The port renders the `md`+ size
@@ -34,20 +35,57 @@
 //!   is `max(64, 18 + 20 × N)` px for N visual rows at `md`+ widths (§3.2).
 //!   The `rows` builder sets only the minimum visible row count (default 2,
 //!   the HTML default); growth past it is content-sized, so deviation D3 is
-//!   VOID for this build. Exact `field-sizing-content` edges (OPEN-3) are
-//!   owned by S4/S5.
-//! * Invalid + focus precedence is OPEN-2; the interim expectation (invalid
-//!   wins for border and ring colour) is implemented and labelled interim.
-//! * Transition duration/easing are OPEN-1; the Phase 1 motion defaults
-//!   (150ms, cubic-bezier(0.4, 0, 0.2, 1)) are used and labelled INTERIM.
-//! * The focus ring shows on any egui focus — proposed deviation D1 (the
-//!   approved button-D3 `:focus-visible` modality class).
-//! * Triple-click selects the line/paragraph (spec §7): the component
-//!   counts presses by pass-processing wall time, because egui 0.37's
-//!   frame-time click counting + double-before-triple branch order make
-//!   a batched triple-click select the word instead (TXT-INT-02). This
-//!   repairs coalesced delivery; frame-time straddling (M1) still
-//!   demotes — a documented environmental limitation.
+//!   VOID for this build. Exact `field-sizing-content` edges (OPEN-3) stay
+//!   OPEN as frozen (gate G5).
+//! * Invalid + focus precedence is OPEN-2 and stays OPEN as frozen (gate
+//!   G5); the interim expectation (invalid wins for border and ring
+//!   colour) is implemented and labelled interim.
+//! * Invalid split (N5, settled): under nova an invalid field shows the
+//!   3px rest ring (`destructive/20` light, `/40` dark) even unfocused,
+//!   and the nova dark invalid border is `destructive/50`; under the base
+//!   recipe an invalid-but-unfocused field shows no ring (colour set, no
+//!   width class) and the border is full `destructive` in both modes.
+//! * The focus ring is 3px, `ring/50`, painted at the outer edge of the
+//!   border box with zero gap (offset 0, spec §3.1); the focus border is
+//!   the `ring` token. The ring shows on any egui focus — proposed
+//!   deviation D1 (the approved button-D3 `:focus-visible` modality
+//!   class).
+//! * Disabled composition is group fade (ruling 7): the whole element
+//!   renders, then composites once at 50% over the backdrop (CSS
+//!   `opacity` semantics). The disabled border stroke is painted opaque
+//!   with the group-fade precomposite, reading (242)/(242) light and
+//!   (41)/(33) dark (ruling 11); the fill, text, ring, and shadow are
+//!   halved at the single composition point, which is exact for those
+//!   slots. The disabled fade is instant (`opacity` is in neither
+//!   transition list, spec §6).
+//! * `shadow-xs` survives under every style (LAYER: `.cn-textarea` is
+//!   silent on shadow) and fades with the element when disabled (2.5%
+//!   effective). There is no hover or pressed state (no `hover:*` /
+//!   `active:*` class); the placeholder stays visible while focused.
+//! * Animation (ruling 6, narrow reading): under the base recipe,
+//!   `transition-[color,box-shadow]` covers text colour and `box-shadow`
+//!   only — the ring fades, while border-colour and fill changes SNAP.
+//!   Under nova, `transition-colors` animates the colours while the ring
+//!   snaps. Duration/easing are OPEN-1 (interim 150ms,
+//!   cubic-bezier(0.4, 0, 0.2, 1), Tailwind v4 framework defaults). The
+//!   M3/M9 sampling gap is ACCEPTED (gate G3): the wiring is the
+//!   verification basis, and no sampled snap-vs-fade proof is claimed.
+//! * Selection colours: the spec freezes NO selection-colour rule (no
+//!   `selection:*` class, gate G2) — whatever the theme renders for a
+//!   textarea selection is acceptable for this line; it is no defect
+//!   and no deviation.
+//! * Keyboard (spec §7, native platform semantics): Escape is a no-op
+//!   for a focused textarea (claimed in the `EventFilter`, TXT-INT-01);
+//!   PageUp/PageDown move the caret by one viewport page — the fully
+//!   visible rows in the content-sized box — and clamp at the document
+//!   edges (TXT-INT-03); Tab/Shift+Tab traverse focus, never insert
+//!   `\t`; triple-click selects the line/paragraph (spec §7): the
+//!   component counts presses by pass-processing wall time, because
+//!   egui 0.37's frame-time click counting + double-before-triple
+//!   branch order make a batched triple-click select the word instead
+//!   (TXT-INT-02). This repairs coalesced delivery; frame-time
+//!   straddling (M1) still demotes — a documented environmental
+//!   limitation, not a defect.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -134,7 +172,7 @@ pub(crate) fn ring_visible(focused: bool, invalid: bool, style: Style) -> bool {
 ///
 /// Precedence (OPEN-2, INTERIM): invalid wins over focus for both the
 /// border and the ring colour. The compiled cascade order is not in the
-/// snapshot; S4/S5 own the settlement.
+/// snapshot; OPEN-2 stays OPEN as frozen (gate G5).
 ///
 /// N5 (settled): under nova in dark mode the invalid border is
 /// `destructive/50` (`dark:aria-invalid:border-destructive/50`,
@@ -213,8 +251,10 @@ pub(crate) fn apply_element_opacity(color: Color32, disabled: bool) -> Color32 {
 /// nova-light reads (239) instead of the group-fade (242). The disabled
 /// stroke is therefore painted OPAQUE with the precomputed composite —
 /// `0.5 * (stroke over fill over backdrop) + 0.5 * backdrop` — following
-/// the toggle line's `disabled_group_fade` shape. `fill` is the animated
-/// pre-opacity fill (the disabled-state fill target, e.g. nova `input/50`);
+/// the toggle line's `disabled_group_fade` shape. Closing values, all
+/// four configs (ruling 11): (242)/(242) light, (41)/(33) dark. `fill`
+/// is the animated pre-opacity fill (the disabled-state fill target,
+/// e.g. nova `input/50`);
 /// `backdrop` is `p.background`, exact on the gallery page. On other
 /// backdrops the theme background is the fade target, a recorded
 /// limitation (same class as toggle). Only the stroke uses this path: the
