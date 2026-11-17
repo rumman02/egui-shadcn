@@ -70,8 +70,10 @@
 //!
 //! # Animation (spec §6, interim per OPEN-11)
 //!
-//! Only the thumb's `transition-[color,box-shadow]` exists: ring and colour
-//! changes animate over the Tailwind v4 framework defaults (150ms,
+//! Only the thumb's `transition-[color,box-shadow]` exists, read NARROWLY
+//! (ruling 6): `color` is text colour only, so the track, Range, thumb
+//! fill and thumb stroke SNAP on restyle; only the ring (box-shadow)
+//! animates, over the Tailwind v4 framework defaults (150ms,
 //! `cubic-bezier(0.4, 0, 0.2, 1)`); thumb position and Range extent snap.
 //! The 150ms/easing values are framework defaults, NOT snapshot evidence.
 //!
@@ -104,7 +106,7 @@
 
 use crate::components::button::GroupOrientation;
 use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
-use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
+use crate::utils::animation::{transition_alpha, TransitionSpec};
 use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
@@ -267,44 +269,6 @@ pub(crate) fn resolve_slider_colors(p: &Palette, style: Style) -> SliderColors {
         thumb_fill: Color32::WHITE,
         thumb_stroke: Stroke::new(1.0, thumb_stroke_color),
         ring: color_alpha(p.ring, 0.5),
-    }
-}
-
-/// Wraps the resolved endpoint colours in the endpoint-change animator
-/// ([`transition_color_to`]) for the thumb's `transition-[color,box-shadow]`
-/// (spec §6): colour changes animate over the framework-default timing
-/// (150ms, `cubic-bezier(0.4, 0, 0.2, 1)`), interim per OPEN-11. All slots
-/// are opaque in both themes, so no leg crosses the transparent boundary
-/// (the BTN-FLK-02 caveat). The ring colour is NOT wrapped here — it
-/// animates per thumb via [`transition_alpha`] instead, so no colour runs
-/// two legs.
-fn animate_slider_colors(
-    ctx: &egui::Context,
-    id: egui::Id,
-    c: SliderColors,
-    spec: TransitionSpec,
-) -> SliderColors {
-    SliderColors {
-        track: transition_color_to(ctx, id.with("color").with("track"), c.track, spec).color,
-        range: transition_color_to(ctx, id.with("color").with("range"), c.range, spec).color,
-        thumb_fill: transition_color_to(
-            ctx,
-            id.with("color").with("thumb_fill"),
-            c.thumb_fill,
-            spec,
-        )
-        .color,
-        thumb_stroke: Stroke::new(
-            c.thumb_stroke.width,
-            transition_color_to(
-                ctx,
-                id.with("color").with("thumb_stroke"),
-                c.thumb_stroke.color,
-                spec,
-            )
-            .color,
-        ),
-        ring: c.ring,
     }
 }
 
@@ -655,15 +619,19 @@ impl<'a> Slider<'a> {
             None => ui.auto_id_with("shadcn_slider"),
         };
 
-        // §6: endpoint colour legs (interim timing, OPEN-11), then the §4.4
-        // uniform disabled fade applied exactly once via `faded`.
+        // §6 + ruling 6: the track, Range, thumb fill and thumb stroke
+        // SNAP to the resolved endpoint colours — no transition class
+        // covers them (`transition-[color,box-shadow]` reads narrowly:
+        // `color` is text colour only; background/border colours snap).
+        // Only the ring (box-shadow) animates, via `transition_alpha`
+        // below (interim timing, OPEN-11). SLD-ANM-01: the old endpoint
+        // animator eased these slots on restyle (including the border —
+        // the S7 "border snaps" reading was under-sampled); resolving
+        // directly makes them snap, as ruling 6 requires, and leaves
+        // the ring ease untouched. The §4.4 uniform disabled fade is
+        // then applied exactly once via `faded`.
         let transition_spec = TransitionSpec::default();
-        let resolved = animate_slider_colors(
-            ui.ctx(),
-            id,
-            resolve_slider_colors(&p, style),
-            transition_spec,
-        );
+        let resolved = resolve_slider_colors(&p, style);
         let alpha = if self.disabled { 0.5 } else { 1.0 };
         let mut c = resolved.faded(alpha);
         if self.disabled {
@@ -1105,6 +1073,97 @@ mod tests {
         assert_eq!((lf.r(), lf.g(), lf.b()), (255, 255, 255));
         let df = disabled_group_fade(color_alpha(Color32::WHITE, 0.5), dark.background);
         assert_eq!((df.r(), df.g(), df.b()), (133, 133, 133));
+    }
+
+    #[test]
+    fn restyle_snaps_track_range_fill_and_stroke_sld_anm_01() {
+        // SLD-ANM-01: on a theme-switch restyle the track, Range, thumb
+        // fill and thumb stroke must resolve to the new theme's endpoint
+        // colours IMMEDIATELY — no transition classes cover those parts
+        // (spec §6 + ruling 6: `transition-[color,box-shadow]` covers
+        // text colour + box-shadow only). Only the ring animates (via
+        // `transition_alpha`, untouched here). The pin drives `show()`
+        // through a light→dark flip and inspects the painted shapes on
+        // the first post-flip frame AND one mid-leg frame later: every
+        // slot must already equal the dark endpoint exactly. Under the
+        // old endpoint animator the flip frame still showed the light
+        // endpoint (leg start) and the mid-leg frame an OKLab
+        // intermediate, so both asserts are red before the fix.
+        use crate::theme::{Mode, Preset, ShadcnTheme};
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx); // light, default (nova) preset
+        let mut v = 40.0f32;
+        let show_at = |ctx: &egui::Context, v: &mut f32, time: f64| {
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_anm01_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(v).min(0.0).max(100.0).id_salt("anm01").show(ui);
+            });
+            // No renderer consumes the texture deltas in a harness test;
+            // dropping them unapplied panics (epaint TexturesDelta guard).
+            out.textures_delta.clear();
+            out
+        };
+        // Frame 1 (light): settle every slot at the light endpoints.
+        let _ = show_at(&ctx, &mut v, 1.0);
+        // Flip to dark, then probe the flip frame (t + 75ms: mid-leg for
+        // a 150ms ease) and a settled frame (t + 150ms).
+        ShadcnTheme::set_mode(&ctx, Mode::Dark);
+        let dark = palette(Mode::Dark);
+        let style = Preset::default().build(Mode::Dark).style;
+        let want = resolve_slider_colors(&dark, style);
+        for time in [1.075, 1.15] {
+            let out = show_at(&ctx, &mut v, time);
+            let mut track_fill = None;
+            let mut range_fill = None;
+            let mut thumb_fill = None;
+            let mut stroke_color = None;
+            for clipped in &out.shapes {
+                match &clipped.shape {
+                    egui::Shape::Rect(rs) => {
+                        // Track: full-width bar; Range: same height, the
+                        // 40% span from the Track start to the thumb.
+                        // (Shadow layers are thumb-sized rects, never a
+                        // full-width 4px bar.)
+                        if (rs.rect.height() - track_height(style)).abs() < 0.01 {
+                            if rs.rect.width() > 150.0 {
+                                track_fill = Some(rs.fill);
+                            } else if rs.rect.width() > 10.0 {
+                                range_fill = Some(rs.fill);
+                            }
+                        }
+                    }
+                    egui::Shape::Circle(cs) => {
+                        if (cs.radius - thumb_size(style) / 2.0).abs() < 0.01 {
+                            thumb_fill = Some(cs.fill);
+                        } else if (cs.radius - (thumb_size(style) / 2.0 - 0.5)).abs() < 0.01 {
+                            stroke_color = Some(cs.stroke.color);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(track_fill, Some(want.track), "t={time}: track must snap");
+            assert_eq!(range_fill, Some(want.range), "t={time}: Range must snap");
+            assert_eq!(
+                thumb_fill,
+                Some(want.thumb_fill),
+                "t={time}: fill must snap"
+            );
+            assert_eq!(
+                stroke_color,
+                Some(want.thumb_stroke.color),
+                "t={time}: stroke must snap"
+            );
+        }
     }
 
     #[test]
