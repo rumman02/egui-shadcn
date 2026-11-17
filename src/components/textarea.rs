@@ -372,6 +372,21 @@ impl<'a> Textarea<'a> {
         // cubic-bezier(0.4, 0, 0.2, 1)) are Tailwind v4 framework defaults,
         // labelled INTERIM — not snapshot-verified truth.
         let spec = TransitionSpec::default();
+        // Ruling 6 (transition narrow reading): under the base recipe,
+        // `transition-[color,box-shadow]` covers the CSS `color` (text
+        // colour) and `box-shadow` (ring/shadow) properties only —
+        // `border-color` and `background-color` are distinct properties,
+        // so the border and fill SNAP under base. Under nova,
+        // `transition-colors` animates the colours while the ring snaps.
+        // The zero-duration spec is the snap mechanism (`TransitionSpec`
+        // snaps instantly at `duration_secs <= 0.0`); the animator ids
+        // stay the same, so a style switch mid-leg settles instantly
+        // instead of stranding stale animator state.
+        let color_spec = if matches!(style, Style::Nova) {
+            spec
+        } else {
+            TransitionSpec::secs(0.0, spec.easing)
+        };
         let ctx = ui.ctx().clone();
 
         let is_empty = self.text.is_empty();
@@ -396,9 +411,11 @@ impl<'a> Textarea<'a> {
             resolve_textarea_colors(&p, dark, false, self.invalid, self.disabled, style);
         // Keep the animated pre-opacity fill: the frame carries the faded
         // fill, while the disabled border precomposite (TXT-VIS-02) needs
-        // the un-faded animated value. Same animator id, same target — the
-        // animation wiring is untouched.
-        let fill_animated = transition_color_to(&ctx, id.with("fill"), fill_target, spec).color;
+        // the un-faded animated value. Same animator id, same target; the
+        // leg eases under nova and snaps under base (ruling 6, via
+        // `color_spec` above).
+        let fill_animated =
+            transition_color_to(&ctx, id.with("fill"), fill_target, color_spec).color;
         let fill = apply_element_opacity(fill_animated, self.disabled);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let edit = TextEdit::multiline(self.text)
@@ -460,19 +477,17 @@ impl<'a> Textarea<'a> {
             let focused = response.has_focus() && !self.disabled;
             let (_, stroke_target, ring_target) =
                 resolve_textarea_colors(&p, dark, focused, self.invalid, self.disabled, style);
-            // Animation follows the frozen spec §6 literally: under the
-            // base recipe the `color` and `box-shadow` properties animate
-            // (fill/border/ring), and under nova `transition-colors`
-            // animates colours while the ring snaps. NOTE: the input spec
-            // §6 reads the base property list more narrowly (border/fill
-            // snap under base) — the two frozen specs disagree here; the
-            // coordinator ruling is requested in the S1 report, and S9
-            // re-wires this block if the ruling goes the other way. (The
-            // fill animator runs before the TextEdit — see above — so the
+            // Animation follows ruling 6 (the narrow reading of the base
+            // `transition-[color,box-shadow]`): the border and fill snap
+            // under base (zero-duration `color_spec`), the ring fades
+            // under base, and the text colour animates under both styles
+            // (the `color` property). Under nova `transition-colors`
+            // animates the colours while the ring snaps. (The fill
+            // animator runs before the TextEdit — see above — so the
             // frame carries the animated fill; only border/ring resolve
             // here, where focus is known.)
             let stroke_animated =
-                transition_color_to(&ctx, id.with("border"), stroke_target, spec).color;
+                transition_color_to(&ctx, id.with("border"), stroke_target, color_spec).color;
             // TXT-VIS-02: when disabled, the stroke precomposites the
             // group fade (opaque) instead of halving its alpha over the
             // faded fill. Enabled rendering is unchanged.
@@ -839,6 +854,265 @@ mod tests {
                     disabled_border_color(stroke, fill, p.background),
                     "border stroke is the group-fade precomposite ({mode:?}/{style:?})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn ruling6_base_border_and_fill_snap_while_ring_fades() {
+        // TXT-ANM-01 regression pin (shape-level, controlled time): under
+        // the base recipe the border and fill SNAP on change (ruling 6 —
+        // the narrow reading of `transition-[color,box-shadow]`), while
+        // the ring fades; under nova the colours ease and the ring snaps.
+        // Real state changes (focus, then a theme switch) are driven
+        // through `show()` at controlled times and the emitted shapes
+        // inspected — resolver tests alone cannot catch a paint-wiring
+        // regression (TXT-VIS-01 lesson).
+        use egui::epaint::Shape;
+
+        fn flatten(shape: &Shape, acc: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(v) => v.iter().for_each(|s| flatten(s, acc)),
+                s => acc.push(s.clone()),
+            }
+        }
+
+        // One frame at `time` with a stable scope id (focus must survive
+        // across frames). Returns the widget rect, the response id, and
+        // the flattened shapes.
+        fn frame(
+            ctx: &egui::Context,
+            time: f64,
+            text: &mut String,
+        ) -> (Rect, egui::Id, Vec<Shape>) {
+            let mut rect = Rect::NOTHING;
+            let mut id = egui::Id::unique("ruling6-pin-unset");
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("textarea_ruling6_pin"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                    );
+                    let response = Textarea::new(text).id_salt("ruling6-pin").show(ui);
+                    rect = response.rect;
+                    id = response.id;
+                },
+            );
+            let mut shapes = Vec::new();
+            for clipped in &out.shapes {
+                flatten(&clipped.shape, &mut shapes);
+            }
+            out.textures_delta.clear();
+            (rect, id, shapes)
+        }
+
+        fn dump(shapes: &[Shape]) -> String {
+            shapes
+                .iter()
+                .filter_map(|s| match s {
+                    Shape::Rect(r) => Some(format!(
+                        "rect={:?} fill={:?} stroke={:?}",
+                        r.rect, r.fill, r.stroke
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn border_color(shapes: &[Shape], rect: Rect) -> Color32 {
+            shapes
+                .iter()
+                .find_map(|s| match s {
+                    Shape::Rect(r) if r.rect == rect && r.stroke.width == BORDER_WIDTH => {
+                        Some(r.stroke.color)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no border stroke on {rect:?}:\n{}", dump(shapes)))
+        }
+
+        fn ring_color(shapes: &[Shape], rect: Rect) -> Option<Color32> {
+            shapes.iter().find_map(|s| match s {
+                Shape::Rect(r) if r.rect == rect && r.stroke.width == 3.0 => Some(r.stroke.color),
+                _ => None,
+            })
+        }
+
+        fn fill_color(shapes: &[Shape], rect: Rect) -> Option<Color32> {
+            shapes.iter().find_map(|s| match s {
+                Shape::Rect(r) if r.rect == rect && r.stroke.width == 0.0 => Some(r.fill),
+                _ => None,
+            })
+        }
+
+        for style in [Style::Vega, Style::Nova] {
+            let preset = Preset {
+                style,
+                ..Preset::default()
+            };
+            let ctx = egui::Context::default();
+            preset.build(Mode::Light).install(&ctx);
+            let light = preset.build(Mode::Light).palette;
+            let dark = preset.build(Mode::Dark).palette;
+            let mut text = String::new();
+
+            // Frame A (t=0): settled, unfocused, light. Border is the
+            // resting `input`; no ring.
+            let (rect, id, shapes) = frame(&ctx, 0.0, &mut text);
+            assert_eq!(
+                border_color(&shapes, rect),
+                light.input,
+                "resting border {style:?}"
+            );
+            assert_eq!(ring_color(&shapes, rect), None, "no rest ring {style:?}");
+
+            // Focus the widget; frame B (t=0.05) is the flip frame.
+            ctx.memory_mut(|m| m.request_focus(id));
+            let (_, _, shapes) = frame(&ctx, 0.05, &mut text);
+            if matches!(style, Style::Vega) {
+                // Base: the border SNAPS to `ring` on the flip frame.
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    light.ring,
+                    "base border snaps on focus {style:?}"
+                );
+                // The ring leg has just started: no ring yet.
+                assert_eq!(
+                    ring_color(&shapes, rect),
+                    None,
+                    "ring leg starts at 0 {style:?}"
+                );
+            } else {
+                // Nova: the border leg has just started — still the old
+                // target, NOT snapped.
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    light.input,
+                    "nova border eases, no snap {style:?}"
+                );
+                // Nova: the ring SNAPS on the flip frame.
+                let ring = ring_color(&shapes, rect).expect("nova ring present on flip frame");
+                assert_eq!(
+                    ring,
+                    color_alpha(light.ring, 0.5),
+                    "nova ring snaps {style:?}"
+                );
+            }
+
+            // Frame C (t=0.10): mid-leg.
+            let (_, _, shapes) = frame(&ctx, 0.10, &mut text);
+            if matches!(style, Style::Vega) {
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    light.ring,
+                    "base border stays snapped {style:?}"
+                );
+                // The ring FADES: strictly between 0 and its full alpha.
+                let ring = ring_color(&shapes, rect).expect("base ring mid-leg");
+                let full = color_alpha(light.ring, 0.5).a();
+                assert!(
+                    ring.a() > 0 && ring.a() < full,
+                    "base ring fades mid-leg: alpha {} vs full {full} {style:?}",
+                    ring.a()
+                );
+            } else {
+                // The border is a mid-leg mix: neither endpoint.
+                let border = border_color(&shapes, rect);
+                assert_ne!(border, light.input, "nova border moved {style:?}");
+                assert_ne!(border, light.ring, "nova border not yet landed {style:?}");
+                // The ring stays at full strength (snapped).
+                let ring = ring_color(&shapes, rect).expect("nova ring mid-leg");
+                assert_eq!(
+                    ring,
+                    color_alpha(light.ring, 0.5),
+                    "nova ring stays {style:?}"
+                );
+            }
+
+            // Settle frame (t=0.25): the focus leg (started t=0.05, 150ms)
+            // has landed in both styles. The theme switch below must
+            // re-target from a SETTLED leg, or the flip frame shows the
+            // mid-flight displayed value instead of the old target.
+            let (_, _, shapes) = frame(&ctx, 0.25, &mut text);
+            assert_eq!(
+                border_color(&shapes, rect),
+                light.ring,
+                "focus leg settled {style:?}"
+            );
+            let ring = ring_color(&shapes, rect).expect("ring settled");
+            assert_eq!(
+                ring,
+                color_alpha(light.ring, 0.5),
+                "ring settled at full strength {style:?}"
+            );
+
+            // Theme switch to dark; frame D (t=0.30) is the flip frame
+            // for the fill (transparent -> `input/30`) and the border
+            // (`ring` light -> `ring` dark).
+            preset.build(Mode::Dark).install(&ctx);
+            let (_, _, shapes) = frame(&ctx, 0.30, &mut text);
+            let dark_fill = color_alpha(dark.input, 0.3);
+            if matches!(style, Style::Vega) {
+                assert_eq!(
+                    fill_color(&shapes, rect),
+                    Some(dark_fill),
+                    "base fill snaps on theme switch {style:?}:\n{}",
+                    dump(&shapes)
+                );
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    dark.ring,
+                    "base border snaps on theme switch {style:?}"
+                );
+            } else {
+                // Nova: the fill leg has just started — still the old
+                // (transparent) target; a missing fill rect paints
+                // nothing, which is the same transparent render.
+                assert!(
+                    fill_color(&shapes, rect).is_none_or(|c| c == Color32::TRANSPARENT),
+                    "nova fill eases, no snap {style:?}:\n{}",
+                    dump(&shapes)
+                );
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    light.ring,
+                    "nova border still on old target {style:?}"
+                );
+            }
+
+            // Frame E (t=0.35): mid-leg for the theme-switch legs.
+            let (_, _, shapes) = frame(&ctx, 0.35, &mut text);
+            if matches!(style, Style::Vega) {
+                assert_eq!(
+                    fill_color(&shapes, rect),
+                    Some(dark_fill),
+                    "base fill stays snapped {style:?}"
+                );
+                assert_eq!(
+                    border_color(&shapes, rect),
+                    dark.ring,
+                    "base border stays snapped {style:?}"
+                );
+            } else {
+                // The fill is a mid-leg mix: strictly between transparent
+                // and the dark target.
+                let fill = fill_color(&shapes, rect).expect("nova fill mid-leg");
+                assert!(
+                    fill.a() > 0 && fill.a() < dark_fill.a(),
+                    "nova fill eases mid-leg: alpha {} vs target {} {style:?}",
+                    fill.a(),
+                    dark_fill.a()
+                );
+                let border = border_color(&shapes, rect);
+                assert_ne!(border, light.ring, "nova border moved {style:?}");
+                assert_ne!(border, dark.ring, "nova border not yet landed {style:?}");
             }
         }
     }
