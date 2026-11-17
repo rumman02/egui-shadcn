@@ -88,17 +88,18 @@
 //! CHK-INT-03), the Radix `preventDefault()` equivalent. A direct
 //! click focuses AND toggles (CHK-INT-01): egui's `interact` never
 //! grants focus on a pointer click, so the build requests focus on
-//! `clicked()`, the button BTN-INT-01 shape. The remaining settled row
-//! (label composition) is implemented by the S9 fix for CHK-INT-04;
-//! until it lands, this build's behaviour on that row is egui-natural,
-//! not spec truth. Label-click composition
-//! (spec §7.3): the label side is settled — a label click fires a click
-//! on the control AND focuses it. The checkbox needs no forwarding code
-//! of its own: the label requests focus on the checkbox's returned
-//! [`Response::id`] and pushes a synthetic Space pair, which `interact`
-//! reports as a click on the focused widget (the pair survives the
-//! Space-keyup intervention: both halves arrive in one frame, so the
-//! hidden keydown is re-created on that same frame). Bind labels with the
+//! `clicked()`, the button BTN-INT-01 shape. Label-click composition
+//! (spec §7.3) is implemented (CHK-INT-04): the label side is settled
+//! — a label click fires a click on the control AND focuses it. The
+//! label requests focus on the checkbox's returned [`Response::id`]
+//! and pushes a synthetic Space pair, which `interact` reports as a
+//! click on the focused widget (the pair survives the Space-keyup
+//! intervention: both halves arrive in one frame, so the hidden
+//! keydown is re-created on that same frame). In the control-first
+//! (shadcn) layout the label runs AFTER the checkbox, so the
+//! checkbox consumes its own pending click at the top of `show`,
+//! before `interact`; in label-first order the label already
+//! consumed it and the call is a no-op. Bind labels with the
 //! returned `Response::id` (scoped-widget id rule).
 //!
 //! Combined-state precedence (spec §4.6, OPEN-4) is UNESTABLISHED except
@@ -122,6 +123,7 @@
 //! ```
 
 use crate::components::attachment::mix;
+use crate::components::label::consume_pending_click;
 use crate::icons::Icon;
 use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
 use crate::utils::animation::{
@@ -567,6 +569,22 @@ impl<'a> Checkbox<'a> {
         // Reserve space without an auto-id widget so egui's built-in
         // spatial arrow navigation only sees the explicit widget id.
         let (_, rect) = ui.allocate_space(Vec2::splat(CHECKBOX_SIZE));
+        // A bound label's click recorded on a previous pass is
+        // forwarded here, before `interact` (spec §7.3; CHK-INT-04).
+        // The label pushes the synthetic Space pair at the top of
+        // `Label::show`, which runs AFTER the checkbox in the
+        // control-first (shadcn) layout — so the pair arrived after
+        // this checkbox's `interact` and died unseen, leaving focus
+        // without activation. Consuming the pending click here makes
+        // the activation reach the checkbox in either show order: in
+        // label-first order the label already consumed the flag and
+        // this is a no-op, so exactly one activation fires. Only while
+        // enabled: a disabled checkbox leaves the flag for the label's
+        // own consume, preserving the disabled pair's behaviour
+        // exactly (CHK-INT-05 owns that pair).
+        if !self.disabled {
+            consume_pending_click(ui, id, true);
+        }
         // Space toggles on keyup, not keydown (spec §7, OPEN-1(a)
         // closed by S6 Work B; CHK-INT-02): hide this frame's Space
         // keydown from `interact` and re-create it on the keyup frame.
@@ -607,7 +625,8 @@ impl<'a> Checkbox<'a> {
             // focus. Requesting before painting lets `has_focus()` below
             // see the focus on the click frame itself. A fake click from
             // the label-forwarded Space pair re-requests focus the label
-            // already granted — idempotent; the label path is untouched
+            // already granted — idempotent; the forwarded activation
+            // reaches the checkbox via the pending-click consume above
             // (CHK-INT-04).
             response.request_focus();
         }
@@ -1645,7 +1664,12 @@ mod tests {
         // `interact` reports a fake click for the focused widget. The
         // checkbox must toggle AND hold focus. Keyboard semantics
         // themselves are OPEN-1; this pins the egui mechanism the
-        // settled label rule relies on.
+        // settled label rule relies on. NOTE: this test feeds the pair
+        // directly, so it cannot see the show-order failure CHK-INT-04
+        // (the pair dying when the label runs after the checkbox);
+        // the ordering cover is
+        // `label_click_in_control_first_order_toggles_and_focuses`,
+        // which drives the real `Label` + `Checkbox` widgets.
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut checked = false;
@@ -1699,6 +1723,88 @@ mod tests {
         assert!(!checked, "disabled checkbox toggled on forwarded input");
         assert!(!changed, "disabled checkbox marked changed");
         assert!(!focused, "disabled checkbox took focus");
+    }
+
+    #[test]
+    fn label_click_in_control_first_order_toggles_and_focuses() {
+        // CHK-INT-04: the demo §6 / shadcn layout shows the checkbox
+        // BEFORE its bound label. The label's deferred forwarding
+        // pushes the synthetic Space pair at the top of `Label::show`
+        // — after the checkbox's `interact` already ran — so the pair
+        // died unseen and only the focus half landed. The checkbox
+        // consumes its own pending click at the top of `show`, before
+        // `interact`, which makes the activation land in either show
+        // order. Unlike the S1 synthetic tests above, this pin drives
+        // the REAL `Label` and `Checkbox` widgets in control-first
+        // order through real passes with real pointer events: it FAILS
+        // on the pre-fix build (the ordering failure is invisible to a
+        // directly-fed Space pair) and PASSES with the fix.
+        use crate::components::label::Label;
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let click_event = |pos: egui::Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut checked = false;
+        let mut target = egui::Id::NULL;
+        let mut label_rect = egui::Rect::NOTHING;
+
+        // Frame 1: render the pair control-first, capture the label
+        // rect and the checkbox id (same-pass captured-id binding, as
+        // the demo does).
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let r = Checkbox::new(&mut checked).id_salt("lbl4").show(ui);
+            target = r.id;
+            label_rect = Label::new("Enable notifications")
+                .for_id(r.id)
+                .show(ui)
+                .rect;
+        });
+        assert!(!checked);
+        assert!(!ctx.memory(|m| m.has_focus(target)));
+        let label_center = label_rect.center();
+
+        // Press + release on the label: the click is recorded for the
+        // next pass; nothing toggles on the click pass itself.
+        let show_pair = |ctx: &egui::Context, input: egui::RawInput, checked: &mut bool| {
+            run_pass(ctx, input, |ui| {
+                let r = Checkbox::new(checked).id_salt("lbl4").show(ui);
+                let _ = Label::new("Enable notifications").for_id(r.id).show(ui);
+            });
+        };
+        show_pair(&ctx, click_event(label_center, true), &mut checked);
+        assert!(!checked, "label press alone must not toggle");
+        show_pair(&ctx, click_event(label_center, false), &mut checked);
+        assert!(!checked, "label click must not toggle on the click pass");
+
+        // Next pass: the forwarded activation lands — toggle AND focus.
+        show_pair(&ctx, egui::RawInput::default(), &mut checked);
+        assert!(checked, "forwarded label click must toggle");
+        assert!(
+            ctx.memory(|m| m.has_focus(target)),
+            "forwarded label click must focus"
+        );
+
+        // A second label click toggles back, exactly once, with focus
+        // retained.
+        show_pair(&ctx, click_event(label_center, true), &mut checked);
+        show_pair(&ctx, click_event(label_center, false), &mut checked);
+        assert!(
+            checked,
+            "second label click must not toggle on the click pass"
+        );
+        show_pair(&ctx, egui::RawInput::default(), &mut checked);
+        assert!(!checked, "second label click must toggle back");
+        assert!(
+            ctx.memory(|m| m.has_focus(target)),
+            "focus retained after second label click"
+        );
     }
 
     /// The synthetic Space down+up pair the label forwarding mechanism

@@ -215,8 +215,13 @@ fn record_pending_click(ctx: &egui::Context, target: Id) {
 /// AFTER it in the same pass: at the top of [`Label::show`], and
 /// between the measure and real passes of [`Label::show_with`] (the
 /// measure pass runs in a disabled child `Ui`, whose `interact` would
-/// `ignore_focus` the target if the request came before it).
-fn consume_pending_click(ui: &mut Ui, target: Id, enabled: bool) {
+/// `ignore_focus` the target if the request came before it). A target
+/// shown BEFORE its label (the control-first shadcn layout) consumes
+/// its own pending click at the top of its own `show`, before its own
+/// `interact` — the checkbox does this (CHK-INT-04); in label-first
+/// order the label already consumed the flag and the target-side call
+/// is a no-op, so exactly one activation fires in either order.
+pub(crate) fn consume_pending_click(ui: &mut Ui, target: Id, enabled: bool) {
     let set_at = ui
         .ctx()
         .data_mut(|data| data.remove_temp::<f64>(pending_click_id(target)));
