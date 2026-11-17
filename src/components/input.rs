@@ -35,12 +35,14 @@
 //! and replaces the transition with `transition-colors`.
 //!
 //! The underlying widget is a restyled [`egui::TextEdit`] whose theme frame
-//! is replaced with a transparent [`egui::Frame`] carrying only the padding:
-//! egui's default `TextEdit` frame paints an opaque `text_edit_bg_color`
-//! fill and a state-dependent stroke (focused stroke in the selection
-//! colour, `md` radius), which would defeat the transparent light fill and
-//! the nova radius. The shadcn frame (shadow, fill, border, focus ring) is
-//! drawn entirely by this component, on the border box, with the ring as a
+//! is replaced with an explicit [`egui::Frame`] carrying the resolved fill
+//! and the padding: egui's default `TextEdit` frame paints an opaque
+//! `text_edit_bg_color` fill and a state-dependent stroke (focused stroke
+//! in the selection colour, `md` radius), which would defeat the
+//! transparent light fill and the nova radius. The frame fill paints under
+//! the glyphs (INP-VIS-02: the old post-`TextEdit` fill rect veiled them).
+//! The rest of the shadcn frame (shadow, border, focus ring) is drawn
+//! entirely by this component, on the border box, with the ring as a
 //! 3px band immediately outside it. Hint text renders in
 //! `muted-foreground` via the theme's weak text colour
 //! (`placeholder:text-muted-foreground`); selection colours are overridden
@@ -501,6 +503,60 @@ impl<'a> Input<'a> {
             animated_foreground
         };
 
+        // Spec §6: the transition PROPERTY SET differs by style, so the
+        // spec each animator runs under differs by style too. Timing is
+        // `TransitionSpec::default()` (150ms + EaseInOut, the Tailwind
+        // v4 framework defaults), labelled INTERIM per OPEN-2. A
+        // zero-duration spec snaps instantly, which is how the
+        // non-transitioned property set is implemented: the animator
+        // still runs every frame, so its state stays fresh across style
+        // switches.
+        let nova = matches!(style, Style::Nova);
+        let color_spec = if nova {
+            TransitionSpec::default()
+        } else {
+            TransitionSpec::secs(0.0, Easing::EaseInOut)
+        };
+        let shadow_spec = if nova {
+            TransitionSpec::secs(0.0, Easing::EaseInOut)
+        } else {
+            TransitionSpec::default()
+        };
+
+        let radius = corner_radius(style, &theme.radius);
+        let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
+
+        // Fill: the rule value is always an `input`-token tint, so the
+        // RGB endpoint (opaque `p.input`, no transparent-boundary
+        // caveat) rides the endpoint animator while the rule alpha
+        // rides a scalar endpoint animator on the same duration — a
+        // premultiplied cross-fade from transparent that `mix_oklab`
+        // cannot do (a transparent endpoint contributes black). The
+        // alpha leg is linear (egui's animator applies no easing) while
+        // the RGB leg is eased; the difference is sub-threshold for
+        // S7's duration-based budgets. Theme-switch recolours animate
+        // under nova per the §6 scope note. The disabled 50%
+        // compositing applies after animation, so it snaps.
+        //
+        // The fill is resolved BEFORE the TextEdit runs: it does not
+        // depend on focus (spec §4 — only the border and ring do), and
+        // the TextEdit's frame carries it so it paints UNDER the glyphs
+        // (INP-VIS-02, following the TXT-VIS-01 fix shape in
+        // `textarea.rs`). The old post-TextEdit `rect_filled` veiled the
+        // glyphs; the frame fill is painted by the atom layout before
+        // the text atoms, so it cannot veil them.
+        let fill_rgb =
+            transition_color_to(ui.ctx(), id.with("fill_rgb"), p.input, color_spec).color;
+        let fill_alpha = ui.ctx().animate_value_with_time(
+            id.with("fill_alpha"),
+            input_fill_alpha(dark, self.disabled, style),
+            color_spec.duration_secs,
+        );
+        let mut fill = color_alpha(fill_rgb, fill_alpha);
+        if self.disabled {
+            fill = color_alpha(fill, 0.5);
+        }
+
         let is_empty = self.text.is_empty();
         // 14px Inter Regular (400): `md:text-sm` at all widths (D3,
         // proposed) with no `font-medium` — only the N/A file button carries
@@ -511,16 +567,20 @@ impl<'a> Input<'a> {
             .id_salt(id)
             .font(font)
             .text_color(text_color)
-            // Replace the theme frame with a transparent frame carrying only
-            // the padding: egui's default `TextEdit` frame paints an opaque
-            // fill and a state-dependent stroke, which would defeat the
-            // transparent light fill and the nova radius. The shadcn frame
-            // is drawn by this component, below. With an explicit frame the
+            // Replace the theme frame with an explicit frame carrying the
+            // resolved fill and the padding: egui's default `TextEdit`
+            // frame paints an opaque fill and a state-dependent stroke,
+            // which would defeat the transparent light fill and the nova
+            // radius. The frame fill paints UNDER the glyphs (INP-VIS-02);
+            // the rest of the shadcn frame (shadow, border, ring) is drawn
+            // by this component, below. With an explicit frame the
             // builder's `.margin()` is ignored, so the padding is baked
             // into `inner_margin` — the text inset from the rect edge is
             // exactly `padding_x`, as before.
             .frame(Frame {
                 inner_margin: Margin::symmetric(padding_x(style) as i8, 0),
+                corner_radius: corner,
+                fill,
                 ..Frame::NONE
             })
             .desired_width(width)
@@ -571,58 +631,17 @@ impl<'a> Input<'a> {
         if ui.is_rect_visible(rect) {
             let focused = response.has_focus() && !self.disabled;
             let c = resolve_input_colors(&p, dark, focused, self.invalid, style);
-            let radius = corner_radius(style, &theme.radius);
-            let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
-
-            // Spec §6: the transition PROPERTY SET differs by style, so the
-            // spec each animator runs under differs by style too. Timing is
-            // `TransitionSpec::default()` (150ms + EaseInOut, the Tailwind
-            // v4 framework defaults), labelled INTERIM per OPEN-2. A
-            // zero-duration spec snaps instantly, which is how the
-            // non-transitioned property set is implemented: the animator
-            // still runs every frame, so its state stays fresh across style
-            // switches.
-            let nova = matches!(style, Style::Nova);
-            let color_spec = if nova {
-                TransitionSpec::default()
-            } else {
-                TransitionSpec::secs(0.0, Easing::EaseInOut)
-            };
-            let shadow_spec = if nova {
-                TransitionSpec::secs(0.0, Easing::EaseInOut)
-            } else {
-                TransitionSpec::default()
-            };
 
             let painter = ui.painter();
             // `shadow-xs`, in every state (see `paint_input_shadow`).
             paint_input_shadow(painter, rect, corner, style, dark, self.disabled);
 
-            // Fill: the rule value is always an `input`-token tint, so the
-            // RGB endpoint (opaque `p.input`, no transparent-boundary
-            // caveat) rides the endpoint animator while the rule alpha
-            // rides a scalar endpoint animator on the same duration — a
-            // premultiplied cross-fade from transparent that `mix_oklab`
-            // cannot do (a transparent endpoint contributes black). The
-            // alpha leg is linear (egui's animator applies no easing) while
-            // the RGB leg is eased; the difference is sub-threshold for
-            // S7's duration-based budgets. Theme-switch recolours animate
-            // under nova per the §6 scope note. The disabled 50%
-            // compositing applies after animation, so it snaps.
-            let fill_rgb =
-                transition_color_to(ui.ctx(), id.with("fill_rgb"), p.input, color_spec).color;
-            let fill_alpha = ui.ctx().animate_value_with_time(
-                id.with("fill_alpha"),
-                input_fill_alpha(dark, self.disabled, style),
-                color_spec.duration_secs,
-            );
-            let mut fill = color_alpha(fill_rgb, fill_alpha);
-            if self.disabled {
-                fill = color_alpha(fill, 0.5);
-            }
-            if fill != Color32::TRANSPARENT {
-                painter.rect_filled(rect, corner, fill);
-            }
+            // No fill paint here: the fill is the TextEdit frame's fill
+            // (resolved above, before the TextEdit ran) and already sits
+            // under the glyphs. Painting it again would double-composite
+            // it over the text (the INP-VIS-02 veil). The border and ring
+            // paint after the TextEdit: the border sits at the rect edge
+            // and the ring outside it, so neither overlaps the glyphs.
 
             // Border: endpoint tracking, so focus / invalid / theme flips
             // animate under nova and snap under base. The slot never crosses
@@ -765,6 +784,79 @@ mod tests {
         assert_eq!(input_fill_alpha(true, false, Style::Vega), 0.3);
         let di = resolve_input_colors(&dark, true, false, true, Style::Vega);
         assert_eq!(di.ring, color_alpha(dark.destructive, 0.4));
+    }
+
+    #[test]
+    fn frame_fill_is_resolved_and_paints_under_glyphs() {
+        // INP-VIS-02 regression pin (shape-level): the TextEdit frame must
+        // carry the RESOLVED fill — not a post-TextEdit rect over the
+        // glyphs — and the fill must paint BEFORE the glyphs. The resolver
+        // unit tests passed while the render was wrong, so this test
+        // inspects the emitted shapes instead of resolver values (the
+        // TXT-VIS-01 pin shape in `textarea.rs`).
+        use egui::epaint::Shape;
+        fn flatten(shape: &Shape, acc: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(v) => v.iter().for_each(|s| flatten(s, acc)),
+                s => acc.push(s.clone()),
+            }
+        }
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let expected_fill = if mode.is_dark() {
+                color_alpha(p.input, 0.3)
+            } else {
+                Color32::TRANSPARENT
+            };
+            let mut text = String::from("hello");
+            let mut rect = Rect::NOTHING;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let mut ui = test_ui(ctx, "input_frame_pin", 400.0);
+                rect = Input::new(&mut text).id_salt("pin").show(&mut ui).rect;
+            });
+            let mut shapes: Vec<Shape> = Vec::new();
+            for clipped in &out.shapes {
+                flatten(&clipped.shape, &mut shapes);
+            }
+            out.textures_delta.clear();
+            // The frame fill rect: same rect as the widget, no stroke.
+            let fill_idx = shapes.iter().position(
+                |s| matches!(s, Shape::Rect(r) if r.rect == rect && r.stroke == Stroke::NONE),
+            );
+            let fill_idx = fill_idx.expect("frame fill rect present");
+            match &shapes[fill_idx] {
+                Shape::Rect(r) => assert_eq!(
+                    r.fill, expected_fill,
+                    "frame fill is the resolved fill ({mode:?})"
+                ),
+                _ => unreachable!(),
+            }
+            // No rect over the widget paints the raw theme `input` token:
+            // the fill is the rule value (`input/30` dark), never opaque.
+            for s in &shapes {
+                if let Shape::Rect(r) = s {
+                    assert!(
+                        r.rect != rect || r.fill != p.input,
+                        "no raw input-token fill over the widget ({mode:?})"
+                    );
+                }
+            }
+            // The fill paints before the first glyph.
+            if let Some(text_idx) = shapes.iter().position(|s| matches!(s, Shape::Text(_))) {
+                assert!(fill_idx < text_idx, "fill paints under glyphs ({mode:?})");
+            }
+            // Exactly one stroke-less fill rect covers the widget: the old
+            // post-TextEdit `rect_filled` would be a second one.
+            let fill_rects = shapes
+                .iter()
+                .filter(
+                    |s| matches!(s, Shape::Rect(r) if r.rect == rect && r.stroke == Stroke::NONE),
+                )
+                .count();
+            assert_eq!(fill_rects, 1, "one fill rect over the widget ({mode:?})");
+        }
     }
 
     #[test]
