@@ -80,8 +80,11 @@
 //! # Keyboard and pointer (spec §8 — working assumptions, OPEN items)
 //!
 //! Arrow keys step by the absolute step (Right/Up +, Left/Down −, both
-//! orientations, W-3); Home/End jump to `min`/`max` (W-4); PageUp/PageDown
-//! move 10 × step (W-2, one named place); thumbs clamp to their neighbours
+//! orientations, W-3); Shift+Arrow moves 10 × step, exactly like
+//! PageUp/PageDown (Radix `isSkipKey`, SLD-INT-01 — S6 Work B correction
+//! of W-3; other modifiers do not change the step size); Home/End jump
+//! to `min`/`max` (W-4); PageUp/PageDown move 10 × step (W-2, one named
+//! place); thumbs clamp to their neighbours
 //! without pushing or swapping (W-5); track presses move the nearest thumb
 //! and begin a drag (W-6a/W-6b); every thumb is a Tab stop in value order
 //! (W-9). The track itself is not a Tab stop (SLD-INT-05): it paints no
@@ -532,7 +535,13 @@ impl<'a> Slider<'a> {
     /// absolute target per the §8.1 table, and commits it through
     /// [`Self::set_value_absolute`]. Unhandled keys and degenerate domains
     /// are no-ops. `changed` is set iff the committed value differs.
-    fn keyboard_step(&mut self, index: usize, key: Key, changed: &mut bool) {
+    ///
+    /// `shift` is the Shift-modifier state at the time of the press
+    /// (SLD-INT-01): Radix `isSkipKey` — `isPageKey || (shiftKey &&
+    /// arrowKey)` — selects the 10 × step path. Only `shiftKey` is
+    /// consulted (Radix checks no other modifier), so Ctrl/Alt/Meta
+    /// +Arrow steps exactly like a plain arrow.
+    fn keyboard_step(&mut self, index: usize, key: Key, shift: bool, changed: &mut bool) {
         let (lo, hi) = self.ordered_bounds();
         let span = hi - lo;
         if span <= 0.0 || span.is_nan() {
@@ -540,7 +549,23 @@ impl<'a> Slider<'a> {
         }
         let step = self.step_size();
         let current_value = self.read_value(index);
+        // Radix `isSkipKey` (OPEN-3, corrected by S6 Work B): page keys,
+        // or Shift+arrow, take the 10 × step path. Shift+Arrow selects
+        // the SAME path as the corresponding page key, including the
+        // §7.3 off-grid snap rule below.
+        let is_skip = matches!(key, Key::PageUp | Key::PageDown)
+            || (shift
+                && matches!(
+                    key,
+                    Key::ArrowRight | Key::ArrowUp | Key::ArrowLeft | Key::ArrowDown
+                ));
         let target_value = match key {
+            Key::ArrowRight | Key::ArrowUp if is_skip => {
+                current_value + PAGE_STEP_MULTIPLIER * step
+            }
+            Key::ArrowLeft | Key::ArrowDown if is_skip => {
+                current_value - PAGE_STEP_MULTIPLIER * step
+            }
             Key::ArrowRight | Key::ArrowUp => adjacent_grid_value_above(current_value, lo, step),
             Key::ArrowLeft | Key::ArrowDown => adjacent_grid_value_below(current_value, lo, step),
             Key::Home => lo,
@@ -550,15 +575,15 @@ impl<'a> Slider<'a> {
             Key::PageDown => current_value - PAGE_STEP_MULTIPLIER * step,
             _ => return,
         };
-        // §7.3 step 3: snap step-relative targets ONLY when the starting
+        // §7.3 step 3: snap skip-key targets ONLY when the starting
         // value was off-grid. Arrow targets land on-grid by construction
-        // and Home/End are bounds (never snapped); page targets snap to
-        // the nearest grid point from an off-grid start.
-        let target_value = match key {
-            Key::PageUp | Key::PageDown if !is_on_grid(current_value, lo, step) => {
-                snap_value_to_grid(target_value, lo, step)
-            }
-            _ => target_value,
+        // and Home/End are bounds (never snapped); skip-key targets
+        // (page keys and Shift+arrows) snap to the nearest grid point
+        // from an off-grid start.
+        let target_value = if is_skip && !is_on_grid(current_value, lo, step) {
+            snap_value_to_grid(target_value, lo, step)
+        } else {
+            target_value
         };
         self.set_value_absolute(index, target_value, changed);
     }
@@ -964,8 +989,14 @@ impl<'a> Slider<'a> {
                         },
                     );
                 });
-                let pressed_key = ui.input(|inp| {
-                    [
+                // Shift state for the Radix `isSkipKey` rule (SLD-INT-01):
+                // `InputState::modifiers` is updated only from
+                // `Event::ModifiersChanged`, which the backend sends on
+                // modifier press/release, so it reflects the modifiers
+                // held at the time of the arrow press.
+                let (pressed_key, shift) = ui.input(|inp| {
+                    let shift = inp.modifiers.shift;
+                    let pressed_key = [
                         Key::ArrowRight,
                         Key::ArrowUp,
                         Key::ArrowLeft,
@@ -976,10 +1007,11 @@ impl<'a> Slider<'a> {
                         Key::PageDown,
                     ]
                     .into_iter()
-                    .find(|key| inp.key_pressed(*key))
+                    .find(|key| inp.key_pressed(*key));
+                    (pressed_key, shift)
                 });
                 if let Some(key) = pressed_key {
-                    self.keyboard_step(i, key, &mut changed);
+                    self.keyboard_step(i, key, shift, &mut changed);
                 }
             }
         }
@@ -2057,6 +2089,241 @@ mod tests {
     }
 
     #[test]
+    fn shift_arrows_step_ten_times_sld_int_01() {
+        // SLD-INT-01: Shift+Arrow applies 10 × step (Radix `isSkipKey`:
+        // `isPageKey || (shiftKey && arrowKey)` → multiplier 10), exactly
+        // like PageUp/PageDown; plain arrows apply 1 × step; Ctrl/Alt
+        // +Arrow applies 1 × step (Radix checks only `shiftKey`). RED
+        // before the fix: Shift+Right from 1 lands on 2 — the modifier
+        // was never read (`keyboard_step` took only a `Key`).
+        //
+        // The modifier reaches `show()` two ways, and this pin sends
+        // both, mirroring a real backend: the Key event carries
+        // `modifiers` (which `Focus::begin_pass` reads, so a modified
+        // arrow never sets a focus direction), and an
+        // `Event::ModifiersChanged` updates `InputState::modifiers`
+        // (which `show()` reads — egui 0.37 updates it ONLY from
+        // `ModifiersChanged`, never from a Key event's own modifiers
+        // field).
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut v = 1.0f32;
+
+        let run_frame = |ctx: &egui::Context, v: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int01"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(v)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int01")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        // Frame 1: register the slider. Focus the thumb directly (the
+        // rendered probes cover the Tab path); two settle frames so the
+        // focus-lock filter latches (SLD-INT-04).
+        run_frame(&ctx, &mut v, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int01")
+            .with("int01")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        run_frame(&ctx, &mut v, 1.1, vec![]);
+        run_frame(&ctx, &mut v, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        // Press `key` with `mods` held, assert the value + focus, release.
+        let press = |ctx: &egui::Context,
+                     v: &mut f32,
+                     time: f64,
+                     key: Key,
+                     mods: Modifiers,
+                     expect: f32,
+                     what: &str| {
+            run_frame(
+                ctx,
+                v,
+                time,
+                vec![
+                    Event::ModifiersChanged(mods),
+                    Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: mods,
+                    },
+                ],
+            );
+            assert_eq!(*v, expect, "{what}: value");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb),
+                "{what}: focus must stay on the thumb"
+            );
+            run_frame(
+                ctx,
+                v,
+                time + 0.1,
+                vec![
+                    Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: mods,
+                    },
+                    Event::ModifiersChanged(Modifiers::default()),
+                ],
+            );
+        };
+
+        let mut t = 1.2;
+        // Shift+Arrow: 10 × step, all four directions, focus retained.
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowRight,
+            Modifiers::SHIFT,
+            11.0,
+            "Shift+Right",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowLeft,
+            Modifiers::SHIFT,
+            1.0,
+            "Shift+Left",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowUp,
+            Modifiers::SHIFT,
+            11.0,
+            "Shift+Up",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowDown,
+            Modifiers::SHIFT,
+            1.0,
+            "Shift+Down",
+        );
+        // Page keys: 10 × step, unchanged.
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::PageUp,
+            Modifiers::default(),
+            11.0,
+            "PageUp",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::PageDown,
+            Modifiers::default(),
+            1.0,
+            "PageDown",
+        );
+        // Ctrl/Alt+Arrow: 1 × step (Radix checks only `shiftKey`).
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowRight,
+            Modifiers::CTRL,
+            2.0,
+            "Ctrl+Right",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowRight,
+            Modifiers::ALT,
+            3.0,
+            "Alt+Right",
+        );
+        // Plain arrows: 1 × step, unchanged.
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowLeft,
+            Modifiers::default(),
+            2.0,
+            "plain Left",
+        );
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowRight,
+            Modifiers::default(),
+            3.0,
+            "plain Right",
+        );
+        // Shift+Arrow clamps at the bounds, like the page keys.
+        v = 95.0;
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowRight,
+            Modifiers::SHIFT,
+            100.0,
+            "Shift+Right clamp",
+        );
+        v = 5.0;
+        t += 0.2;
+        press(
+            &ctx,
+            &mut v,
+            t,
+            Key::ArrowLeft,
+            Modifiers::SHIFT,
+            0.0,
+            "Shift+Left clamp",
+        );
+    }
+
+    #[test]
     fn value_fraction_conversions_round_trip_and_clamp() {
         assert_eq!(value_to_fraction(50.0, 0.0, 100.0), 0.5);
         assert_eq!(value_to_fraction(0.0, 0.0, 100.0), 0.0);
@@ -2154,13 +2421,41 @@ mod tests {
     // --- §7.6 discriminating fixtures: one test per row, absolute values. ---
 
     fn step_once(value: f32, min: f32, max: f32, step: f32, key: Key) -> (f32, bool) {
+        step_once_with_shift(value, min, max, step, key, false)
+    }
+
+    fn step_once_with_shift(
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        key: Key,
+        shift: bool,
+    ) -> (f32, bool) {
         let mut v = value;
         let mut changed = false;
         {
             let mut slider = Slider::new(&mut v).min(min).max(max).step(step);
-            slider.keyboard_step(0, key, &mut changed);
+            slider.keyboard_step(0, key, shift, &mut changed);
         }
         (v, changed)
+    }
+
+    #[test]
+    fn shift_arrow_off_grid_follows_page_path_sld_int_01() {
+        // Shift+Arrow selects the page-key path, including the §7.3
+        // off-grid snap rule: 1.5 + 10 × 1 = 11.5 snaps to the nearest
+        // grid point (12), and 21.5 − 10 × 1 = 11.5 snaps to 12. The
+        // plain-arrow control keeps the adjacent-grid-point rule (W-7).
+        let (v, changed) = step_once_with_shift(1.5, 0.0, 100.0, 1.0, Key::ArrowRight, true);
+        assert!(changed);
+        assert_eq!(v, 12.0);
+        let (v, changed) = step_once_with_shift(21.5, 0.0, 100.0, 1.0, Key::ArrowLeft, true);
+        assert!(changed);
+        assert_eq!(v, 12.0);
+        let (v, changed) = step_once(1.5, 0.0, 100.0, 1.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 2.0);
     }
 
     #[test]
@@ -2241,7 +2536,7 @@ mod tests {
         let mut changed = false;
         {
             let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(10.0);
-            slider.keyboard_step(0, Key::ArrowRight, &mut changed);
+            slider.keyboard_step(0, Key::ArrowRight, false, &mut changed);
         }
         assert!(changed);
         assert_eq!(pair, (40.0, 70.0));
@@ -2254,7 +2549,7 @@ mod tests {
         let mut changed = false;
         {
             let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(10.0);
-            slider.keyboard_step(0, Key::ArrowRight, &mut changed);
+            slider.keyboard_step(0, Key::ArrowRight, false, &mut changed);
         }
         assert!(!changed);
         assert_eq!(pair, (70.0, 70.0));
