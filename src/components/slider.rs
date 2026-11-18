@@ -82,8 +82,10 @@
 //! Arrow keys step by the absolute step (Right/Up +, Left/Down −, both
 //! orientations, W-3); Shift+Arrow moves 10 × step, exactly like
 //! PageUp/PageDown (Radix `isSkipKey`, SLD-INT-01 — S6 Work B correction
-//! of W-3; other modifiers do not change the step size); Home/End jump
-//! to `min`/`max` (W-4); PageUp/PageDown move 10 × step (W-2, one named
+//! of W-3; other modifiers do not change the step size); Home/End act
+//! on the FIRST/LAST value index (not the focused thumb) through
+//! snap-then-clamp: Home → `min`, End → snapped `max` (W-4 CORRECTED
+//! by S6 Work B, OPEN-4 CLOSED, gate G7); PageUp/PageDown move 10 × step (W-2, one named
 //! place); thumbs clamp to their neighbours
 //! without pushing or swapping (W-5); track presses move the nearest thumb
 //! and begin a drag (W-6a/W-6b); every thumb is a Tab stop in value order
@@ -538,6 +540,10 @@ impl<'a> Slider<'a> {
     /// absolute target per the §8.1 table, and commits it through
     /// [`Self::set_value_absolute`]. Unhandled keys and degenerate domains
     /// are no-ops. `changed` is set iff the committed value differs.
+    /// Home/End are the exception to focused-thumb targeting: they act
+    /// on the FIRST/LAST value index (gate G7, Work B OPEN-4), never the
+    /// focused thumb, and End lands on the snapped max. Focus never
+    /// moves in this function.
     ///
     /// `shift` is the Shift-modifier state at the time of the press
     /// (SLD-INT-01): Radix `isSkipKey` — `isPageKey || (shiftKey &&
@@ -562,6 +568,19 @@ impl<'a> Slider<'a> {
                     key,
                     Key::ArrowRight | Key::ArrowUp | Key::ArrowLeft | Key::ArrowDown
                 ));
+        // S9-C2 (gate G7, Work B OPEN-4): Home/End target the FIRST/LAST
+        // value index, NOT the focused thumb (Radix `onHomeKeyDown` ->
+        // `updateValues(min, 0)`; `onEndKeyDown` -> `updateValues(max,
+        // values.length - 1)`). All other keys act on the focused thumb.
+        // Focus does not move: this function never touches focus.
+        let target_index = match key {
+            Key::Home => 0,
+            Key::End => match &self.value {
+                SliderValue::Single(_) => 0,
+                SliderValue::Range(_) => 1,
+            },
+            _ => index,
+        };
         let target_value = match key {
             Key::ArrowRight | Key::ArrowUp if is_skip => {
                 current_value + PAGE_STEP_MULTIPLIER * step
@@ -572,23 +591,29 @@ impl<'a> Slider<'a> {
             Key::ArrowRight | Key::ArrowUp => adjacent_grid_value_above(current_value, lo, step),
             Key::ArrowLeft | Key::ArrowDown => adjacent_grid_value_below(current_value, lo, step),
             Key::Home => lo,
-            Key::End => hi,
+            // End lands on the SNAPPED max: Radix `updateValues` snaps
+            // then clamps (nearest grid point anchored at min, then the
+            // bounds/neighbour clamp in `set_value_absolute`) — e.g.
+            // 0–10 step 3 -> 9. Same snap + commit path as the
+            // arrow/page keys. Home needs no snap: `min` is grid point
+            // k=0 by construction.
+            Key::End => snap_value_to_grid(hi, lo, step),
             // W-2 (OPEN-2): a large step is 10 × step, one named place.
             Key::PageUp => current_value + PAGE_STEP_MULTIPLIER * step,
             Key::PageDown => current_value - PAGE_STEP_MULTIPLIER * step,
             _ => return,
         };
         // §7.3 step 3: snap skip-key targets ONLY when the starting
-        // value was off-grid. Arrow targets land on-grid by construction
-        // and Home/End are bounds (never snapped); skip-key targets
-        // (page keys and Shift+arrows) snap to the nearest grid point
-        // from an off-grid start.
+        // value was off-grid. Arrow targets land on-grid by construction,
+        // Home is a bound (never snapped), and End is pre-snapped above;
+        // skip-key targets (page keys and Shift+arrows) snap to the
+        // nearest grid point from an off-grid start.
         let target_value = if is_skip && !is_on_grid(current_value, lo, step) {
             snap_value_to_grid(target_value, lo, step)
         } else {
             target_value
         };
-        self.set_value_absolute(index, target_value, changed);
+        self.set_value_absolute(target_index, target_value, changed);
     }
 
     /// Commits an ABSOLUTE `value` for one thumb: clamps to the ordered
@@ -2989,6 +3014,249 @@ mod tests {
         let (v, changed) = step_once(50.0, 0.0, 100.0, 1.0, Key::ArrowLeft);
         assert!(changed);
         assert_eq!(v, 49.0);
+    }
+
+    #[test]
+    fn home_targets_first_index_from_focused_hi_sld_c2() {
+        // S9-C2 (gate G7, Work B OPEN-4): Home targets the FIRST value
+        // index, NOT the focused thumb (Radix `onHomeKeyDown` ->
+        // `updateValues(min, 0)`). Driven through the real `show()`
+        // path with real focus machinery: focus the HI thumb, press
+        // Home, and the LO thumb must move to min while hi is
+        // unchanged and focus stays on hi. RED before the fix: Home
+        // acted on the focused hi thumb, which then neighbour-clamped
+        // to lo, yielding (30, 30).
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut pair = (30.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, pair: &mut (f32, f32), time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_c2_home"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::range(pair)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(10.0)
+                        .id_salt("c2-home")
+                        .show(ui);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut pair, 1.0, vec![]);
+        let thumb_hi = egui::Id::unique("slider_c2_home")
+            .with("c2-home")
+            .with("thumb")
+            .with(1usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_hi));
+        run_frame(&ctx, &mut pair, 1.1, vec![]);
+        run_frame(&ctx, &mut pair, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_hi));
+
+        run_frame(&ctx, &mut pair, 1.4, vec![key_event(Key::Home, true)]);
+        assert_eq!(pair, (0.0, 70.0), "Home must move lo to min, hi unchanged");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_hi),
+            "Home must not move focus off the hi thumb"
+        );
+        run_frame(&ctx, &mut pair, 1.5, vec![key_event(Key::Home, false)]);
+        assert_eq!(pair, (0.0, 70.0));
+    }
+
+    #[test]
+    fn end_targets_last_index_from_focused_lo_sld_c2() {
+        // S9-C2 (gate G7, Work B OPEN-4): End targets the LAST value
+        // index, NOT the focused thumb (Radix `onEndKeyDown` ->
+        // `updateValues(max, values.length - 1)`). Focus the LO thumb,
+        // press End, and the HI thumb must move to the (on-grid) max
+        // while lo is unchanged and focus stays on lo. RED before the
+        // fix: End acted on the focused lo thumb, which then
+        // neighbour-clamped to hi, yielding (70, 70).
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut pair = (30.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, pair: &mut (f32, f32), time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_c2_end"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::range(pair)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(10.0)
+                        .id_salt("c2-end")
+                        .show(ui);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut pair, 1.0, vec![]);
+        let thumb_lo = egui::Id::unique("slider_c2_end")
+            .with("c2-end")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_lo));
+        run_frame(&ctx, &mut pair, 1.1, vec![]);
+        run_frame(&ctx, &mut pair, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_lo));
+
+        run_frame(&ctx, &mut pair, 1.4, vec![key_event(Key::End, true)]);
+        assert_eq!(pair, (30.0, 100.0), "End must move hi to max, lo unchanged");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_lo),
+            "End must not move focus off the lo thumb"
+        );
+        run_frame(&ctx, &mut pair, 1.5, vec![key_event(Key::End, false)]);
+        assert_eq!(pair, (30.0, 100.0));
+    }
+
+    #[test]
+    fn end_snaps_off_grid_max_sld_c2() {
+        // S9-C2 (gate G7): End lands on the SNAPPED max (Radix
+        // `updateValues` snaps then clamps): 0-10 step 3 -> End = 9.
+        // No demo target exists with an off-grid max, so this case is
+        // pin-only. RED before the fix: End landed on the raw max
+        // (10.0), and on a range it acted on the focused index.
+        let (v, changed) = step_once(5.0, 0.0, 10.0, 3.0, Key::End);
+        assert!(changed);
+        assert_eq!(v, 9.0);
+        let mut pair = (2.0, 8.0);
+        let mut changed = false;
+        {
+            let mut slider = Slider::range(&mut pair).min(0.0).max(10.0).step(3.0);
+            // Focused index is lo (0); End must still target hi (1).
+            slider.keyboard_step(0, Key::End, false, &mut changed);
+        }
+        assert!(changed);
+        assert_eq!(pair, (2.0, 9.0));
+        // Home from the same off-grid domain lands on min (on-grid by
+        // construction: the grid is anchored at min).
+        let (v, changed) = step_once(5.0, 0.0, 10.0, 3.0, Key::Home);
+        assert!(changed);
+        assert_eq!(v, 0.0);
+    }
+
+    #[test]
+    fn home_end_targeting_keyboard_step_sld_c2() {
+        // S9-C2 at the `keyboard_step` level: Home/End target the
+        // first/last index regardless of which index is passed (the
+        // focused thumb). The focused-thumb controls coincide with
+        // the old behaviour and must keep passing.
+        let mut pair = (30.0, 70.0);
+        let mut changed = false;
+        {
+            let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(10.0);
+            let values = |slider: &Slider| (slider.read_value(0), slider.read_value(1));
+            // Home with the HI thumb focused: lo moves, hi unchanged.
+            slider.keyboard_step(1, Key::Home, false, &mut changed);
+            assert!(changed);
+            assert_eq!(values(&slider), (0.0, 70.0));
+            // End with the LO thumb focused: hi moves, lo unchanged.
+            slider.keyboard_step(0, Key::End, false, &mut changed);
+            assert!(changed);
+            assert_eq!(values(&slider), (0.0, 100.0));
+            // Focused-thumb controls: Home on lo, End on hi.
+            changed = false;
+            slider.keyboard_step(0, Key::End, false, &mut changed);
+            assert!(!changed);
+            assert_eq!(values(&slider), (0.0, 100.0));
+            changed = false;
+            slider.keyboard_step(1, Key::Home, false, &mut changed);
+            assert!(!changed);
+            assert_eq!(values(&slider), (0.0, 100.0));
+        }
+        assert_eq!(pair, (0.0, 100.0));
+    }
+
+    #[test]
+    fn home_end_single_thumb_guards_sld_c2() {
+        // S9-C2 guards: single-thumb Home/End are unchanged (the
+        // first/last index IS the only thumb). Frozen fixtures
+        // F1c/F1d/F2c/F2d cover the on-grid cases; these guards pin
+        // the no-op boundaries.
+        let (v, changed) = step_once(0.0, 0.0, 100.0, 1.0, Key::Home);
+        assert!(!changed);
+        assert_eq!(v, 0.0);
+        let (v, changed) = step_once(100.0, 0.0, 100.0, 1.0, Key::End);
+        assert!(!changed);
+        assert_eq!(v, 100.0);
+        let (v, changed) = step_once(25.0, 20.0, 40.0, 5.0, Key::Home);
+        assert!(changed);
+        assert_eq!(v, 20.0);
+        let (v, changed) = step_once(25.0, 20.0, 40.0, 5.0, Key::End);
+        assert!(changed);
+        assert_eq!(v, 40.0);
+    }
+
+    #[test]
+    fn home_end_neighbour_boundaries_sld_c2() {
+        // S9-C2 boundary cases: the neighbour clamp still applies
+        // through the first/last-index targeting.
+        let mut pair = (0.0, 70.0);
+        let mut changed = false;
+        {
+            let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(10.0);
+            // Home with hi focused and lo already at min: no-op.
+            // RED before the fix: Home acted on hi, collapsing the
+            // pair to (0, 0).
+            slider.keyboard_step(1, Key::Home, false, &mut changed);
+            assert!(!changed);
+            assert_eq!((slider.read_value(0), slider.read_value(1)), (0.0, 70.0));
+        }
+        let mut pair = (95.0, 95.0);
+        let mut changed = false;
+        {
+            // Snapped max (90) sits BELOW lo (95): the neighbour clamp
+            // wins and End is a no-op. Guard: passes before and after
+            // (the old code also no-ops here, via the lo-side clamp).
+            let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(30.0);
+            slider.keyboard_step(0, Key::End, false, &mut changed);
+            assert!(!changed);
+            assert_eq!((slider.read_value(0), slider.read_value(1)), (95.0, 95.0));
+        }
     }
 
     #[test]
