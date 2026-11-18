@@ -873,6 +873,17 @@ impl FieldLabel {
             .inner_margin(egui::Margin::same(pad as i8))
             .corner_radius(corner)
             .show(ui, |ui| {
+                // The card interior is a `gap-2` column of its own: pin
+                // `item_spacing.y` to 8px so the gap between the label
+                // text and the wrapped field is exactly one `gap-2`
+                // regardless of the ambient spacing. egui inserts
+                // `item_spacing` after every widget, so an explicit
+                // `add_space` on top of it doubles the gap (FLD-VIS-03:
+                // 16px under the theme, 36px inside a 28px FieldGroup).
+                // Scoped to the frame's inner Ui; does not leak to the
+                // caller. Follows the `Field::show` pattern of setting
+                // `item_spacing` explicitly in a scoped Ui.
+                ui.spacing_mut().item_spacing.y = crate::theme::tokens::spacing::SM;
                 if !self.text.is_empty() {
                     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
                     // Placeholder color: the paint-time fallback replaces
@@ -885,8 +896,9 @@ impl FieldLabel {
                         Sense::hover(),
                     );
                     painter.galley(rect.min, galley, label_color);
-                    // `gap-2` between the label text and the wrapped field.
-                    ui.add_space(crate::theme::tokens::spacing::SM);
+                    // No `add_space` here: the pinned `item_spacing.y`
+                    // above IS the `gap-2` between the label text and
+                    // the wrapped field (FLD-VIS-03).
                 }
                 content(ui)
             });
@@ -2921,6 +2933,105 @@ mod tests {
                 *checked.borrow(),
                 expect_forward,
                 "own_disabled={own_disabled} under an inherited disabled flag"
+            );
+        }
+    }
+
+    /// FLD-VIS-03: measures the gap between the card-form label text and
+    /// the wrapped field. Drives `show_with_card` with a marker widget
+    /// as content, reads the label galley bottom from the emitted
+    /// `TextShape` and the marker top from the closure. Returns the gap
+    /// in points. `ambient_spacing_y` overrides the outer Ui's
+    /// `item_spacing.y` before showing the card (the card interior must
+    /// not inherit it).
+    fn card_label_gap(ctx: &egui::Context, label: &str, ambient_spacing_y: Option<f32>) -> f32 {
+        use std::cell::Cell;
+        let marker_top = Cell::new(f32::NAN);
+        let output = run_ui_capture(ctx, egui::RawInput::default(), |ui| {
+            if let Some(y) = ambient_spacing_y {
+                ui.spacing_mut().item_spacing.y = y;
+            }
+            FieldLabel::new(label).show_with_card(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(50.0, 20.0), Sense::hover());
+                marker_top.set(rect.min.y);
+            });
+        });
+        let mut label_bottom = f32::NAN;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text_shape) = &clipped.shape {
+                if text_shape.galley.job.text == label {
+                    label_bottom = text_shape.pos.y + text_shape.galley.size().y;
+                }
+            }
+        }
+        assert!(
+            !label_bottom.is_nan(),
+            "label TextShape for {label:?} not found in emitted shapes"
+        );
+        marker_top.get() - label_bottom
+    }
+
+    #[test]
+    fn card_label_gap_is_exactly_8px_nova() {
+        // Spec §2.6/§3.1: `gap-2` = 8px between the label text and the
+        // wrapped field, both styles. Pre-fix this reads 16px: the
+        // theme's `item_spacing.y` (8) is inserted after the label
+        // allocation AND `show_with_card` adds an explicit 8px space.
+        let ctx = test_ctx();
+        let gap = card_label_gap(&ctx, "Notifications", None);
+        assert!(
+            (gap - 8.0).abs() < 0.01,
+            "nova card label gap = {gap}, expected exactly 8.0"
+        );
+    }
+
+    #[test]
+    fn card_label_gap_is_exactly_8px_base() {
+        let ctx = test_ctx_base();
+        let gap = card_label_gap(&ctx, "Notifications", None);
+        assert!(
+            (gap - 8.0).abs() < 0.01,
+            "base card label gap = {gap}, expected exactly 8.0"
+        );
+    }
+
+    #[test]
+    fn card_label_gap_ignores_ambient_spacing() {
+        // The card interior is a `gap-2` column of its own: an enclosing
+        // Ui with a different `item_spacing.y` (e.g. a FieldGroup's
+        // 28px gap) must not leak into the label-to-field gap. This
+        // discriminates the robust fix (pin `item_spacing.y` inside the
+        // frame) from merely deleting the explicit space.
+        let ctx = test_ctx();
+        let gap = card_label_gap(&ctx, "Notifications", Some(28.0));
+        assert!(
+            (gap - 8.0).abs() < 0.01,
+            "card label gap under ambient spacing 28 = {gap}, expected exactly 8.0"
+        );
+    }
+
+    #[test]
+    fn card_without_label_text_has_no_gap() {
+        // Guard: with empty label text the label block is skipped
+        // entirely, so the content starts exactly at the frame's
+        // content top (outer top + padding). Must hold before and
+        // after the FLD-VIS-03 fix (§7a–7e cards use empty text).
+        use std::cell::Cell;
+        for (ctx, style) in [(test_ctx(), Style::Nova), (test_ctx_base(), Style::Vega)] {
+            let marker_top = Cell::new(f32::NAN);
+            let outer_top = Cell::new(f32::NAN);
+            run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+                let inner = FieldLabel::new("").show_with_card(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(50.0, 20.0), Sense::hover());
+                    marker_top.set(rect.min.y);
+                });
+                outer_top.set(inner.response.rect.min.y);
+            });
+            let pad = field_label_card_padding(style);
+            let offset = marker_top.get() - outer_top.get();
+            assert!(
+                (offset - pad).abs() < 0.01,
+                "{style:?} empty-label card: content offset = {offset}, expected padding {pad}"
             );
         }
     }
