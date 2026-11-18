@@ -578,6 +578,36 @@ impl<'a> RadioGroupItem<'a> {
             response.request_focus();
         }
 
+        // Escape is a no-op while focused (RAD-INT-07, settled
+        // OPEN-3): egui's `Focus::begin_pass` clears focus entirely
+        // on an unmodified Escape keydown unless the focused
+        // widget's event filter claims it
+        // (`egui-0.37.0/src/memory/mod.rs:598-601`, gated on
+        // `EventFilter::matches`). Claim Escape ONLY — Tab and both
+        // arrow axes stay `false`, so Tab still exits and arrows
+        // keep their framework handling. The filter latches only
+        // after 2 consecutive focused frames
+        // (`set_focus_lock_filter` requires `had_focus_last_frame &&
+        // has_focus`) and every focus grant resets it to default, so
+        // it is re-installed on every focused frame; the one-pass
+        // window after a grant is structural (see the
+        // `escape_in_first_pass_after_grant_clears_focus` pin).
+        // Disabled items never hold focus, so the gate is
+        // belt-and-braces. TOG-C2 precedent (`toggle.rs`).
+        if !self.disabled && response.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: false,
+                        vertical_arrows: false,
+                        escape: true,
+                    },
+                );
+            });
+        }
+
         let state = RadioState {
             checked: *self.checked,
             invalid: self.invalid,
@@ -1046,6 +1076,28 @@ fn render_items(
             }
             response.request_focus();
         }
+
+        // Escape is a no-op while focused (RAD-INT-07, settled
+        // OPEN-3): claim Escape in the focus-lock filter so
+        // `begin_pass` cannot clear focus (mechanism: see the
+        // standalone path above). Tab and both arrow axes stay
+        // unclaimed — Tab still exits the group, and the arrow/jump
+        // legs below keep their `move_focus(None)` cancellation.
+        // The filter installs only on focused frames and latches
+        // after 2 consecutive focused frames.
+        if !item_disabled && response.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: false,
+                        vertical_arrows: false,
+                        escape: true,
+                    },
+                );
+            });
+        }
         responses.push(response);
     }
 
@@ -1071,8 +1123,9 @@ fn render_items(
     // Space is handled by `space_keyup_fire` at the top of this
     // function (RAD-INT-05, settled OPEN-3: keyup, once per press);
     // Enter is suppressed per item before `interact` (RAD-INT-04,
-    // settled OPEN-3: never activates); Escape is untouched
-    // (RAD-INT-07 owns it).
+    // settled OPEN-3: never activates); Escape is a no-op while
+    // focused (RAD-INT-07: the Escape-only focus-lock filter, claimed
+    // per item above, so `begin_pass` cannot clear focus).
     let focused_id = ui.ctx().memory(|m| m.focused());
     let focused_idx =
         focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
@@ -3673,6 +3726,456 @@ mod tests {
         assert!(
             !ctx.memory(|m| m.has_focus(item_id.get())),
             "drag-off must not focus the dragged item"
+        );
+    }
+
+    #[test]
+    fn escape_retains_focus_on_standalone_item() {
+        // RAD-INT-07, settled OPEN-3: Escape is a no-op on a focused
+        // radio item (Radix has no Escape handler on the group or its
+        // items). The standalone item carries the verdict: it can be
+        // focused-but-unchecked. Fails pre-fix: `begin_pass` clears
+        // focus entirely on an unmodified Escape keydown
+        // (`memory/mod.rs:598-601`) unless the focused widget's event
+        // filter claims Escape.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_escape_test").with("radio_escape");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroupItem::new(checked)
+                    .id_salt("radio_escape")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        // Settle pass: the focus-lock filter latches only after 2
+        // consecutive focused frames (`set_focus_lock_filter`
+        // requires `had_focus_last_frame && has_focus`).
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        // Keydown: focus retained, selection unchanged.
+        run(&ctx, &mut checked, key_input(Key::Escape));
+        assert!(!checked, "Escape must not check the item");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Escape keydown must not clear focus"
+        );
+        // Repeat: still a no-op.
+        run(&ctx, &mut checked, key_repeat_input(Key::Escape));
+        assert!(!checked);
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Escape repeat must not clear focus"
+        );
+        // Release: still a no-op.
+        run(&ctx, &mut checked, key_release_input(Key::Escape));
+        assert!(!checked);
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Escape keyup must not clear focus"
+        );
+        // Second consecutive Escape: still focused.
+        run(&ctx, &mut checked, key_input(Key::Escape));
+        run(&ctx, &mut checked, key_release_input(Key::Escape));
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "consecutive Escapes must not clear focus"
+        );
+        // Settle: no delayed effect.
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(!checked);
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+    }
+
+    #[test]
+    fn escape_retains_focus_on_group_item_focus_not_checked() {
+        // RAD-INT-07, group path: Escape on a focused item must not
+        // move focus or selection, in the focus != checked state
+        // (reachable at runtime via an INT-03 jump). Fails pre-fix:
+        // focus is cleared entirely.
+        let ctx = test_ctx();
+        let mut selected: Option<usize> = None;
+        let base = egui::Id::unique("radio_escape_group_test").with("radio_escape_group");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_group_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_escape_group")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+
+        run(&ctx, &mut selected, key_input(Key::Escape));
+        assert_eq!(selected, None, "Escape must not select");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(base.with(1usize)),
+            "Escape must not clear focus on a group item"
+        );
+        run(&ctx, &mut selected, key_release_input(Key::Escape));
+        assert_eq!(selected, None);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+    }
+
+    #[test]
+    fn escape_then_tab_continues_order() {
+        // RAD-INT-07 recovery leg (the S6 filing's proof): after an
+        // Escape, the next Tab continues the order from the focused
+        // item — it must NOT restart from the beginning. Two groups:
+        // Tab grants focus to group A's stop; Escape; Tab must land
+        // on group B's stop. Fails pre-fix: Escape clears focus, so
+        // Tab re-enters at group A (the full-walk restart).
+        let ctx = test_ctx();
+        let sel_a = std::cell::RefCell::new(None);
+        let sel_b = std::cell::RefCell::new(None);
+        let id_a = std::cell::Cell::new(Id::NULL);
+        let id_b = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            id_a.set(ui.scope_id().with("radio_escape_tab_a").with(0usize));
+            id_b.set(ui.scope_id().with("radio_escape_tab_b").with(0usize));
+            let mut guard_a = sel_a.borrow_mut();
+            RadioGroup::new(&mut guard_a)
+                .id_salt("radio_escape_tab_a")
+                .option("A0")
+                .option("A1")
+                .show(ui);
+            let mut guard_b = sel_b.borrow_mut();
+            RadioGroup::new(&mut guard_b)
+                .id_salt("radio_escape_tab_b")
+                .option("B0")
+                .option("B1")
+                .show(ui);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id_a.get()),
+            "Tab must enter at group A's stop"
+        );
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        run_ui(&ctx, key_input(Key::Escape), |ui| render(ui));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id_a.get()),
+            "Escape must retain focus on group A's stop"
+        );
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id_b.get()),
+            "Tab after Escape must continue to group B, not restart at group A"
+        );
+    }
+
+    #[test]
+    fn escape_after_click_focus_retains_focus() {
+        // RAD-INT-07 after INT-06: focus granted by a click (release
+        // pass) survives a settled Escape. Fails pre-fix: Escape
+        // clears the click-granted focus.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(1));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_escape_click").with(0usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_escape_click")
+                .option("AAA")
+                .option("BBB")
+                .option("CCC")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let rect = group_rect.get();
+        let center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(*selected.borrow(), Some(0), "click must select opt0");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "click must focus opt0"
+        );
+        run_ui(&ctx, key_input(Key::Escape), |ui| render(ui));
+        assert_eq!(
+            *selected.borrow(),
+            Some(0),
+            "Escape must not change selection"
+        );
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "Escape after a click must retain focus"
+        );
+    }
+
+    #[test]
+    fn escape_in_first_pass_after_grant_clears_focus() {
+        // DOCUMENTATION pin (passes before AND after the fix): the
+        // one-pass latching window is structural in egui. Every
+        // focus grant resets the filter to default
+        // (`Memory::request_focus` builds a fresh `FocusWidget`), and
+        // the filter can only be installed during a later UI pass
+        // where the widget both had focus last frame and has it now
+        // — so an Escape arriving in the very first pass after a
+        // grant still clears focus. This is the NSL-INT-02 Bf class:
+        // rendered fast-Escape probing is non-discriminating under
+        // load by mechanism, so the window is pinned here at unit
+        // level only. Do NOT "fix" this pin by weakening the filter
+        // gate — the window is one pass wide and unobservable in
+        // settled interaction.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_escape_window_test").with("radio_escape_window");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_window_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroupItem::new(checked)
+                    .id_salt("radio_escape_window")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        // NO settle pass: Escape in the first pass after the grant.
+        run(&ctx, &mut checked, key_input(Key::Escape));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            None,
+            "Escape in the first pass after a grant clears focus (one-pass window)"
+        );
+        assert!(!checked, "the window affects focus only, never selection");
+    }
+
+    #[test]
+    fn tab_still_exits_group_after_escape_fix() {
+        // Guard: the Escape-only filter must not claim Tab — Tab
+        // still moves from one group's stop to the next. Passes both
+        // before and after the fix.
+        let ctx = test_ctx();
+        let sel_a = std::cell::RefCell::new(None);
+        let sel_b = std::cell::RefCell::new(None);
+        let id_a = std::cell::Cell::new(Id::NULL);
+        let id_b = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            id_a.set(ui.scope_id().with("radio_escape_tab_guard_a").with(0usize));
+            id_b.set(ui.scope_id().with("radio_escape_tab_guard_b").with(0usize));
+            let mut guard_a = sel_a.borrow_mut();
+            RadioGroup::new(&mut guard_a)
+                .id_salt("radio_escape_tab_guard_a")
+                .option("A0")
+                .option("A1")
+                .show(ui);
+            let mut guard_b = sel_b.borrow_mut();
+            RadioGroup::new(&mut guard_b)
+                .id_salt("radio_escape_tab_guard_b")
+                .option("B0")
+                .option("B1")
+                .show(ui);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(id_a.get()));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id_b.get()),
+            "Tab must exit group A to group B"
+        );
+    }
+
+    #[test]
+    fn arrow_navigation_unchanged_by_escape_fix() {
+        // Guard: the Escape-only filter must not claim arrows —
+        // arrows still navigate + select within the group. Passes
+        // both before and after the fix.
+        let ctx = test_ctx();
+        let mut selected: Option<usize> = Some(0);
+        let base = egui::Id::unique("radio_escape_arrow_test").with("radio_escape_arrow");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_arrow_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_escape_arrow")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        run(&ctx, &mut selected, key_input(Key::ArrowDown));
+        assert_eq!(selected, Some(1), "Down must move the selection");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(base.with(1usize)),
+            "Down must move focus"
+        );
+    }
+
+    #[test]
+    fn space_keyup_fire_unchanged_by_escape_fix() {
+        // Guard: Space still fires on keyup, once per press, with
+        // focus retained — the filter install must not disturb the
+        // INT-05 helper. Passes both before and after the fix.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_escape_space_test").with("radio_escape_space");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_space_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroupItem::new(checked)
+                    .id_salt("radio_escape_space")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        run(&ctx, &mut checked, key_input(Key::Space));
+        assert!(!checked, "Space keydown must not fire");
+        run(&ctx, &mut checked, key_release_input(Key::Space));
+        assert!(checked, "Space keyup must fire once");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Space must retain focus"
+        );
+    }
+
+    #[test]
+    fn enter_suppression_unchanged_by_escape_fix() {
+        // Guard: Enter still never activates, with focus retained —
+        // the filter install must not disturb the INT-04 helper.
+        // Passes both before and after the fix.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_escape_enter_test").with("radio_escape_enter");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_enter_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroupItem::new(checked)
+                    .id_salt("radio_escape_enter")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        run(&ctx, &mut checked, key_input(Key::Enter));
+        assert!(!checked, "Enter must not activate");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Enter must retain focus"
+        );
+        run(&ctx, &mut checked, key_release_input(Key::Enter));
+        assert!(!checked);
+    }
+
+    #[test]
+    fn escape_with_no_focus_is_noop() {
+        // Guard: with focus nowhere, Escape changes nothing — no
+        // selection, no focus grant. Passes both before and after
+        // the fix (the filter installs only on focused frames).
+        let ctx = test_ctx();
+        let mut selected: Option<usize> = Some(1);
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_escape_nofocus_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_escape_nofocus")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        run(&ctx, &mut selected, key_input(Key::Escape));
+        run(&ctx, &mut selected, key_release_input(Key::Escape));
+        assert_eq!(selected, Some(1), "Escape must not change selection");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            None,
+            "Escape must not grant focus"
         );
     }
 }
