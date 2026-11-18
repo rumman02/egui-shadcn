@@ -186,7 +186,7 @@ pub use message::{
 pub use message_scroller::{
     MessageScroller, MessageScrollerButton, MessageScrollerDirection, MessageScrollerResponse,
 };
-pub use native_select::{NativeSelect, NativeSelectSize, SelectOption};
+pub use native_select::{NativeSelect, NativeSelectSize, SelectOptGroup, SelectOption};
 pub use navigation_menu::{
     NavContentBuilder, NavLink, NavOrientation, NavigationMenu, NavigationMenuBuilder,
     NavigationMenuResponse, NAV_GAP, NAV_TRIGGER_HEIGHT, NAV_TRIGGER_PAD_X, NAV_VIEWPORT_OFFSET,

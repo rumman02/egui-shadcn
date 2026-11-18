@@ -4839,9 +4839,9 @@ pub fn input_otp_demo(ui: &mut egui::Ui) {
 }
 
 pub fn native_select_demo(ui: &mut egui::Ui) {
-    // `SelectOptGroup` is pub in the component module but NOT re-exported in
-    // `components/mod.rs` (S1 flag F1 — the re-export is a merge-time
-    // one-liner). Import the full path here; do not add the re-export.
+    // `SelectOptGroup` is re-exported in `components/mod.rs` (S1 flag F1,
+    // landed as the S12 merge-time one-liner). The full-path import below
+    // is kept; it resolves to the same type.
     use egui_shadcn_ui::components::native_select::SelectOptGroup;
 
     // Every section prints the rect the trigger actually allocated
