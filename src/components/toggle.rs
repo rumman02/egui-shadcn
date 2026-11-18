@@ -61,7 +61,12 @@
 //! BTN-INT-04 shape); Enter is never touched. A direct click focuses AND
 //! toggles (TOG-INT-02): egui's `interact` never grants focus on a pointer
 //! click, so `show` requests focus explicitly on `clicked()` (the button
-//! BTN-INT-01 shape); press-drag-off-release focuses nothing.
+//! BTN-INT-01 shape); press-drag-off-release focuses nothing. Escape is a
+//! no-op for a focused toggle (TOG-C2): Escape has no handling anywhere in
+//! Radix Toggle / ToggleGroup / RovingFocusGroup, so `show` claims it in
+//! the focus-lock filter (`EventFilter { escape: true }`, the TXT-INT-01
+//! class) and it leaves focus AND pressed state unchanged; Tab and arrows
+//! keep moving focus.
 //! `:focus-visible` modality is deviation D1 (PROPOSED): the ring shows on
 //! any focus. No ARIA tree exists in egui (D2, PROPOSED): pressed/invalid
 //! state is exposed through the Rust API and rendered visually.
@@ -863,6 +868,34 @@ impl<'a> Toggle<'a> {
         if response.clicked() && !self.disabled {
             *self.pressed = !*self.pressed;
             response.request_focus();
+        }
+
+        // Escape is a no-op for a focused toggle (TOG-C2, gate G12;
+        // TGG-INT-02 routed from the toggle-group line): Escape has no
+        // handling anywhere in Radix Toggle / ToggleGroup /
+        // RovingFocusGroup, so it must leave focus AND pressed state
+        // unchanged. Without a focus-lock filter, egui's
+        // `Focus::begin_pass` clears focus on an unmodified Escape press
+        // (the TXT-INT-01 class). Claim Escape ONLY: Tab and arrows must
+        // keep moving focus (Tab navigation + egui spatial arrows), so
+        // the filter leaves them to the framework default. The filter
+        // latches only once the widget held focus last frame AND holds
+        // it now, and is re-installed every focused frame. Disabled
+        // toggles never hold focus, so the gate is belt-and-braces.
+        // Group items render through this same `show()` (`toggle_group.rs`
+        // calls `Toggle::show`), so the fix covers both lines.
+        if !self.disabled && response.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: false,
+                        vertical_arrows: false,
+                        escape: true,
+                    },
+                );
+            });
         }
 
         if ui.is_rect_visible(rect) {
@@ -1930,6 +1963,131 @@ mod tests {
         assert!(!clicked);
         assert!(!pressed);
         assert!(!ctx.memory(|m| m.has_focus(id)));
+    }
+
+    #[test]
+    fn escape_is_noop_for_focused_toggle_tog_c2() {
+        // TOG-C2 (gate G12; TGG-INT-02 routed from the toggle-group line):
+        // Escape has no handling anywhere in Radix Toggle / ToggleGroup /
+        // RovingFocusGroup, so Escape on a focused toggle must leave focus
+        // AND pressed state unchanged. Without a focus-lock filter, egui's
+        // `Focus::begin_pass` clears focus on an unmodified Escape press
+        // (the TXT-INT-01 class). The fix installs
+        // `EventFilter { escape: true }` while the toggle holds focus.
+        // Tab and arrows must KEEP moving focus: the filter claims Escape
+        // only, so the Tab leg guards `tab: false` and the Down leg guards
+        // `vertical_arrows: false`.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("toggle_escape_noop_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+            )
+        };
+        let key_event = |key: egui::Key, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let shift_tab = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        let mut pressed_a = false;
+        let mut pressed_b = false;
+
+        // Frame 1: render both toggles, record ids; then focus toggle A.
+        let mut id_a = egui::Id::NULL;
+        let mut id_b = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            id_a = Toggle::new(&mut pressed_a)
+                .id_salt("tog_c2_a")
+                .text("Alpha")
+                .show(ui)
+                .id;
+            id_b = Toggle::new(&mut pressed_b)
+                .id_salt("tog_c2_b")
+                .text("Beta")
+                .show(ui)
+                .id;
+        });
+        out.textures_delta.clear();
+        ctx.memory_mut(|m| m.request_focus(id_a));
+        assert!(ctx.memory(|m| m.has_focus(id_a)));
+
+        let mut frame = |ctx: &egui::Context, input: egui::RawInput| -> (bool, bool) {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                let _ = Toggle::new(&mut pressed_a)
+                    .id_salt("tog_c2_a")
+                    .text("Alpha")
+                    .show(ui);
+                let _ = Toggle::new(&mut pressed_b)
+                    .id_salt("tog_c2_b")
+                    .text("Beta")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+            (pressed_a, pressed_b)
+        };
+
+        // Frame 2 (empty): the focus-lock filter latches — it installs
+        // only once the widget held focus last frame AND holds it now.
+        frame(&ctx, egui::RawInput::default());
+        // Frame 3: Escape press — focus retained, pressed unchanged.
+        let (pa, _) = frame(&ctx, key_event(egui::Key::Escape, true));
+        assert!(
+            ctx.memory(|m| m.has_focus(id_a)),
+            "Escape must not clear toggle focus"
+        );
+        assert!(!pa, "Escape must not toggle pressed state");
+        // Frame 4: Escape release — still unchanged.
+        let (pa, _) = frame(&ctx, key_event(egui::Key::Escape, false));
+        assert!(ctx.memory(|m| m.has_focus(id_a)));
+        assert!(!pa);
+        // Frame 5: Tab moves focus to toggle B (guards `tab: false`).
+        frame(&ctx, key_event(egui::Key::Tab, true));
+        // Frame 6: observation — focus must have moved.
+        frame(&ctx, egui::RawInput::default());
+        assert!(
+            ctx.memory(|m| m.has_focus(id_b)),
+            "Tab must move focus to the next stop"
+        );
+        // Frame 7: Shift+Tab returns focus to toggle A.
+        frame(&ctx, shift_tab);
+        // Frame 8: observation + filter re-latch on A.
+        frame(&ctx, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(id_a)));
+        // Frame 9: re-latch frame (filter installs on the second focused
+        // frame after focus returns).
+        frame(&ctx, egui::RawInput::default());
+        // Frame 10: Down arrow moves focus to B (guards
+        // `vertical_arrows: false` — spatial arrow navigation preserved).
+        frame(&ctx, key_event(egui::Key::ArrowDown, true));
+        // Frame 11: observation — focus must have moved.
+        frame(&ctx, egui::RawInput::default());
+        assert!(
+            ctx.memory(|m| m.has_focus(id_b)),
+            "Down arrow must move focus spatially"
+        );
     }
 
     #[test]
