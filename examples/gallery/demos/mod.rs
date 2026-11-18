@@ -3750,80 +3750,348 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
 }
 
 pub fn radio_group_demo(ui: &mut egui::Ui) {
-    let store = egui::Id::unique("radio_demo_values");
-    let mut values: [Option<usize>; 5] = ui.ctx().data_mut(|d| {
-        d.get_temp(store)
-            .unwrap_or([Some(0), None, Some(1), Some(0), Some(0)])
-    });
+    // Header: recipe position, stated honestly (spec §§0, 6, 7, 10).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Radio group — single-select circles + labels (D5). Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Keyboard model = S6-settled (OPEN-1–OPEN-4 closed from Radix source) + S10-verified (554/554 rows, all 4 configs): roving tabindex, one Tab stop per group; all four arrows navigate with wrap + disabled-skip; Home/End/PageUp/PageDown are focus-only jump keys; Space fires on keyup, Enter never activates, Escape is a no-op. Labels render via Label composition (D5 PROPOSED: 8px circle–label gap, 16px rows). Focus+invalid precedence is DECIDED (gate G3: invalid-wins both halves). Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-6). Ring shows on any focus (D1 proposed). No hover rule: hovering changes nothing.");
 
-    ui.label("Vertical (default)");
+    // Group focus readout helper. `RadioGroup::show` returns
+    // `InnerResponse<()>` — no per-item `Response` exists to capture ids
+    // from — so the readout checks `Memory::has_focus` against the item
+    // ids, which follow the S1-documented scheme: `group_id =
+    // ui.scope_id().with(salt)` computed from the `Ui` passed to `show`,
+    // `item_id = group_id.with(i)`. This is NOT the Input child-scope
+    // case (Label F1): no child scope intervenes between this `Ui` and
+    // the group id computation, and the label demo §8c relies on the
+    // same scheme for the standalone item. Verified empirically in the
+    // S3 smoke run (click → `focused: true`).
+    let group_focused = |ui: &egui::Ui, salt: &str, n: usize| -> bool {
+        let group_id = ui.scope_id().with(salt);
+        ui.ctx()
+            .memory(|m| (0..n).any(|i| m.has_focus(group_id.with(i))))
+    };
+
+    let store = egui::Id::unique("radio_s3_values");
+    let mut values: [Option<usize>; 13] = ui.ctx().data_mut(|d| {
+        d.get_temp(store).unwrap_or([
+            Some(1),
+            Some(0),
+            None,
+            Some(0),
+            None,
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(0),
+        ])
+    });
+    let standalone_store = egui::Id::unique("radio_s3_standalone");
+    let mut standalone: [bool; 2] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(standalone_store).unwrap_or([true, false]));
+
+    // 1. Labelled groups (N2 Option C, D5 proposed). Rows are 16px tall;
+    // the group rect below lets S5 derive the row height (3 rows:
+    // 64.0px nova / 72.0px base = 3×16 + 2×gap). The 8px circle–label
+    // gap is S5's pixel job — no per-row rect is exposed.
+    ui.add_space(12.0);
+    ui.label("1. Labelled groups (N2 Option C; D5 proposed: 8px gap, 16px rows; label per frozen label spec)");
     ui.add_space(4.0);
-    RadioGroup::new(&mut values[0])
-        .id_salt("radio_demo_default")
+    let g1 = RadioGroup::new(&mut values[0])
+        .id_salt("s3-labelled")
         .option("Default")
         .option("Comfortable")
         .option("Compact")
-        .show(ui);
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "labelled group: {:.1} x {:.1} px; selected: {:?} (expected: 3 rows, 64.0 nova / 72.0 base tall)",
+        g1.width(),
+        g1.height(),
+        values[0]
+    ));
+    ui.add_space(8.0);
+    let g1b = RadioGroup::new(&mut values[1])
+        .id_salt("s3-empty-label")
+        .option("First")
+        .option("")
+        .option("Third")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "empty-label group: {:.1} x {:.1} px; selected: {:?} (middle option renders circle only, no gap)",
+        g1b.width(),
+        g1b.height(),
+        values[1]
+    ));
 
+    // 2. Checked looks: nova solid primary disc + primary-foreground dot
+    // vs base primary dot on the resting fill; standalone items shown
+    // separately (unaffected by N2); a no-selection group shows no dot.
     ui.add_space(12.0);
-    ui.label("Horizontal");
+    ui.label("2. Checked looks (spec §2.7; standalone items unaffected by N2; no-selection group shows no dot)");
     ui.add_space(4.0);
-    RadioGroup::new(&mut values[2])
-        .id_salt("radio_demo_horizontal")
+    let r_checked = RadioGroupItem::new(&mut standalone[0])
+        .id_salt("s3-standalone-checked")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "standalone checked: {:.1} x {:.1} px; checked: {}",
+        r_checked.width(),
+        r_checked.height(),
+        standalone[0]
+    ));
+    ui.add_space(4.0);
+    let r_unchecked = RadioGroupItem::new(&mut standalone[1])
+        .id_salt("s3-standalone-unchecked")
+        .show(ui)
+        .rect;
+    ui.label(format!(
+        "standalone unchecked: {:.1} x {:.1} px; checked: {}",
+        r_unchecked.width(),
+        r_unchecked.height(),
+        standalone[1]
+    ));
+    ui.add_space(8.0);
+    let g2 = RadioGroup::new(&mut values[2])
+        .id_salt("s3-no-selection")
+        .option("Alpha")
+        .option("Beta")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "no-selection group: {:.1} x {:.1} px; selected: {:?} (no dot anywhere)",
+        g2.width(),
+        g2.height(),
+        values[2]
+    ));
+
+    // 3. Focus target, with clear space above and below. The live
+    // `focused:` readout prints so S6 captures can confirm focus.
+    ui.add_space(12.0);
+    ui.label(
+        "3. Focus target (spec §4: border ring + 3px ring/50 ring on focus; D1: ring on any focus)",
+    );
+    ui.add_space(4.0);
+    let g3 = RadioGroup::new(&mut values[3])
+        .id_salt("s3-focus")
+        .option("Red")
+        .option("Green")
+        .option("Blue")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; selected: {:?}; focused: {}",
+        g3.width(),
+        g3.height(),
+        values[3],
+        group_focused(ui, "s3-focus", 3)
+    ));
+
+    // 4. Invalid: nova shows the 3px destructive rest ring; base shows
+    // the destructive border only. Invalid+checked keeps the primary
+    // border under nova (checked wins). Focus+invalid precedence is
+    // DECIDED (gate G3: invalid-wins both halves; S10 verified Tab 82
+    // in all 4 configs).
+    ui.add_space(12.0);
+    ui.label("4. Invalid (spec §4; nova: 3px rest ring; base: border only; invalid+checked keeps primary border under nova; focus+invalid precedence DECIDED — gate G3, invalid-wins)");
+    ui.add_space(4.0);
+    let g4a = RadioGroup::new(&mut values[4])
+        .id_salt("s3-invalid")
+        .invalid(true)
+        .option("One")
+        .option("Two")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "invalid unchecked: {:.1} x {:.1} px; selected: {:?}",
+        g4a.width(),
+        g4a.height(),
+        values[4]
+    ));
+    ui.add_space(8.0);
+    let g4b = RadioGroup::new(&mut values[5])
+        .id_salt("s3-invalid-checked")
+        .invalid(true)
+        .option("One")
+        .option("Two")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "invalid + checked: {:.1} x {:.1} px; selected: {:?} (checked wins for border under nova)",
+        g4b.width(),
+        g4b.height(),
+        values[5]
+    ));
+    ui.add_space(8.0);
+    let g4c = RadioGroup::new(&mut values[6])
+        .id_salt("s3-invalid-disabled")
+        .invalid(true)
+        .disabled(true)
+        .option("One")
+        .option("Two")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "invalid + disabled: {:.1} x {:.1} px; selected: {:?}",
+        g4c.width(),
+        g4c.height(),
+        values[6]
+    ));
+
+    // 5. Disabled: whole-element 50% fade; a group with one disabled
+    // option (middle) exposes the per-option case (spec §9).
+    ui.add_space(12.0);
+    ui.label("5. Disabled (spec §4: whole element at 50% opacity; disabled items take no focus)");
+    ui.add_space(4.0);
+    let g5a = RadioGroup::new(&mut values[7])
+        .id_salt("s3-disabled")
+        .disabled(true)
+        .option("Enabled look, disabled group")
+        .option("Second option")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "disabled group: {:.1} x {:.1} px; selected: {:?} (checked + unchecked options, both faded)",
+        g5a.width(),
+        g5a.height(),
+        values[7]
+    ));
+    ui.add_space(8.0);
+    let g5b = RadioGroup::new(&mut values[8])
+        .id_salt("s3-option-disabled")
+        .option("Push notifications")
+        .option_disabled("Email digest (unavailable)")
+        .option("Nothing")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "one disabled option: {:.1} x {:.1} px; selected: {:?} (middle option faded, skipped by keys per settled OPEN-1 — S6 Work B, S10-verified)",
+        g5b.width(),
+        g5b.height(),
+        values[8]
+    ));
+
+    // 6. Horizontal (D4 Rust extension). The group itself must measure
+    // exactly 16px tall — the S1 fix replaced `ui.horizontal` (which
+    // seeds a 36px row) with a scope_builder + left-to-right layout.
+    // This demo stacks vertically and never uses `ui.horizontal`.
+    ui.add_space(12.0);
+    ui.label("6. Horizontal (D4 extension; gap 12px base / 8px nova between options; group height must be exactly 16px)");
+    ui.add_space(4.0);
+    let g6 = RadioGroup::new(&mut values[9])
+        .id_salt("s3-horizontal")
         .orientation(GroupOrientation::Horizontal)
         .option("Day")
         .option("Month")
         .option("Year")
-        .show(ui);
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "horizontal group: {:.1} x {:.1} px; selected: {:?} (expected height: exactly 16.0)",
+        g6.width(),
+        g6.height(),
+        values[9]
+    ));
+
+    // 7. Hover target, with clear space above and below. The live
+    // `hovered:` readout prints; hovering must equal resting (no hover
+    // rule in either recipe).
+    ui.add_space(12.0);
+    ui.label("7. Hover target (no hover rule in either recipe: hovering must equal resting, pixel-identical)");
+    ui.add_space(4.0);
+    let r7 = RadioGroup::new(&mut values[10])
+        .id_salt("s3-hover")
+        .option("Hover one")
+        .option("Hover two")
+        .show(ui)
+        .response;
+    // Hover readout via rect containment, NOT `Response::hovered()`: the
+    // group response is the scope Ui's response, and egui's hover set
+    // holds the top interactive widget under the pointer (the item
+    // circles/labels), so the scope response reports `hovered() == false`
+    // even with the pointer parked on the group (verified empirically in
+    // the S3 smoke run). Rect containment is the signal S6 needs: is the
+    // pointer over the target while the render must equal resting.
+    let hovered = ui.rect_contains_pointer(r7.rect);
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; selected: {:?}; hovered: {}",
+        r7.rect.width(),
+        r7.rect.height(),
+        values[10],
+        hovered
+    ));
+
+    // 8. Suppression (D6 mechanism): one group with
+    // `.suppress_focus_indication(true)` + one without. Nova-only; the
+    // field line owns the wiring contract — this demo only exposes the
+    // mechanism for S6 to drive focus against. Under base the builder
+    // is a no-op and both groups must render identically.
+    ui.add_space(12.0);
+    ui.label("8. Suppression, D6 mechanism (nova-only; field line owns the wiring contract; under base both groups render identically)");
+    ui.add_space(4.0);
+    let g8a = RadioGroup::new(&mut values[11])
+        .id_salt("s3-suppressed")
+        .suppress_focus_indication(true)
+        .option("Suppressed A")
+        .option("Suppressed B")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "suppressed group: {:.1} x {:.1} px; selected: {:?}; focused: {} (no ring when focused under nova)",
+        g8a.width(),
+        g8a.height(),
+        values[11],
+        group_focused(ui, "s3-suppressed", 2)
+    ));
+    ui.add_space(8.0);
+    let g8b = RadioGroup::new(&mut values[12])
+        .id_salt("s3-unsuppressed")
+        .option("Plain A")
+        .option("Plain B")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "unsuppressed group: {:.1} x {:.1} px; selected: {:?}; focused: {} (ring renders on focus)",
+        g8b.width(),
+        g8b.height(),
+        values[12],
+        group_focused(ui, "s3-unsuppressed", 2)
+    ));
 
     ui.add_space(12.0);
-    ui.label("No initial selection, one disabled option");
-    ui.add_space(4.0);
-    RadioGroup::new(&mut values[1])
-        .id_salt("radio_demo_disabled")
-        .option("Push notifications")
-        .option_disabled("Email digest (unavailable)")
-        .option("Nothing")
-        .show(ui);
+    ui.label("Keyboard: Tab/Shift+Tab move focus (one stop per group — roving-tabindex entry rules settled OPEN-4, S10-verified: entry lands on the checked item, else the stored stop, and never checks). All four arrows navigate with wrap + disabled-skip and selection following (settled OPEN-1); Home/End/PageUp/PageDown are focus-only jump keys (settled OPEN-2); Space fires on keyup, Enter never activates, Escape is a no-op (settled OPEN-3, S10-verified). A label click fires a click AND focuses (settled, spec §7.3); a direct click selects AND focuses (RAD-INT-06, S10-verified) and never unchecks.");
 
-    ui.add_space(12.0);
-    ui.label("Disabled group and invalid items");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        RadioGroup::new(&mut values[3])
-            .id_salt("radio_demo_disabled_group")
-            .disabled(true)
-            .option("A")
-            .option("B")
-            .show(ui);
-        RadioGroup::new(&mut values[4])
-            .id_salt("radio_demo_invalid")
-            .invalid(true)
-            .option("A")
-            .option("B")
-            .show(ui);
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(store, values);
+        d.insert_temp(standalone_store, standalone);
     });
-
-    ui.add_space(12.0);
-    ui.label("Standalone RadioGroupItem + label");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let mut standalone = ui.ctx().data_mut(|d| {
-            d.get_temp(egui::Id::unique("radio_demo_standalone"))
-                .unwrap_or(false)
-        });
-        RadioGroupItem::new(&mut standalone)
-            .id_salt("radio_demo_item")
-            .show(ui);
-        ui.label("Standalone item");
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(egui::Id::unique("radio_demo_standalone"), standalone));
-    });
-
-    ui.add_space(12.0);
-    ui.label("Keyboard: arrows move the selection and focus (no wrap-around).");
-
-    ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
 
 pub fn switch_demo(ui: &mut egui::Ui) {
