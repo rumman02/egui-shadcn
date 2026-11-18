@@ -3369,7 +3369,7 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
         "Toggle — pressed-state button. Active recipe: {recipe} (style: {}, mode: {mode}). Heights 32/28/36px nova, 36/32/40px base (default/sm/lg).",
         theme.style.name()
     ));
-    ui.label("S-1: outline shadow-xs paints under ALL styles incl. nova. N16: the .icon_inline_start builder (§3) is an S1 PROPOSAL pending S8 ratification — no trigger is inferred. OPEN-3 (pressed+hover) and OPEN-4 (invalid+focus) precedences are PROVISIONAL as built. Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-5); property sets per ruling 6 (base: text+ring animate, fill/border snap; nova: transition-all). Hover fill/text per §4.2 only. Keyboard = egui-natural behaviour; Radix mechanics are OPEN-1/OPEN-2 for S6 Work B.");
+    ui.label("S-1: outline shadow-xs paints under ALL styles incl. nova. N16: the .icon_inline_start builder (§3) is the RATIFIED trigger mapping (gate G3) — no trigger is inferred; OPEN-6 stays OPEN. OPEN-3 (pressed+hover) precedence stays PROVISIONAL; OPEN-4 (invalid+focus) is DECIDED invalid-wins (gate G4). Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-5); property sets per ruling 6 (base: text+ring animate, fill/border snap; nova: transition-all). Hover fill/text per §4.2 only. Keyboard: Space fires on keyup, Enter on keydown (OPEN-1/OPEN-2 CLOSED by S6 Work B); click focuses + toggles; Escape is a no-op.");
 
     // Index layout: 0-7 §1 variants, 8-11 §2 gap, 12-17 §3 icon-inline,
     // 18 §4 focus, 19-22 §5 invalid, 23-27 §6 disabled, 28 §7 hover,
@@ -3543,13 +3543,13 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
     ));
 
     // 3. Icon-inline padding (N16, spec §3.3). The padding VALUES are
-    // frozen; the `.icon_inline_start` trigger is the S1 PROPOSAL
-    // (OPEN-6 stays OPEN, no trigger inferred). Each pair shows the
+    // frozen; the `.icon_inline_start` trigger mapping is RATIFIED
+    // (gate G3; OPEN-6 stays OPEN, no trigger inferred). Each pair shows the
     // same icon+text toggle with the builder on vs off: under nova the
     // builder-on toggle is narrower (left padding 8 vs 10 default/lg,
     // 6 vs 10 sm); under base both are identical.
     ui.add_space(12.0);
-    ui.label("3. Icon-inline padding (N16) — .icon_inline_start(true) is an S1 PROPOSAL pending S8 ratification; padding values frozen (nova 8px default/lg, 6px sm on the icon side; base: no adjustment)");
+    ui.label("3. Icon-inline padding (N16) — .icon_inline_start(true) is the RATIFIED trigger mapping (gate G3); padding values frozen (nova 8px default/lg, 6px sm on the icon side; base: no adjustment)");
     ui.add_space(4.0);
     let r = Toggle::new(&mut values[12])
         .id_salt("s3-n16-default-on")
@@ -3653,10 +3653,10 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
     // 5. Invalid (spec §4.5): full-alpha `destructive` border on the
     // outline variant ONLY (the default variant has no border width,
     // so no visible invalid border), NO rest ring in either style
-    // (N5 does NOT apply to toggle). OPEN-4 precedence is PROVISIONAL
-    // (invalid wins over focus, as built).
+    // (N5 does NOT apply to toggle). OPEN-4 precedence is DECIDED
+    // (gate G4: invalid wins over focus).
     ui.add_space(12.0);
-    ui.label("5. Invalid — full destructive border, outline only, NO rest ring in either style (spec §4.5; N5 does NOT apply); OPEN-4 precedence PROVISIONAL (invalid wins)");
+    ui.label("5. Invalid — full destructive border, outline only, NO rest ring in either style (spec §4.5; N5 does NOT apply); OPEN-4 precedence DECIDED invalid-wins (gate G4)");
     ui.add_space(4.0);
     let r = Toggle::new(&mut values[19])
         .id_salt("s3-invalid-default")
@@ -3828,7 +3828,7 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("Provisional: OPEN-3 pressed-wins, OPEN-4 invalid-wins, N16 trigger mapping (S1 proposal). Interim: OPEN-5 timing. Deviations D1 (focus-visible modality) and D2 (no ARIA tree) PROPOSED. No field compositions and no toggle-group rows on this page — fused/group behaviour belongs to the toggle-group page (FG-3 ring queueing is verified by toggle-group S5).");
+    ui.label("Provisional: OPEN-3 pressed-wins. Decided: OPEN-4 invalid-wins (gate G4). Ratified: N16 trigger mapping (gate G3). Interim: OPEN-5 timing. Deviations D1 (focus-visible modality) and D2 (no ARIA tree) PROPOSED. No field compositions and no toggle-group rows on this page — fused/group behaviour belongs to the toggle-group page (FG-3 ring queueing is verified by toggle-group S5).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }

@@ -17,6 +17,24 @@
 //! | sm | `h-8 min-w-8 px-1.5` |
 //! | lg | `h-10 min-w-10 px-2.5` |
 //!
+//! Verified final state (Batch B S10 PASS, zero new defects, HEAD
+//! `0c7d874` — `toggle-s10-report.md`; S8 gate `toggle-s8-gate.md`):
+//! all four defects closed (TOG-VIS-01, TOG-INT-01, TOG-INT-02;
+//! TOG-INT-03 closed as not-a-defect), the TOG-C1 vertical-fused
+//! correction and the TOG-C2 Escape no-op verified, and the G3/G4
+//! dispositions below in force. Every behaviour statement in these
+//! docs cites its evidence.
+//!
+//! Rest rendering (S10 §9.1, all 4 configs): resting fills 255/245
+//! light, 10/38 nova-dark, 10/64 vega-dark; borders 229 light; dark
+//! borders are translucent-`input` composites over the fill (47 over
+//! the backdrop, 70 over pressed fill 38 under nova, 92 over pressed
+//! fill 64 under vega-dark — OBS-TG-S7-1, style-aware per S10 §6),
+//! never the raw token; text cores 10/23 light, 250 dark; corner radii
+//! nova r=10, base r=8; focus ring 208 light / 63 dark, 3px gapless,
+//! border `ring` 161/115; invalid toggles show NO rest ring in either
+//! style.
+//!
 //! The nova style (`.cn-toggle*`) tightens the geometry (`h-8/h-7/h-9`,
 //! `px-2.5`, `gap-1`, `rounded-lg`, sm `rounded-[min(var(--radius-md),12px)]`
 //! with a 12.8pt label and 14pt icon), moves the pressed fill to `bg-muted`
@@ -24,19 +42,27 @@
 //! ruling (Decision S-1, frozen spec §0) — KEEPS the outline `shadow-xs`:
 //! no `.cn-toggle*` rule declares a shadow property, so silence keeps the
 //! base value. The `metrics` module holds those overrides; the
-//! [`ToggleSize`] methods keep the base recipe.
+//! [`ToggleSize`] methods keep the base recipe. S10 §9.1 confirms the
+//! shadow-xs profiles (249/249/253) on outline and none on default,
+//! under both styles.
 //!
 //! Animation (frozen spec §6 as corrected by the narrow-reading ruling):
 //! under base, `transition-[color,box-shadow]` animates text colour and
 //! box-shadow (the focus ring) while border/fill snap; under nova,
 //! `transition-all` animates every property. Timing is the interim
 //! Tailwind v4 framework defaults (150ms, cubic-bezier(0.4,0,0.2,1)),
-//! labelled INTERIM per OPEN-5.
+//! labelled INTERIM per OPEN-5. S7 verifies the property sets (M1–M4,
+//! M6 PASS); M5 (disabled transition) and M8 (render floor) are NOT
+//! VERIFIED, accepted gaps per gate G2. The theme-switch two-phase
+//! install transient is a foundation-backlog item, never a defect.
 //!
 //! Disabled (spec §4.6) is a whole-element group fade: the enabled chrome
 //! composites at 50% over the theme background — not a per-slot alpha
 //! halving, which would double-fade the border-over-fill and glyph-over-fill
-//! pixels. See `disabled_group_fade`.
+//! pixels. See `disabled_group_fade`. The analytical precomposite is
+//! ACCEPTED (gate G5); the non-`background` backdrop limitation goes to
+//! the wave pack. S10 §9.1 confirms the disabled composites on gallery
+//! backdrops, where the precomposite is exact.
 //!
 //! Inside a [`crate::components::toggle_group::ToggleGroup`] with `spacing 0`
 //! (or a `ButtonGroup`), corners and borders fuse automatically via the
@@ -44,14 +70,21 @@
 //! removal, not an inset — the fill paints the full rect and the fused
 //! stroke omits the shared edge (BTG-VIS-01 pattern). Fused items drop the
 //! outline shadow (`data-[spacing=0]:shadow-none`) and queue their focus
-//! ring above siblings (`focus:z-10`, FG-3).
+//! ring above siblings (`focus:z-10`, FG-3). Vertical fused outline:
+//! the fused stroke always omits the LEFT edge and corner orientation
+//! is style-dependent (nova follows the layout axis, base always takes
+//! the horizontal treatment) — TOG-C1, toggle-group spec §9 case 5,
+//! verified by S10 §6 via scratch merge (2px seams, first-only left
+//! borders, strict-±1 corner runs).
 //!
 //! The nova icon-inline padding reductions (spec §3.3) apply only when the
 //! caller asserts the icon carries `data-icon="inline-start"` via
 //! [`Toggle::icon_inline_start`]: what sets `data-icon` is OPEN-6 (nothing
 //! in the snapshot sets it), so no trigger is inferred from icon presence.
-//! The padding VALUES are frozen; the trigger mapping is the S1 proposal,
-//! pending S8 ratification.
+//! The padding VALUES are frozen — painted pads 8/6/8 (default/sm/lg),
+//! text-side 10, N6 gap 4px (TOG-VIS-01, S10 §2) — and the trigger
+//! mapping is RATIFIED (gate G3); OPEN-6 itself stays OPEN. No inline-end
+//! slot exists.
 //!
 //! Keyboard (spec §7, OPEN-2 CLOSED by S6 Work B from public Radix Toggle
 //! source): Space toggles on KEYUP, Enter on keydown — the native
@@ -65,8 +98,20 @@
 //! no-op for a focused toggle (TOG-C2): Escape has no handling anywhere in
 //! Radix Toggle / ToggleGroup / RovingFocusGroup, so `show` claims it in
 //! the focus-lock filter (`EventFilter { escape: true }`, the TXT-INT-01
-//! class) and it leaves focus AND pressed state unchanged; Tab and arrows
-//! keep moving focus.
+//! class) and it leaves focus AND pressed state unchanged. Tab and
+//! spatial arrows are deliberately left unclaimed (they must keep moving
+//! focus) — this differs deliberately from the button house pattern,
+//! which claims arrows too because arrows are no-ops for buttons. Arrow
+//! keys move focus spatially (egui framework behaviour, S6 observation
+//! — the original has no arrow handling). Hover fill EQUALS pressed fill
+//! for the outline variant in every config (and for the default variant
+//! under nova/in light): the TOG-INT-03 closure proved the S6
+//! "cannot un-press" filing was a measurement confound — fill state must
+//! be judged parked + park-verified, never with the pointer hovering the
+//! toggle. Invalid + focused is DECIDED invalid-wins (gate G4): border
+//! `destructive`, ring `destructive`/20 light / `/40` dark (S10 §8, two
+//! independent captures); OPEN-3 (pressed + hover) stays PROVISIONAL
+//! (pressed-wins, S10 findings-only).
 //! `:focus-visible` modality is deviation D1 (PROPOSED): the ring shows on
 //! any focus. No ARIA tree exists in egui (D2, PROPOSED): pressed/invalid
 //! state is exposed through the Rust API and rendered visually.
@@ -300,8 +345,9 @@ pub(crate) fn resolve_toggle_colors(
     let (fill, fg) = if pressed {
         // PROVISIONAL (OPEN-3): pressed wins over hover. The snapshot
         // cannot settle pressed+hover precedence (equal-specificity
-        // selectors, generated-CSS order unestablishable); S9 corrects
-        // this ordering if OPEN-3 settles the other way.
+        // selectors, generated-CSS order unestablishable); OPEN-3 stays
+        // PROVISIONAL per gate G4 (S10 findings-only: pressed+hover ==
+        // pressed, 0px diffs).
         let fill = match style {
             Style::Nova => p.muted, // data-[state=on]:bg-muted
             _ => p.accent,          // data-[state=on]:bg-accent
@@ -340,11 +386,11 @@ pub(crate) fn resolve_toggle_colors(
         // border width, so no visible invalid border is added.
         stroke.color = p.destructive;
     }
-    // PROVISIONAL (OPEN-4): invalid wins over focus for the border colour.
+    // DECIDED (OPEN-4, gate G4): invalid wins over focus for the border colour.
     if focused && !invalid && stroke.width > 0.0 {
         stroke.color = p.ring; // `focus-visible:border-ring`
     }
-    // PROVISIONAL (OPEN-4): invalid wins over focus for the ring colour.
+    // DECIDED (OPEN-4, gate G4): invalid wins over focus for the ring colour.
     let ring = if invalid {
         color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
     } else {
@@ -361,14 +407,16 @@ pub(crate) fn resolve_toggle_colors(
 /// Whether the outline variant paints its `shadow-xs`: standalone toggles
 /// do, in ALL styles (Decision S-1 — nova silence keeps the base value);
 /// items fused into a group (`data-[spacing=0]`) render `shadow-none` in
-/// both styles (toggle-group spec §2.2).
+/// both styles (toggle-group spec §2.2). S10 §9.1 confirms the profiles
+/// on outline (249/249/253) and none on default, under both styles.
 pub(crate) fn outline_has_shadow(position: GroupPosition) -> bool {
     position == GroupPosition::Only
 }
 
 /// Per-property transition specs (frozen spec §6 as corrected by the
 /// narrow-reading ruling; timing INTERIM per OPEN-5 — the Tailwind v4
-/// framework defaults, not snapshot truth).
+/// framework defaults, not snapshot truth). S7 verifies the sets
+/// (M1–M4, M6 PASS); M5/M8 NOT VERIFIED per gate G2.
 #[derive(Clone, Copy, Debug)]
 struct AnimSpecs {
     /// Text colour: animates in both styles (`color` is in the base
@@ -439,7 +487,9 @@ fn fill_rgb_target(variant: ToggleVariant, p: &Palette, pressed: bool, style: St
 /// backdrop`, where `composite` is the enabled stroke/glyph colour over
 /// the enabled fill over the backdrop. Anti-aliased edge pixels stay exact
 /// under this scheme: coverage `c` over the faded fill yields the group
-/// fade of the enabled pixel. Returns `(fill, stroke_color, fg)`.
+/// fade of the enabled pixel. Implementation ACCEPTED per gate G5; the
+/// non-`background` backdrop limitation goes to the wave pack. Returns
+/// `(fill, stroke_color, fg)`.
 fn disabled_group_fade(
     fill: Color32,
     stroke_color: Color32,
@@ -563,7 +613,9 @@ fn paint_toggle_shadow(
 /// 1px inset left the shared column painted by neither member). The corner
 /// cells MUST be painted as clipped copies of the ring shape, never as 1x1
 /// fill rects: a 1x1 `rect_filled` does not rasterize in egui 0.37
-/// (BTG-VIS-01 corner-cell failure).
+/// (BTG-VIS-01 corner-cell failure). Verified by S10 §6 via scratch
+/// merge (toggle `0c7d874` + toggle-group `672f9e0`): seams 2,2; left
+/// borders first-only; corner runs exact at strict ±1, all 4 configs.
 fn paint_toggle_fused_stroke(
     painter: &Painter,
     rect: Rect,
@@ -622,6 +674,9 @@ fn paint_toggle_fused_stroke(
 /// modifiers. A Space released without a preceding keydown on this
 /// toggle (focus arrived mid-hold) does not toggle; a stale armed flag
 /// is cleared on the first frame the toggle is shown with Space up.
+/// Verified by S10 §3 in all 4 configs (3s holds, no keydown/repeat
+/// fire); the mid-hold focus-arrival case has no live probe (accepted
+/// carry).
 fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
     let armed_id = id.with("space_armed");
     let mut armed = ctx
@@ -763,8 +818,8 @@ impl<'a> Toggle<'a> {
     /// nova icon-inline padding reduction on the icon side (spec §3.3).
     /// No-op under base and when no icon is set. What sets `data-icon` is
     /// OPEN-6 (nothing in the snapshot sets it); this builder is the
-    /// S1-proposed trigger mapping, pending S8 ratification — no trigger
-    /// is inferred from icon presence.
+    /// RATIFIED trigger mapping (gate G3) — no trigger is inferred from
+    /// icon presence. OPEN-6 itself stays OPEN.
     pub fn icon_inline_start(mut self, icon_inline_start: bool) -> Self {
         self.icon_inline_start = icon_inline_start;
         self
