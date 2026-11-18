@@ -70,9 +70,84 @@
 //! modality is proposed deviation D1 (the ring shows on any focus;
 //! egui cannot distinguish keyboard from pointer focus).
 //!
-//! Focus+invalid border precedence is deliberately NOT frozen by the
-//! spec (§4 precedence note): this build keeps invalid-wins as
-//! explicitly PROVISIONAL; S4/S5 own the cell.
+//! Roving model, S10-verified (gate G10; 554/554 rows, all 4 configs):
+//! the Tab cycle is 88 stops (75 gallery chrome + 13 content stops,
+//! Tabs 76–88: s1a-opt1, s1b-opt0, standalone-checked,
+//! standalone-unchecked, s2n-opt0, s3-opt0, s4iu-opt0, s4ic-opt0,
+//! s5m-opt0, s6-opt1, s7-opt0, s8s-opt0, s8p-opt0; all-disabled
+//! groups take no stops). Re-entry lands on the checked item when one
+//! exists, else on the jump-stored stop (decision 1, SETTLED: the stop
+//! follows focus — Radix `roving-focus-group.tsx:306` updates the
+//! current tab stop on ANY focus landing); the §2a sense rule makes
+//! this hold in the wrapper-less port (pass-start `focus_in_group`
+//! snapshot; sense = `holds_focus || (!focus_in_group && tab_stop ==
+//! Some(i))`, with the `holds_focus` clause unconditional so
+//! label-forwarded focus is preserved). Selection and focus land
+//! together in the first settled frame for arrow moves — the old S7
+//! sequencing observation is superseded. Tab entry never checks.
+//!
+//! Keyboard details (S10-verified): Space fires on keyup ONLY —
+//! proven with the dual-counter autorepeat control (XI2 raw exactly
+//! 1 press / 1 release, core stream 1 press / 2 events with the
+//! release+press pair anchored at the press, dt 0ms); no repeat
+//! activation mid-hold, exactly one check on release. Enter is
+//! suppressed on focused items via the focus-gated
+//! `suppress_enter_activation` — the focus gate is LOAD-BEARING (an
+//! unconditional strip would permanently eat Enter keydowns for later
+//! widgets in the pass) and must not be weakened; no rendered
+//! Enter-repeat leg exists (the autorepeat control suppresses repeats;
+//! pin-covered). Escape is a no-op on a focused item (Escape-only
+//! focus-lock filter, re-installed on every focused frame) with the
+//! one-pass latch-window structural limitation (pin-covered; no
+//! rendered fast-Escape leg exists or is required). Modifier+arrow and
+//! modifier+jump keys receive NO handling (gate G5, HEAD Radix
+//! behaviour).
+//!
+//! Click model (S10-verified): click-focus lands on the RELEASE pass
+//! (house shape shared with button/checkbox/toggle); a label click
+//! fires a click AND focuses the item, including non-tab-stop items;
+//! drag-off retains focus (depends on the `SurrenderFocusOn::Clicks`
+//! default — if the gallery ever changes the surrender default, the
+//! drag-off expectation must be revisited); a disabled click is a
+//! no-op (selection unchanged; prior focus is surrendered per the
+//! egui default).
+//!
+//! Disabled visuals (RAD-VIS-01, S10-verified by the SLOT METHOD):
+//! the whole element fades as a group (`disabled:opacity-50` —
+//! per-slot halving is WRONG: it double-fades overlap pixels, e.g. a
+//! halved dot over a halved fill reads 194 where group fade requires
+//! 252). §4/§5 circles are judged by slot pixels (dot cores,
+//! `border_L`, `ring_L` core pixels — all exact); the ring-over-border
+//! fringe residual (dev ≤ 11.0 nova-dark) is an ACCEPTED OBSERVATION,
+//! not a defect, and fringe dev ≤ 2.5 is allowed at partial-coverage
+//! pixels.
+//!
+//! Nova §4 no-signal rule (S10-verified): a nova invalid item paints
+//! the SAME 3px destructive band at rest and focused (pixel-identical
+//! by design) — focus questions about nova invalid items MUST be
+//! judged behaviourally (or via a vega cross-check), never by the ring
+//! band alone.
+//!
+//! Focus+invalid precedence is DECIDED (gate G3): INVALID WINS, both
+//! halves — border `destructive` (nova dark `destructive`/50), ring
+//! `destructive`/20 (light) / `/40` (dark), for unchecked AND checked
+//! items. The nova `aria-invalid:aria-checked:border-primary` rule is
+//! SEPARATE and governs checked items only. S10 verified the
+//! invalid+unchecked+focused cell in all 4 configs (Tab 82).
+//!
+//! Suppression-over-invalid is DECIDED (gate G4): D6 suppression wins
+//! over invalid for border AND ring (stroke forced `input` unchecked
+//! / `primary` checked, ring killed under nova); verified at code +
+//! unit level only (no demo target — no rendered leg exists).
+//!
+//! Deviations and limits, stated honestly: D5 (frozen invented layout:
+//! gap 8px, row height 16px) stays a deviation for the Expert
+//! Reviewer; single-item-group jump no-op + edge-disabled skip are
+//! pin-only (no demo coverage); the INT-04 non-radio spot-check is
+//! unavailable on this tree (no non-radio focusable widget in the
+//! demo — code proof + pins carry it); motion timing legs stay
+//! UNRESOLVED on video (S7 findings ride on the animation-diff audit
+//! + valid endpoints — never claim SNAP from under-sampled video).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -129,8 +204,13 @@ fn gap(style: Style) -> f32 {
 
 /// The §6 transition timing: Tailwind v4 framework defaults (150ms,
 /// `cubic-bezier(0.4, 0, 0.2, 1)`), INTERIM per OPEN-6 — an explicitly
-/// unverified framework-default hypothesis, not snapshot truth. S7
-/// judges timing only after OPEN-6 closes.
+/// unverified framework-default hypothesis, not snapshot truth. OPEN-6
+/// stays OPEN. S7 judged timing from fade legs + the code-fact basis
+/// (no animation/lerp code outside the ring animator); S10 re-verified
+/// the motion findings via the animation-diff audit (zero
+/// animation-keyword lines changed since S7) + valid video endpoints.
+/// Timing legs stay UNRESOLVED on video — never claim SNAP from
+/// under-sampled captures.
 fn interim_spec() -> TransitionSpec {
     TransitionSpec::default()
 }
@@ -204,8 +284,7 @@ pub(crate) struct RadioColors {
 /// primary border even when invalid), plus `focus-visible:border-ring`
 /// and the invalid rest ring (`aria-invalid:ring-3`).
 ///
-/// Precedence (spec §4 note): the focus+invalid border cell is NOT
-/// frozen — this resolver keeps invalid-wins as explicitly PROVISIONAL.
+/// Precedence (gate G3, DECIDED): invalid wins over focus, both halves.
 /// The frozen cells are: invalid+checked (nova, unfocused) keeps the
 /// primary border; focus-visible (valid, any checked state) takes the
 /// `ring` border; suppression (nova) forces the border and kills the
@@ -235,9 +314,9 @@ pub(crate) fn resolve_radio_colors(
             p.input
         }
     } else if state.invalid {
-        // PROVISIONAL precedence (spec §4 note): invalid wins over focus.
-        // Only the unfocused cells below are frozen; S4/S5 own the
-        // focus+invalid cell.
+        // DECIDED precedence (gate G3): invalid wins over focus, both
+        // halves. The nova checked-item rule below is separate and
+        // governs checked items regardless of focus.
         if nova && state.checked {
             // `aria-invalid:aria-checked:border-primary` (frozen unfocused).
             p.primary
@@ -1469,11 +1548,12 @@ mod tests {
     }
 
     #[test]
-    fn invalid_wins_over_focus_is_provisional_pending_spec_decision() {
-        // Spec §4 precedence note: the focus+invalid border cell is NOT
-        // frozen. This test pins the CURRENT resolution (invalid wins)
-        // and its provisional status; S4/S5 own the cell, and if they
-        // settle otherwise this test — and only this test — changes.
+    fn invalid_wins_over_focus_decided_by_gate_g3() {
+        // Gate G3 DECIDED: invalid wins over focus, both halves
+        // (border `destructive`, ring `destructive`/20 light / `/40`
+        // dark). S10 verified the invalid+unchecked+focused cell in
+        // all 4 configs (Tab 82). This test pins the decided
+        // resolution; only a gate decision changes it.
         let p = palette(Mode::Light);
         let fi = resolve_radio_colors(
             &p,

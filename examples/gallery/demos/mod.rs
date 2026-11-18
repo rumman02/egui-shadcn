@@ -3152,7 +3152,7 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
         "Radio group — single-select circles + labels (D5). Active recipe: {recipe} (style: {}, mode: {mode}).",
         theme.style.name()
     ));
-    ui.label("Keyboard matrix = HYPOTHESES (OPEN-1–OPEN-4: arrows/wrap/Home/End/Tab stops unestablished — S6 Work B settles from Radix source; current egui-spatial behaviour is implementation, not spec truth). Labels render via Label composition (D5 PROPOSED: 8px circle–label gap, 16px rows). Focus+invalid border precedence is PROVISIONAL (invalid-wins; spec leaves it unfrozen). Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-6). Ring shows on any focus (D1 proposed). No hover rule: hovering changes nothing.");
+    ui.label("Keyboard model = S6-settled (OPEN-1–OPEN-4 closed from Radix source) + S10-verified (554/554 rows, all 4 configs): roving tabindex, one Tab stop per group; all four arrows navigate with wrap + disabled-skip; Home/End/PageUp/PageDown are focus-only jump keys; Space fires on keyup, Enter never activates, Escape is a no-op. Labels render via Label composition (D5 PROPOSED: 8px circle–label gap, 16px rows). Focus+invalid precedence is DECIDED (gate G3: invalid-wins both halves). Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-6). Ring shows on any focus (D1 proposed). No hover rule: hovering changes nothing.");
 
     // Group focus readout helper. `RadioGroup::show` returns
     // `InnerResponse<()>` — no per-item `Response` exists to capture ids
@@ -3297,10 +3297,11 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
 
     // 4. Invalid: nova shows the 3px destructive rest ring; base shows
     // the destructive border only. Invalid+checked keeps the primary
-    // border under nova (checked wins). Focus+invalid border precedence
-    // is PROVISIONAL — do not assert it.
+    // border under nova (checked wins). Focus+invalid precedence is
+    // DECIDED (gate G3: invalid-wins both halves; S10 verified Tab 82
+    // in all 4 configs).
     ui.add_space(12.0);
-    ui.label("4. Invalid (spec §4; nova: 3px rest ring; base: border only; invalid+checked keeps primary border under nova; focus+invalid precedence PROVISIONAL)");
+    ui.label("4. Invalid (spec §4; nova: 3px rest ring; base: border only; invalid+checked keeps primary border under nova; focus+invalid precedence DECIDED — gate G3, invalid-wins)");
     ui.add_space(4.0);
     let g4a = RadioGroup::new(&mut values[4])
         .id_salt("s3-invalid")
@@ -3377,7 +3378,7 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
         .response
         .rect;
     ui.label(format!(
-        "one disabled option: {:.1} x {:.1} px; selected: {:?} (middle option faded, skipped by keys per OPEN-1 hypothesis)",
+        "one disabled option: {:.1} x {:.1} px; selected: {:?} (middle option faded, skipped by keys per settled OPEN-1 — S6 Work B, S10-verified)",
         g5b.width(),
         g5b.height(),
         values[8]
@@ -3474,7 +3475,7 @@ pub fn radio_group_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab/Shift+Tab move focus (one stop per item expected — roving-tabindex entry rules are OPEN-4). Which arrows move focus/selection, whether navigation wraps, Home/End, and Space/Enter activation are OPEN-1–OPEN-3 (Radix, S6 Work B). A label click fires a click AND focuses (settled, spec §7.3); a direct click selects and never unchecks (OPEN-3 hypothesis).");
+    ui.label("Keyboard: Tab/Shift+Tab move focus (one stop per group — roving-tabindex entry rules settled OPEN-4, S10-verified: entry lands on the checked item, else the stored stop, and never checks). All four arrows navigate with wrap + disabled-skip and selection following (settled OPEN-1); Home/End/PageUp/PageDown are focus-only jump keys (settled OPEN-2); Space fires on keyup, Enter never activates, Escape is a no-op (settled OPEN-3, S10-verified). A label click fires a click AND focuses (settled, spec §7.3); a direct click selects AND focuses (RAD-INT-06, S10-verified) and never unchecks.");
 
     ui.ctx().data_mut(|d| {
         d.insert_temp(store, values);
