@@ -2775,6 +2775,223 @@ mod tests {
     }
 
     #[test]
+    fn f5b_stacked_clamp_through_show_path_sld_int_02() {
+        // SLD-INT-02: the full S6 sequence through the real `show()`
+        // path, with real focus machinery (`begin_pass` / `end_pass`).
+        // The `keyboard_step`-level F5b fixture above passed even while
+        // S6 observed [70,70] + Right -> [70,80] rendered — the value
+        // model always clamped; the rendered defect was the key
+        // landing on the WRONG thumb (focus migrated to the hi thumb
+        // via the SLD-INT-04 mechanism, and the ring is
+        // indistinguishable when the thumbs are stacked). This pin
+        // drives focus + keys through `show()` and asserts BOTH the
+        // values AND that focus stays on the lo thumb after every
+        // press, so it discriminates the rendered defect class. Focus
+        // is granted via `request_focus` (the rendered probes cover
+        // the real Tab path); two settle frames let the focus-lock
+        // filter latch.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut pair = (30.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, pair: &mut (f32, f32), time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int02_f5b"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::range(pair)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(10.0)
+                        .id_salt("int02-ptr")
+                        .show(ui);
+                });
+                out.textures_delta.clear();
+            };
+
+        // Frame 1: register the slider.
+        run_frame(&ctx, &mut pair, 1.0, vec![]);
+        // Focus the lo thumb directly. The thumb id chain mirrors
+        // `show()`: the Ui scope id, the salt, "thumb", the index.
+        let thumb_lo = egui::Id::unique("slider_int02_f5b")
+            .with("int02-ptr")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_lo));
+        // Two settle frames: the focus-lock filter latches only after
+        // two consecutive focused frames.
+        run_frame(&ctx, &mut pair, 1.1, vec![]);
+        run_frame(&ctx, &mut pair, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_lo));
+
+        // The S6 chain: 4x Right stacks lo onto hi, the 5th Right must
+        // clamp with NEITHER thumb moving. NO re-acquire between
+        // presses (SLD-INT-04 composition).
+        let expected = [
+            (40.0, 70.0),
+            (50.0, 70.0),
+            (60.0, 70.0),
+            (70.0, 70.0),
+            (70.0, 70.0),
+        ];
+        for (k, want) in expected.iter().enumerate() {
+            let t = 1.2 + (k as f64 + 1.0) * 0.2;
+            run_frame(&ctx, &mut pair, t, vec![key_event(Key::ArrowRight, true)]);
+            assert_eq!(pair, *want, "press {}: values must be {:?}", k + 1, want);
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb_lo),
+                "press {}: focus must stay on the lo thumb",
+                k + 1
+            );
+            run_frame(
+                &ctx,
+                &mut pair,
+                t + 0.1,
+                vec![key_event(Key::ArrowRight, false)],
+            );
+        }
+        // The hi thumb never moved across the whole sequence.
+        assert_eq!(pair.1, 70.0);
+    }
+
+    #[test]
+    fn f5b_symmetric_clamp_through_show_path_sld_int_02() {
+        // SLD-INT-02, symmetric case: from the stacked state, ArrowLeft
+        // on the HI thumb clamps at the lo neighbour — neither thumb
+        // moves. Same `show()` + focus-machinery pattern as the F5b
+        // pin above.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut pair = (70.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, pair: &mut (f32, f32), time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int02_sym"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::range(pair)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(10.0)
+                        .id_salt("int02-sym")
+                        .show(ui);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut pair, 1.0, vec![]);
+        let thumb_hi = egui::Id::unique("slider_int02_sym")
+            .with("int02-sym")
+            .with("thumb")
+            .with(1usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_hi));
+        run_frame(&ctx, &mut pair, 1.1, vec![]);
+        run_frame(&ctx, &mut pair, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_hi));
+
+        for k in 1..=2 {
+            let t = 1.2 + f64::from(k) * 0.2;
+            run_frame(&ctx, &mut pair, t, vec![key_event(Key::ArrowLeft, true)]);
+            assert_eq!(pair, (70.0, 70.0), "press {k}: neither thumb may move");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb_hi),
+                "press {k}: focus must stay on the hi thumb"
+            );
+            run_frame(
+                &ctx,
+                &mut pair,
+                t + 0.1,
+                vec![key_event(Key::ArrowLeft, false)],
+            );
+        }
+    }
+
+    #[test]
+    fn f5b_chain_and_symmetric_keyboard_step_sld_int_02() {
+        // SLD-INT-02 at the `keyboard_step` level: the full F5a chain
+        // plus the boundary press, the symmetric case, and the
+        // one-sidedness guard (the hi thumb CAN still move right from
+        // the stacked state — the clamp must not over-clamp).
+        let mut pair = (30.0, 70.0);
+        let mut changed = false;
+        {
+            let mut slider = Slider::range(&mut pair).min(0.0).max(100.0).step(10.0);
+            let values = |slider: &Slider| (slider.read_value(0), slider.read_value(1));
+            for want in [(40.0, 70.0), (50.0, 70.0), (60.0, 70.0), (70.0, 70.0)] {
+                slider.keyboard_step(0, Key::ArrowRight, false, &mut changed);
+                assert!(changed);
+                assert_eq!(values(&slider), want);
+            }
+            // Boundary press: lo stays, hi must not move.
+            changed = false;
+            slider.keyboard_step(0, Key::ArrowRight, false, &mut changed);
+            assert!(!changed);
+            assert_eq!(values(&slider), (70.0, 70.0));
+            // Symmetric: Left on hi from the stacked state moves nothing.
+            slider.keyboard_step(1, Key::ArrowLeft, false, &mut changed);
+            assert!(!changed);
+            assert_eq!(values(&slider), (70.0, 70.0));
+            // One-sidedness: Right on hi from the stacked state moves hi.
+            slider.keyboard_step(1, Key::ArrowRight, false, &mut changed);
+            assert!(changed);
+            assert_eq!(values(&slider), (70.0, 80.0));
+        }
+        assert_eq!(pair, (70.0, 80.0));
+    }
+
+    #[test]
+    fn single_thumb_arrow_steps_unchanged_sld_int_02() {
+        // SLD-INT-02 guard: single-thumb behaviour is untouched by any
+        // neighbour-clamp work (no neighbour exists to clamp against).
+        let (v, changed) = step_once(50.0, 0.0, 100.0, 1.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 51.0);
+        let (v, changed) = step_once(50.0, 0.0, 100.0, 1.0, Key::ArrowLeft);
+        assert!(changed);
+        assert_eq!(v, 49.0);
+    }
+
+    #[test]
     fn fixture_f6a_arrow_right_at_max_clamps_without_wrap() {
         let (v, changed) = step_once(100.0, 0.0, 100.0, 1.0, Key::ArrowRight);
         assert!(!changed);
