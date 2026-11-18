@@ -1062,9 +1062,17 @@ impl<'a> NativeSelect<'a> {
         // ---- Popup (D1 port design; all 12 values decided by the
         // coordinator — see the S1 report). Always shown so a programmatic
         // close applies even when the widget becomes disabled mid-open.
+        // NSL-INT-01: CloseOnClickOutside, NOT CloseOnClick. egui's
+        // CloseOnClick closes on ANY click (raw `pointer.any_click()`,
+        // no consumption concept), so clicks on non-selectable rows
+        // (headers, disabled rows, the empty-state row — none of which
+        // can consume a click) dismissed the popup. CloseOnClickOutside
+        // closes only on clicks outside the popup area; the selection
+        // path closes explicitly below. This matches select/combobox/
+        // dropdown-menu, which all use CloseOnClickOutside.
         let popup = egui::Popup::from_response(&response)
             .open_memory(open_cmd)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .width(rect.width())
             .frame(egui::Frame::new());
         let mut row_clicked = false;
@@ -1073,7 +1081,11 @@ impl<'a> NativeSelect<'a> {
         });
         if row_clicked {
             // Clicking an option selects it, closes the list, and focus
-            // stays on the trigger (§7.1).
+            // stays on the trigger (§7.1). The close is explicit:
+            // CloseOnClickOutside no longer closes on inside clicks, so
+            // the selection path closes the popup itself, in the same
+            // frame the old CloseOnClick path did (same memory effect).
+            egui::Popup::close_id(&ctx, popup_id);
             response.request_focus();
         }
         write_ns_state(&ctx, state_id, &state);
@@ -2078,5 +2090,161 @@ mod tests {
         });
         assert_eq!(selected, None);
         assert!(!h.is_popup_open(trigger_id));
+    }
+
+    /// NSL-INT-01: rows in a grouped popup — header (row 0), two enabled
+    /// options, disabled-group header (row 3), one option disabled by its
+    /// group (row 4).
+    fn grouped_ui(ui: &mut Ui, selected: &mut Option<usize>, rect: &mut Rect, trigger_id: &mut Id) {
+        let r = NativeSelect::new(selected)
+            .id_salt("int01-group-harness")
+            .optgroup(
+                SelectOptGroup::new("Fruits")
+                    .option("Apple")
+                    .option("Banana"),
+            )
+            .optgroup(
+                SelectOptGroup::new("Vegetables")
+                    .option("Carrot")
+                    .disabled(true),
+            )
+            .show(ui);
+        *rect = r.rect;
+        *trigger_id = r.id;
+    }
+
+    /// No entries: the popup holds the single "No options" row.
+    fn empty_ui(ui: &mut Ui, selected: &mut Option<usize>, rect: &mut Rect, trigger_id: &mut Id) {
+        let r = NativeSelect::new(selected)
+            .id_salt("int01-empty-harness")
+            .placeholder("Choose an option")
+            .show(ui);
+        *rect = r.rect;
+        *trigger_id = r.id;
+    }
+
+    #[test]
+    fn nsl_int01_disabled_row_click_keeps_popup_open() {
+        // NSL-INT-01: a click on a disabled row must leave the popup open
+        // with the selection unchanged. RED under CloseOnClick (any click
+        // closes, from raw pointer events, regardless of widget sense);
+        // GREEN under CloseOnClickOutside.
+        let mut h = Harness::new();
+        let mut selected = Some(2);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        let content_top = rect.bottom() + 5.0;
+        let cx = rect.center().x;
+        // Calibration: row 0 centre selects flat 0 (proves content_top).
+        h.click(rect.center(), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "popup opens");
+        h.click(Pos2::new(cx, content_top + 18.0), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(selected, Some(0), "calibration: row 0 centre selects Apple");
+        assert!(!h.is_popup_open(trigger_id), "enabled-row click closes");
+        // Discriminating probe: disabled row 1 ("Banana") centre.
+        h.click(rect.center(), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "popup reopens");
+        h.click(Pos2::new(cx, content_top + 54.0), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(selected, Some(0), "disabled-row click changes nothing");
+        assert!(
+            h.is_popup_open(trigger_id),
+            "NSL-INT-01: disabled-row click keeps the popup open"
+        );
+        // Trigger reclick still closes (contrast behaviour + reset).
+        h.click(rect.center(), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(!h.is_popup_open(trigger_id), "trigger reclick closes");
+    }
+
+    #[test]
+    fn nsl_int01_header_clicks_keep_popup_open() {
+        // NSL-INT-01: clicks on group headers (enabled group, disabled
+        // group) and on a group-disabled option row must leave the popup
+        // open with the selection unchanged.
+        let mut h = Harness::new();
+        let mut selected = Some(1);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        let content_top = rect.bottom() + 5.0;
+        let cx = rect.center().x;
+        // Calibration: row 1 centre selects flat 0 (Apple).
+        h.click(rect.center(), |ui| {
+            grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "popup opens");
+        h.click(Pos2::new(cx, content_top + 54.0), |ui| {
+            grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(selected, Some(0), "calibration: row 1 centre selects Apple");
+        assert!(!h.is_popup_open(trigger_id), "enabled-row click closes");
+        // Each non-selectable row: popup stays open, selection unchanged.
+        for (dy, what) in [
+            (18.0, "Fruits header"),
+            (126.0, "Vegetables header (disabled group)"),
+            (162.0, "Carrot (disabled by group)"),
+        ] {
+            h.click(rect.center(), |ui| {
+                grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert!(h.is_popup_open(trigger_id), "popup reopens for {what}");
+            h.click(Pos2::new(cx, content_top + dy), |ui| {
+                grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert_eq!(selected, Some(0), "{what} click changes nothing");
+            assert!(
+                h.is_popup_open(trigger_id),
+                "NSL-INT-01: {what} click keeps the popup open"
+            );
+            h.click(rect.center(), |ui| {
+                grouped_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+            });
+            assert!(
+                !h.is_popup_open(trigger_id),
+                "trigger reclick closes after {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn nsl_int01_empty_state_click_keeps_popup_open() {
+        // NSL-INT-01: a click on the "No options" row must leave the popup
+        // open with the selection unchanged. Non-vacuous: under
+        // CloseOnClickOutside a mis-aimed click outside the popup would
+        // close it and fail the assertion, so passing proves the click
+        // landed inside the single-row popup.
+        let mut h = Harness::new();
+        let mut selected: Option<usize> = None;
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| empty_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        let content_top = rect.bottom() + 5.0;
+        let cx = rect.center().x;
+        h.click(rect.center(), |ui| {
+            empty_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "empty popup opens");
+        h.click(Pos2::new(cx, content_top + 18.0), |ui| {
+            empty_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(selected, None, "empty-row click changes nothing");
+        assert!(
+            h.is_popup_open(trigger_id),
+            "NSL-INT-01: empty-state click keeps the popup open"
+        );
+        h.click(rect.center(), |ui| {
+            empty_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(!h.is_popup_open(trigger_id), "trigger reclick closes");
     }
 }
