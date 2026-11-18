@@ -4670,95 +4670,455 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
 }
 
 pub fn toggle_group_demo(ui: &mut egui::Ui) {
-    let single_store = egui::Id::unique("toggle_group_demo_single");
-    let multi_store = egui::Id::unique("toggle_group_demo_multi");
-    let mut single: Option<usize> = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(single_store).unwrap_or(None));
-    let mut multi: Vec<bool> = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(multi_store).unwrap_or(vec![false; 3]));
+    // Every section prints the rect the group actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // Header: verified final state (spec §§0, 2, 4, 6, 10, 11 + coordinator
+    // rulings 5/6/7 + S8 gate dispositions + S10 verification).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "ToggleGroup — pressed-state button group. Active recipe: {recipe} (style: {}, mode: {mode}). Item heights 32/28/36px nova, 36/32/40px base (default/sm/lg). Gap = 4 x spacing units.",
+        theme.style.name()
+    ));
+    ui.label("S10-VERIFIED (scratch merge, integrated code): spacing is Tailwind units (gap = 4 x spacing px; spacing 0 = fused; RATIFIED gate G1). Single-mode re-press deselects is CONFIRMED original behaviour (W-TG-2 SETTLED, gate G1). Spaced item padding px-3 is W-TG-1 (OPEN-4 merge-wins, working assumption, stays OPEN); nova fused px-2 is specificity-settled. Group .disabled() propagation is CONFIRMED original behaviour (gate G1). Keyboard = deviation D4 RATIFIED (per-item Tab stops, egui spatial arrows, no wrap/Home/End; gate G2). FG-3 ring-above-siblings CLOSED. Vertical fused outline follows TOG-C1 (2px seams, style-correct corners; S10-verified).");
 
-    ui.label("Single (default: pressing the pressed item deselects)");
-    ui.add_space(4.0);
-    ToggleGroup::single(&mut single)
-        .id_salt("tg_demo_single")
-        .item("Bold")
-        .item("Italic")
-        .item("Underline")
-        .show(ui);
-    ui.small(format!("selected: {:?}", single));
+    // Demo-local selection state, held in egui temp data (the gallery's
+    // established demo-state pattern), so the stateless demo function
+    // keeps selections across frames.
+    #[derive(Clone)]
+    struct TgDemoState {
+        s1a: Option<usize>,
+        s1b: Option<usize>,
+        s1c: Vec<bool>,
+        s1d: Option<usize>,
+        s1e: Option<usize>,
+        s2a: Option<usize>,
+        s2b: Vec<bool>,
+        s2c: Option<usize>,
+        s2d: Option<usize>,
+        s3: Option<usize>,
+        s4a: Option<usize>,
+        s4b: Option<usize>,
+        s4c: Option<usize>,
+        s5a: Option<usize>,
+        s5b: Vec<bool>,
+        s5c: Option<usize>,
+        s6a: Vec<bool>,
+        s6b: Option<usize>,
+        s7: Option<usize>,
+    }
 
+    impl Default for TgDemoState {
+        fn default() -> Self {
+            Self {
+                s1a: Some(0),
+                s1b: Some(1),
+                s1c: vec![true, false, false],
+                s1d: Some(0),
+                s1e: Some(0),
+                s2a: Some(0),
+                s2b: vec![false, true, false],
+                s2c: Some(1),
+                s2d: Some(0),
+                s3: Some(0),
+                s4a: Some(0),
+                s4b: Some(1),
+                s4c: Some(0),
+                s5a: Some(0),
+                s5b: vec![true, false, false],
+                s5c: Some(0),
+                s6a: vec![true, false, true],
+                s6b: Some(1),
+                s7: Some(0),
+            }
+        }
+    }
+
+    let store = egui::Id::unique("toggle_group_demo_state");
+    let mut st: TgDemoState = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or_default());
+
+    // §1. Spaced groups. §1a/§1b share identical labels, so the width
+    // delta is exactly (n-1) x the 4px gap step; §1d/§1e do the same
+    // vertically with the height delta.
     ui.add_space(12.0);
-    ui.label("Multiple, outline variant");
+    ui.label("1. Spaced groups — outline + default, spacing 1 (4px gap) and 2 (8px gap), horizontal + vertical (spec §0.3/§2.4). NOTE: the horizontal row is seeded at the tallest resolved item height, floored at 36px (TGG-VIS-01 fix); judge item heights from pixels or from the vertical groups below, whose rects show true heights.");
     ui.add_space(4.0);
-    ToggleGroup::multiple(&mut multi)
-        .id_salt("tg_demo_multi")
+    let r1a = ToggleGroup::single(&mut st.s1a)
+        .id_salt("s3-s1a")
         .variant(ToggleVariant::Outline)
+        .spacing(1.0)
         .item("Bold")
         .item("Italic")
         .item("Underline")
-        .show(ui);
-    ui.small(format!("pressed: {:?}", multi));
-
-    ui.add_space(12.0);
-    ui.label("With icons and sizes");
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "outline spacing 1 (gap 4px): {:.1} x {:.1} px; selected: {:?}",
+        r1a.width(),
+        r1a.height(),
+        st.s1a
+    ));
     ui.add_space(4.0);
-    ToggleGroup::single(&mut single)
-        .id_salt("tg_demo_icons")
+    let r1b = ToggleGroup::single(&mut st.s1b)
+        .id_salt("s3-s1b")
+        .variant(ToggleVariant::Outline)
+        .spacing(2.0)
+        .item("Bold")
+        .item("Italic")
+        .item("Underline")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "outline spacing 2 (gap 8px): {:.1} x {:.1} px; selected: {:?}; width delta vs §1a: {:.1} px (expected 8.0 = 2 gaps x 4px step)",
+        r1b.width(),
+        r1b.height(),
+        st.s1b,
+        r1b.width() - r1a.width()
+    ));
+    ui.add_space(4.0);
+    let r1c = ToggleGroup::multiple(&mut st.s1c)
+        .id_salt("s3-s1c")
+        .spacing(1.0)
         .item_with_icon("Left", Icon::ChevronLeft)
         .item("Center")
         .item_with_icon("Right", Icon::ChevronRight)
-        .size(ToggleSize::Sm)
-        .show(ui);
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "default spacing 1, with icons (gap 4px): {:.1} x {:.1} px; pressed: {:?}; icon-inline padding is symmetric here (per-side 6px is a RECORDED limitation, gate G6; toggle OPEN-6 stays OPEN)",
+        r1c.width(),
+        r1c.height(),
+        st.s1c
+    ));
     ui.add_space(4.0);
-    ToggleGroup::single(&mut single)
-        .id_salt("tg_demo_lg")
-        .item("Day")
-        .item("Month")
-        .item("Year")
-        .size(ToggleSize::Lg)
-        .show(ui);
+    let r1d = ToggleGroup::single(&mut st.s1d)
+        .id_salt("s3-s1d")
+        .orientation(GroupOrientation::Vertical)
+        .spacing(1.0)
+        .item("Top")
+        .item("Middle")
+        .item("Bottom")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "default vertical spacing 1 (gap 4px): {:.1} x {:.1} px; selected: {:?}",
+        r1d.width(),
+        r1d.height(),
+        st.s1d
+    ));
+    ui.add_space(4.0);
+    let r1e = ToggleGroup::single(&mut st.s1e)
+        .id_salt("s3-s1e")
+        .orientation(GroupOrientation::Vertical)
+        .spacing(2.0)
+        .item("Top")
+        .item("Middle")
+        .item("Bottom")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "default vertical spacing 2 (gap 8px): {:.1} x {:.1} px; selected: {:?}; height delta vs §1d: {:.1} px (expected 8.0 = 2 gaps x 4px step)",
+        r1e.width(),
+        r1e.height(),
+        st.s1e,
+        r1e.height() - r1d.height()
+    ));
 
+    // §2. Fused groups (spacing 0): outer corners rounded, inner square;
+    // fused outline shares one 1px border between neighbours; shadow-none
+    // in both styles. §2c states the §9 case 5 vertical reading.
     ui.add_space(12.0);
-    ui.label("Positive spacing (individually rounded)");
+    ui.label("2. Fused groups (spacing 0) — outer corners rounded, inner square; fused outline shares one 1px border; shadow-none in both styles (spec §2.2/§2.5)");
     ui.add_space(4.0);
-    ToggleGroup::multiple(&mut multi)
-        .id_salt("tg_demo_spaced")
-        .spacing(8.0)
+    let r2a = ToggleGroup::single(&mut st.s2a)
+        .id_salt("s3-s2a")
         .variant(ToggleVariant::Outline)
-        .item("Filter A")
-        .item("Filter B")
-        .item("Filter C")
-        .show(ui);
-
-    ui.add_space(12.0);
-    ui.label("Vertical, disabled");
+        .item("Bold")
+        .item("Italic")
+        .item("Underline")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "outline fused horizontal: {:.1} x {:.1} px; selected: {:?}",
+        r2a.width(),
+        r2a.height(),
+        st.s2a
+    ));
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ToggleGroup::single(&mut single)
-            .id_salt("tg_demo_vertical")
-            .orientation(GroupOrientation::Vertical)
-            .item("Top")
-            .item("Middle")
-            .item("Bottom")
-            .show(ui);
-        ToggleGroup::single(&mut single)
-            .id_salt("tg_demo_disabled")
-            .disabled(true)
-            .item("Cut")
-            .item("Copy")
-            .item("Paste")
-            .show(ui);
-    });
+    let r2b = ToggleGroup::multiple(&mut st.s2b)
+        .id_salt("s3-s2b")
+        .item("Bold")
+        .item("Italic")
+        .item("Underline")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "default fused horizontal: {:.1} x {:.1} px; pressed: {:?}",
+        r2b.width(),
+        r2b.height(),
+        st.s2b
+    ));
+    ui.add_space(4.0);
+    let r2c = ToggleGroup::single(&mut st.s2c)
+        .id_salt("s3-s2c")
+        .variant(ToggleVariant::Outline)
+        .orientation(GroupOrientation::Vertical)
+        .item("Top")
+        .item("Middle")
+        .item("Bottom")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "outline fused vertical: {:.1} x {:.1} px; selected: {:?}; §9 case 5 as built (TOG-C1): base horizontal corner treatment + 2px horizontal seams (no vertical border rule exists); S10-verified (seams 2,2; corners style-correct)",
+        r2c.width(),
+        r2c.height(),
+        st.s2c
+    ));
+    ui.add_space(4.0);
+    let r2d = ToggleGroup::single(&mut st.s2d)
+        .id_salt("s3-s2d")
+        .variant(ToggleVariant::Outline)
+        .item("Only")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "single-item fused group (§9 case 1): {:.1} x {:.1} px; selected: {:?}; fully rounded from frame 2 (protocol learns the count on the previous frame)",
+        r2d.width(),
+        r2d.height(),
+        st.s2d
+    ));
+
+    // §3. Focus target. The group API returns no per-item Response, so
+    // the readout below reflects the group SCOPE response id (Label F1:
+    // captured from the returned Response, never derived). Item focus
+    // itself is judged by S6 from ring pixels (slider O-4 precedent).
+    ui.add_space(12.0);
+    ui.label("3. Focus target — Tab here; ring 3px + border ring on focus (spec §3.4); FG-3 CLOSED: the focused item's ring paints above its siblings (S5 + S10 verified)");
+    ui.add_space(4.0);
+    let resp3 = ToggleGroup::single(&mut st.s3)
+        .id_salt("s3-focus")
+        .variant(ToggleVariant::Outline)
+        .item("Focus A")
+        .item("Focus B")
+        .item("Focus C")
+        .show(ui);
+    let r3 = resp3.response.rect;
+    let scope_focused = ui.ctx().memory(|m| m.has_focus(resp3.response.id));
+    ui.label(format!(
+        "focus target: {:.1} x {:.1} px; selected: {:?}; scope focused: {scope_focused}",
+        r3.width(),
+        r3.height(),
+        st.s3
+    ));
+    ui.label("NOTE: 'scope focused' reflects the group scope response, NOT per-item focus (items expose no Response). S6 judges item focus from ring pixels. FG-3 ring queueing landed in toggle S1; S5 + S10 verified the ring lands above siblings on integrated code.");
+
+    // §4. Invalid, per-item only (ruling 5 / N17 option (a)): destructive
+    // border on exactly the invalid item, NO rest ring in either style.
+    ui.add_space(12.0);
+    ui.label("4. Invalid (per-item only, ruling 5) — full destructive border on exactly the invalid item, NO rest ring in either style (spec §4.7); invalid+focus rendering PROVISIONAL (gate G3; S5 findings-only cell)");
+    ui.add_space(4.0);
+    let r4a = ToggleGroup::single(&mut st.s4a)
+        .id_salt("s3-s4a")
+        .variant(ToggleVariant::Outline)
+        .spacing(2.0)
+        .item("Valid A")
+        .add_item(GroupItem::new("Invalid B").invalid(true))
+        .item("Valid C")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "spaced outline, middle item invalid: {:.1} x {:.1} px; selected: {:?}",
+        r4a.width(),
+        r4a.height(),
+        st.s4a
+    ));
+    ui.add_space(4.0);
+    let r4b = ToggleGroup::single(&mut st.s4b)
+        .id_salt("s3-s4b")
+        .variant(ToggleVariant::Outline)
+        .add_item(GroupItem::new("Invalid A").invalid(true))
+        .item("Valid B")
+        .item("Valid C")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "fused outline, first item invalid: {:.1} x {:.1} px; selected: {:?}",
+        r4b.width(),
+        r4b.height(),
+        st.s4b
+    ));
+    ui.add_space(4.0);
+    let r4c = ToggleGroup::single(&mut st.s4c)
+        .id_salt("s3-s4c")
+        .item("Valid A")
+        .add_item(GroupItem::new("Invalid B").invalid(true))
+        .item("Valid C")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "fused default, middle item invalid: {:.1} x {:.1} px; selected: {:?}; destructive border on exactly the invalid item, no rest ring (S5 + S10 verified)",
+        r4c.width(),
+        r4c.height(),
+        st.s4c
+    ));
+
+    // §5. Disabled: group propagation (CONFIRMED, gate G1 item 3),
+    // per-item disabled, and invalid+disabled. Group fade per ruling 7
+    // (S5 verified on integrated code).
+    ui.add_space(12.0);
+    ui.label("5. Disabled — group propagation + per-item disabled + invalid+disabled; whole-item 50% group fade per ruling 7 (S5 verified, spec §4.6)");
+    ui.add_space(4.0);
+    let r5a = ToggleGroup::single(&mut st.s5a)
+        .id_salt("s3-s5a")
+        .variant(ToggleVariant::Outline)
+        .disabled(true)
+        .item("Cut")
+        .item("Copy")
+        .item("Paste")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "group disabled (propagation CONFIRMED, gate G1): {:.1} x {:.1} px; selected: {:?}",
+        r5a.width(),
+        r5a.height(),
+        st.s5a
+    ));
+    ui.add_space(4.0);
+    let r5b = ToggleGroup::multiple(&mut st.s5b)
+        .id_salt("s3-s5b")
+        .spacing(2.0)
+        .item("Enabled A")
+        .add_item(GroupItem::new("Disabled B").disabled(true))
+        .item("Enabled C")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "spaced default, middle item disabled: {:.1} x {:.1} px; pressed: {:?}",
+        r5b.width(),
+        r5b.height(),
+        st.s5b
+    ));
+    ui.add_space(4.0);
+    let r5c = ToggleGroup::single(&mut st.s5c)
+        .id_salt("s3-s5c")
+        .variant(ToggleVariant::Outline)
+        .add_item(
+            GroupItem::new("Invalid+disabled")
+                .invalid(true)
+                .disabled(true),
+        )
+        .item("Valid B")
+        .item("Valid C")
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "fused outline, first item invalid+disabled: {:.1} x {:.1} px; selected: {:?}",
+        r5c.width(),
+        r5c.height(),
+        st.s5c
+    ));
+
+    // §6. Mixed sizes/variants via the §8.1 context resolution: the
+    // group's value wins when defined; the item's own prop applies only
+    // when the group leaves it undefined.
+    ui.add_space(12.0);
+    ui.label("6. Mixed sizes/variants — context resolution (spec §8.1): group-defined wins; item's own prop applies only when the group leaves it undefined");
+    ui.add_space(4.0);
+    let r6a = ToggleGroup::multiple(&mut st.s6a)
+        .id_salt("s3-s6a")
+        .spacing(2.0)
+        .add_item(
+            GroupItem::new("Sm outline")
+                .size(ToggleSize::Sm)
+                .variant(ToggleVariant::Outline),
+        )
+        .add_item(GroupItem::new("Default"))
+        .add_item(
+            GroupItem::new("Lg outline")
+                .size(ToggleSize::Lg)
+                .variant(ToggleVariant::Outline),
+        )
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "group undefined + per-item sizes/variants (mixed heights, vertically centered): {:.1} x {:.1} px; pressed: {:?}",
+        r6a.width(),
+        r6a.height(),
+        st.s6a
+    ));
+    ui.add_space(4.0);
+    let r6b = ToggleGroup::single(&mut st.s6b)
+        .id_salt("s3-s6b")
+        .variant(ToggleVariant::Outline)
+        .size(ToggleSize::Sm)
+        .spacing(2.0)
+        .add_item(
+            GroupItem::new("Own Lg ignored")
+                .size(ToggleSize::Lg)
+                .variant(ToggleVariant::Default),
+        )
+        .add_item(GroupItem::new("Plain"))
+        .add_item(GroupItem::new("Plain 2").size(ToggleSize::Lg))
+        .show(ui)
+        .response
+        .rect;
+    ui.label(format!(
+        "group outline+Sm forces all items (own props ignored): {:.1} x {:.1} px; selected: {:?}",
+        r6b.width(),
+        r6b.height(),
+        st.s6b
+    ));
+
+    // §7. Hover target. The group scope response's `hovered()` reads
+    // false with the pointer parked (radio S3 precedent), so hover is
+    // read from the pointer position over the captured group rect.
+    ui.add_space(12.0);
+    ui.label("7. Hover target — hover fill/text per §4.3; park the pointer and settle before capturing (settled-pointer captures)");
+    ui.add_space(4.0);
+    let r7 = ToggleGroup::single(&mut st.s7)
+        .id_salt("s3-hover")
+        .variant(ToggleVariant::Outline)
+        .spacing(2.0)
+        .item("Hover A")
+        .item("Hover B")
+        .item("Hover C")
+        .show(ui)
+        .response
+        .rect;
+    let hovered = ui.rect_contains_pointer(r7);
+    ui.label(format!(
+        "hover target: {:.1} x {:.1} px; selected: {:?}; hovered: {hovered}",
+        r7.width(),
+        r7.height(),
+        st.s7
+    ));
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab and Arrow keys move focus between items.");
+    ui.label("Dispositions (S8 gate + S10): W-TG-1 (OPEN-4 merge-wins px-3) stays a WORKING ASSUMPTION, OPEN-4 OPEN/PROVISIONAL; W-TG-2 (deselect-on-repress) CONFIRMED/SETTLED; OPEN-2 group-disabled propagation CONFIRMED; OPEN-3/OPEN-5/OPEN-6 stay OPEN; transition timing INTERIM. Deviations D1 (no ARIA tree), D2 (focus-visible modality), D3 (data-* dropped) PROPOSED; D4 (roving deviation) RATIFIED. No field compositions on this page.");
 
-    ui.ctx().data_mut(|d| {
-        d.insert_temp(single_store, single);
-        d.insert_temp(multi_store, multi);
-    });
+    ui.ctx().data_mut(|d| d.insert_temp(store, st));
 }
 
 pub fn input_otp_demo(ui: &mut egui::Ui) {
