@@ -3442,8 +3442,8 @@ pub fn toggle_demo(ui: &mut egui::Ui) {
 pub fn toggle_group_demo(ui: &mut egui::Ui) {
     // Every section prints the rect the group actually allocated
     // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
-    // Header: recipe position, stated honestly (spec §§0, 2, 4, 6, 10, 11
-    // + coordinator rulings 5/6/7 + the merge-order caveat).
+    // Header: verified final state (spec §§0, 2, 4, 6, 10, 11 + coordinator
+    // rulings 5/6/7 + S8 gate dispositions + S10 verification).
     let theme = ShadcnTheme::of_ui(ui);
     let nova = theme.style == Style::Nova;
     let recipe = if nova { "nova" } else { "base" };
@@ -3456,7 +3456,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         "ToggleGroup — pressed-state button group. Active recipe: {recipe} (style: {}, mode: {mode}). Item heights 32/28/36px nova, 36/32/40px base (default/sm/lg). Gap = 4 x spacing units.",
         theme.style.name()
     ));
-    ui.label("MERGE-ORDER CAVEAT: this branch still carries the PRE-rebuild toggle paint — disabled compositing, ruling-6 transitions, and the nova spaced outline shadow render per the OLD toggle code until toggle S1 merges. The demo exposes every state; S5 judges those cells against integrated code. Spacing is Tailwind units (gap = 4 x spacing px; spacing 0 = fused). Single-mode re-press deselects is a HYPOTHESIS (W-TG-2, OPEN-1) pending Radix evidence. Spaced item padding px-3 is W-TG-1 (OPEN-4 merge-wins); nova fused px-2 is specificity-settled. Group .disabled() propagation is a port convention pending OPEN-2. Keyboard = egui-natural behaviour; Radix mechanics (roving focus, type model) are OPEN-1/OPEN-2 for S6 Work B. FG-3 ring-above-siblings is an S5 check. Vertical fused outline follows the §9 case 5 reading (see §2).");
+    ui.label("S10-VERIFIED (scratch merge, integrated code): spacing is Tailwind units (gap = 4 x spacing px; spacing 0 = fused; RATIFIED gate G1). Single-mode re-press deselects is CONFIRMED original behaviour (W-TG-2 SETTLED, gate G1). Spaced item padding px-3 is W-TG-1 (OPEN-4 merge-wins, working assumption, stays OPEN); nova fused px-2 is specificity-settled. Group .disabled() propagation is CONFIRMED original behaviour (gate G1). Keyboard = deviation D4 RATIFIED (per-item Tab stops, egui spatial arrows, no wrap/Home/End; gate G2). FG-3 ring-above-siblings CLOSED. Vertical fused outline follows TOG-C1 (2px seams, style-correct corners; S10-verified).");
 
     // Demo-local selection state, held in egui temp data (the gallery's
     // established demo-state pattern), so the stateless demo function
@@ -3517,7 +3517,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
     // delta is exactly (n-1) x the 4px gap step; §1d/§1e do the same
     // vertically with the height delta.
     ui.add_space(12.0);
-    ui.label("1. Spaced groups — outline + default, spacing 1 (4px gap) and 2 (8px gap), horizontal + vertical (spec §0.3/§2.4). NOTE: horizontal group rects read 36px tall (the ui.horizontal row is sized to interact_size.y); judge item heights from pixels or from the vertical groups below, whose rects show true heights.");
+    ui.label("1. Spaced groups — outline + default, spacing 1 (4px gap) and 2 (8px gap), horizontal + vertical (spec §0.3/§2.4). NOTE: the horizontal row is seeded at the tallest resolved item height, floored at 36px (TGG-VIS-01 fix); judge item heights from pixels or from the vertical groups below, whose rects show true heights.");
     ui.add_space(4.0);
     let r1a = ToggleGroup::single(&mut st.s1a)
         .id_salt("s3-s1a")
@@ -3564,7 +3564,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         .response
         .rect;
     ui.label(format!(
-        "default spacing 1, with icons (gap 4px): {:.1} x {:.1} px; pressed: {:?}; icon-inline padding is symmetric here (per-side 6px needs toggle OPEN-6 + a per-side API — cross-line gap, not a group defect)",
+        "default spacing 1, with icons (gap 4px): {:.1} x {:.1} px; pressed: {:?}; icon-inline padding is symmetric here (per-side 6px is a RECORDED limitation, gate G6; toggle OPEN-6 stays OPEN)",
         r1c.width(),
         r1c.height(),
         st.s1c
@@ -3653,7 +3653,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         .response
         .rect;
     ui.label(format!(
-        "outline fused vertical: {:.1} x {:.1} px; selected: {:?}; §9 case 5 reading: base horizontal corner/border treatment + 2px horizontal seams (no vertical border rule exists); S5 judges against this reading, not an assumed 1px seam — any divergence is a toggle-line gap (toggle paint couples corner orientation to the layout axis)",
+        "outline fused vertical: {:.1} x {:.1} px; selected: {:?}; §9 case 5 as built (TOG-C1): base horizontal corner treatment + 2px horizontal seams (no vertical border rule exists); S10-verified (seams 2,2; corners style-correct)",
         r2c.width(),
         r2c.height(),
         st.s2c
@@ -3678,7 +3678,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
     // captured from the returned Response, never derived). Item focus
     // itself is judged by S6 from ring pixels (slider O-4 precedent).
     ui.add_space(12.0);
-    ui.label("3. Focus target — Tab here; ring 3px + border ring on focus (spec §3.4); FG-3: the focused item's ring must paint above its siblings (S5 check)");
+    ui.label("3. Focus target — Tab here; ring 3px + border ring on focus (spec §3.4); FG-3 CLOSED: the focused item's ring paints above its siblings (S5 + S10 verified)");
     ui.add_space(4.0);
     let resp3 = ToggleGroup::single(&mut st.s3)
         .id_salt("s3-focus")
@@ -3695,12 +3695,12 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         r3.height(),
         st.s3
     ));
-    ui.label("NOTE: 'scope focused' reflects the group scope response, NOT per-item focus (items expose no Response). S6 judges item focus from ring pixels. FG-3 ring queueing landed in toggle S1; S5 verifies the ring lands above siblings against integrated code.");
+    ui.label("NOTE: 'scope focused' reflects the group scope response, NOT per-item focus (items expose no Response). S6 judges item focus from ring pixels. FG-3 ring queueing landed in toggle S1; S5 + S10 verified the ring lands above siblings on integrated code.");
 
     // §4. Invalid, per-item only (ruling 5 / N17 option (a)): destructive
     // border on exactly the invalid item, NO rest ring in either style.
     ui.add_space(12.0);
-    ui.label("4. Invalid (per-item only, ruling 5) — full destructive border on exactly the invalid item, NO rest ring in either style (spec §4.7); invalid+focus precedence PROVISIONAL (toggle OPEN-4)");
+    ui.label("4. Invalid (per-item only, ruling 5) — full destructive border on exactly the invalid item, NO rest ring in either style (spec §4.7); invalid+focus rendering PROVISIONAL (gate G3; S5 findings-only cell)");
     ui.add_space(4.0);
     let r4a = ToggleGroup::single(&mut st.s4a)
         .id_salt("s3-s4a")
@@ -3744,17 +3744,17 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         .response
         .rect;
     ui.label(format!(
-        "fused default, middle item invalid: {:.1} x {:.1} px; selected: {:?}; a destructive border IS visible here — OLD toggle paint (toggle S1 removes the border on the borderless default variant); S5 judges against integrated code",
+        "fused default, middle item invalid: {:.1} x {:.1} px; selected: {:?}; destructive border on exactly the invalid item, no rest ring (S5 + S10 verified)",
         r4c.width(),
         r4c.height(),
         st.s4c
     ));
 
-    // §5. Disabled: group propagation (OPEN-2 convention), per-item
-    // disabled, and invalid+disabled. Group fade is an S5 question
-    // judged against integrated code (see the header caveat).
+    // §5. Disabled: group propagation (CONFIRMED, gate G1 item 3),
+    // per-item disabled, and invalid+disabled. Group fade per ruling 7
+    // (S5 verified on integrated code).
     ui.add_space(12.0);
-    ui.label("5. Disabled — group propagation + per-item disabled + invalid+disabled; whole-item 50% group fade is an S5 question judged against integrated code (spec §4.6, ruling 7)");
+    ui.label("5. Disabled — group propagation + per-item disabled + invalid+disabled; whole-item 50% group fade per ruling 7 (S5 verified, spec §4.6)");
     ui.add_space(4.0);
     let r5a = ToggleGroup::single(&mut st.s5a)
         .id_salt("s3-s5a")
@@ -3767,7 +3767,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
         .response
         .rect;
     ui.label(format!(
-        "group disabled (propagation, OPEN-2 convention): {:.1} x {:.1} px; selected: {:?}",
+        "group disabled (propagation CONFIRMED, gate G1): {:.1} x {:.1} px; selected: {:?}",
         r5a.width(),
         r5a.height(),
         st.s5a
@@ -3886,7 +3886,7 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("Provisional/hypothesis: W-TG-1 (OPEN-4 merge-wins px-3), W-TG-2 (OPEN-1 deselect-on-repress), OPEN-2 group-disabled propagation, toggle OPEN-3/OPEN-4 precedences, transition timing INTERIM. Deviations D1 (no ARIA tree), D2 (focus-visible modality), D3 (data-* dropped) PROPOSED. No field compositions on this page.");
+    ui.label("Dispositions (S8 gate + S10): W-TG-1 (OPEN-4 merge-wins px-3) stays a WORKING ASSUMPTION, OPEN-4 OPEN/PROVISIONAL; W-TG-2 (deselect-on-repress) CONFIRMED/SETTLED; OPEN-2 group-disabled propagation CONFIRMED; OPEN-3/OPEN-5/OPEN-6 stay OPEN; transition timing INTERIM. Deviations D1 (no ARIA tree), D2 (focus-visible modality), D3 (data-* dropped) PROPOSED; D4 (roving deviation) RATIFIED. No field compositions on this page.");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, st));
 }

@@ -3,13 +3,30 @@
 //! Ported from `apps/v4/registry/new-york-v4/ui/toggle-group.tsx`. The group
 //! provides variant/size defaults from `toggleVariants` to every
 //! [`ToggleGroupItem`](crate::components::toggle::Toggle) child and supports
-//! the two Radix modes (`type` flows through `...props` to Radix; the value
-//! model itself is OPEN-1 in the frozen spec — see below):
+//! the two Radix modes (`type` flows through `...props` to Radix):
 //!
 //! - `type="single"` — at most one pressed item,
 //! - `type="multiple"` — any number of pressed items.
 //!
-//! ## Spacing units (spec §0.3)
+//! ## Verified final state (Batch B S10, 2026-11-18)
+//!
+//! S10 PASS on the scratch merge of toggle `0c7d874` + toggle-group
+//! `672f9e0` (integrated code, merged demo), zero new defects. All three
+//! in-scope defects are CLOSED on fresh closing evidence taken on group
+//! items in all 4 configs (nova/vega × light/dark): TGG-VIS-01 (§6a
+//! centering exact, max deviation 0.0), TGG-INT-01 (Space fires on keyup
+//! only, exactly once per press, no repeat fire across holds up to 26s;
+//! Enter fires on keydown), TGG-INT-02 (Escape is a no-op — ring stays,
+//! pressed state unchanged — and Tab moves to the next item stop). The 4
+//! G5 harness tests are green on the integrated tree (full suite 885/885);
+//! S5 visuals reproduce pixel-identical outside the two known fix
+//! footprints (§2c + §6a bands); S6 interactions reproduce exactly
+//! (50/50 Tab stops, 15/15 arrow legs); S7 motion properties reproduce by
+//! animator-diff audit + spot videos (M5/M8 NOT VERIFIED, accepted gaps —
+//! see below). Page 18 goldens freeze at S11 against integrated code
+//! (gate G11); the toggle line merges before this line at S12.
+//!
+//! ## Spacing units (spec §0.3; RATIFIED, gate G1 item 1)
 //!
 //! The original `spacing` prop is a unitless number of Tailwind spacing
 //! units: the group sets `style={{ "--gap": spacing }}` and the gap class is
@@ -24,7 +41,7 @@
 //! S-1: nova silence keeps the base shadow; the fused `shadow-none` is a
 //! separate group rule).
 //!
-//! ## Context resolution (spec §8.1, settled)
+//! ## Context resolution (spec §8.1, settled; RATIFIED, gate G1 item 2)
 //!
 //! The item resolves `context.variant || variant` and `context.size ||
 //! size`: the group's value wins whenever it is defined; the item's own
@@ -42,39 +59,128 @@
 //! the `toggleVariants` invalid styling (full `destructive` border, both
 //! styles/modes; focus-gated invalid ring colour — no rest ring, spec §4.7).
 //!
-//! ## Hypotheses (OPEN-1/OPEN-2 — NOT Radix facts)
+//! ## Keyboard and focus (deviation D4, RATIFIED, gate G2)
 //!
-//! The snapshot contains no Radix source, so the following are the crate's
-//! established behaviours kept as labelled working assumptions, pending the
-//! S6 Work B Radix-source evidence:
+//! D4 (S6 R1 finding, ratified with the S6 wording): "Tab stops: every
+//! enabled item is a Tab stop in demo/DOM order (no roving tabindex);
+//! arrows use egui spatial navigation (no wrap, no Home/End/PageUp/
+//! PageDown movement, cross-group moves follow geometry); focus never
+//! changes pressed state; disabled items are never Tab stops. This
+//! replaces Radix RovingFocusGroup's single-tab-stop + roving model with
+//! egui-native traversal." The arrow map, Home/End no-ops, no-wrap, and
+//! disabled-arrow behaviour are all part of this single deviation, not
+//! separate defects. Wave-pack contrast: the radio-group line IMPLEMENTED
+//! roving tabindex (RAD-INT-01) while this line deviates — the Expert
+//! Reviewer rules on the inconsistency; neither line re-litigates it.
 //!
-//! - **W-TG-2 (OPEN-1):** single-mode re-press deselects. The value model,
-//!   deselect semantics, roving focus, arrow/Home/End/Tab behaviour, and
-//!   activation keys are all OPEN-1. Arrow keys currently move focus via
-//!   egui's spatial navigation; focus does not change the pressed state.
-//! - **Group disabled propagation (OPEN-2):** [`ToggleGroup::disabled`]
-//!   disables every item. Whether Radix Root `disabled` propagates to items
-//!   is unsettled; the propagation is kept as a port convention (API
-//!   stability) and re-opens when OPEN-2 settles. Per-item
-//!   [`GroupItem::disabled`] mirrors the original's per-item prop surface.
-//! - **W-TG-1 (OPEN-4):** the item string's `px-3`/`min-w-0` win their
-//!   `cn()` merges (later class wins, the same reading the toggle spec
-//!   §2.3 applies to the variant merge), so items render `px-3` at all
-//!   spacings in base. The nova fused `px-2` is specificity-settled
-//!   regardless. The `min-w-0` half of this assumption is NOT implemented:
-//!   `Toggle` enforces its size minimum width and exposes no min-width
-//!   override (cross-line gap, see the S1 report).
+//! Activation keys are the toggle line's mechanisms, verified on group
+//! items at S10: Space fires on keyup exactly once (the `space_keyup_fire`
+//! helper; TOG-INT-01 / TGG-INT-01), Enter fires on keydown, Escape is a
+//! no-op via the Escape-only focus-lock filter (TOG-C2 / TGG-INT-02).
+//! Click-focus is observation-only for this line (ruling 8): clicks focus
+//! and toggle the clicked item (S10 R3 re-measurement); harmonization goes
+//! to the Expert Reviewer. Gap clicks tile to the nearest item per
+//! F-HIT-RADIUS (egui `interact_radius: 5.0` midpoint tiling) — a
+//! foundation/owner decision, never a defect. Double-click behaviour is a
+//! recorded finding only (load-ambiguous, no frozen rule).
+//!
+//! ## Settled behaviours and remaining assumptions
+//!
+//! - **W-TG-2 (OPEN-1) SETTLED:** single-mode re-press deselects —
+//!   CONFIRMED as original behaviour by S6 Work B (`onItemDeactivate =
+//!   setValue('')`) + runtime confirmation (S6 R2, all 4 configs; gate
+//!   G1 item 4). No longer a working assumption.
+//! - **Group disabled propagation (OPEN-2) CONFIRMED:** Work B confirmed
+//!   propagation is original behaviour (`disabled = context.disabled ||
+//!   props.disabled`, identical in all samples), so the port-convention
+//!   decision is CONFIRMED, not merely conventional (gate G1 item 3).
+//!   Per-item [`GroupItem::disabled`] mirrors the original's per-item
+//!   prop surface; the effective state is group OR item.
+//! - **W-TG-1 (OPEN-4) stays a WORKING ASSUMPTION:** the item string's
+//!   `px-3`/`min-w-0` win their `cn()` merges (later class wins, the same
+//!   reading the toggle spec §2.3 applies to the variant merge), so items
+//!   render `px-3` at all spacings in base. OPEN-4 was untouched by Radix
+//!   source and stays OPEN (PROVISIONAL, gate G3). The nova fused `px-2`
+//!   is specificity-settled regardless. The `min-w-0` half of this
+//!   assumption is NOT implemented: `Toggle` enforces its size minimum
+//!   width and exposes no min-width override — a RECORDED LIMITATION
+//!   (gate G6; Expert Reviewer rules). If OPEN-4 ever settles
+//!   merge-loses, change `item_padding_x` only (spaced → size padding).
 //! - **Orientation (OPEN-2/OPEN-3):** the original declares no orientation
 //!   prop; [`ToggleGroup::orientation`] is a port API addition. Vertical
 //!   lays out as a flex column (port reading); the vertical fusing intent
 //!   (including the 2px horizontal seam in vertical fused outline groups,
-//!   spec §9 case 5) is OPEN-3.
+//!   spec §9 case 5) is OPEN-3, which stays OPEN (gate G3). The vertical
+//!   geometry itself was fixed on the toggle line (TOG-C1: corner
+//!   orientation decoupled from the border-shift direction) and verified
+//!   at S10 (§2c table exact: seams 2,2; corners nova 22/42/64/44, base
+//!   42/42/64/64).
+//! - **OPEN-5 (interim timing) and OPEN-6 (icon-inline trigger) stay
+//!   OPEN** (gate G3). Fused per-side icon-inline padding (6px on the
+//!   icon side) is a RECORDED LIMITATION (gate G6): per-side padding is
+//!   unexpressible with symmetric `padding_x`; Expert Reviewer rules.
 //!
-//! ## Deviations (PROPOSED — Expert Reviewer rules at the wave pack)
+//! ## Paint mechanisms (G5 harness update, `672f9e0`)
+//!
+//! The 4 G5 harness tests assert the same intent against the rebuilt
+//! toggle paint reality, WITHOUT weakening. Two mechanisms, both proven
+//! from paint code + shape dumps:
+//!
+//! - **Clip-based fused stroke:** Middle/Last items paint 3 identical
+//!   `rect_stroke` shapes differing only in clip rect (1 main clip + 2
+//!   corner cells), so the raw border-stroke list holds 7 entries for a
+//!   3-item fused group and 4 for a 2-item group. The 7/4 raw-count pins
+//!   are DELIBERATE SENSITIVITY — if the stroke painter changes,
+//!   re-derive, never weaken.
+//! - **Texture-atlas shadow:** the shadow painter emits 8 atlas quads per
+//!   shadowed widget as `Shape::Mesh` shapes with a non-default texture
+//!   id (4 corners + 4 edges, no center); fused groups paint zero meshes.
+//!   The 8-quad pin (exactly 8 quads per spaced outline item, halo
+//!   geometry, 16 total for 2 items) is DELIBERATE SENSITIVITY —
+//!   re-derive, never weaken. Blur-rect shadow detection must not be
+//!   resurrected.
+//!
+//! Dark borders are COMPOSITES (OBS-TG-S7-1): the translucent `input`
+//! border stroke composites over the current fill, so dark border values
+//! must be judged against style-aware composite expectations — nova
+//! 47/70/47, vega-dark 47/92/47 (unpressed / over pressed fill /
+//! unpressed) — never the raw token. S10 §6 re-verified the style-aware
+//! table on this line's own captures.
+//!
+//! Mixed-height horizontal rows are seeded at the tallest resolved item
+//! height (TGG-VIS-01 fix): `Ui::horizontal` seeds the row at
+//! `interact_size.y` (36pt) and centers each widget in the frame height
+//! seen so far, which left shorter items 2px high under base styles when
+//! a taller item came later. The fix replicates `Ui::horizontal` via
+//! `allocate_ui_with_layout`, changing ONLY the seed height. The middle
+//! §6a item paints text-only at rest, so its rect is measurable only via
+//! the hover probe; S5's hardcoded `S6A_Y` table is superseded by the
+//! fixer's hover measurements (S10 §3 re-verified: centers coincident,
+//! max deviation 0.0, all configs).
+//!
+//! ## Accepted gaps and recorded limitations
+//!
+//! - M5 runtime NOT VERIFIED (code fact: precomposite-after-animation
+//!   snaps by construction; no demo target exists) and M8 render floor
+//!   NOT VERIFIED (environment-limited) — ACCEPTED at gate G7; S10 did
+//!   not re-attempt them. Allocation rate OPEN.
+//! - R7 scroll NOT CLAIMED (no overflow at 1200×3300) — a verification
+//!   gap recorded for the wave pack (gate G8). Scroll-clamp measurement
+//!   (OBS-TG-S7-5): bottom-row deltas exactly 46px (nova) / 86px (base),
+//!   reproduced by S10 to the pixel — measure, never predict.
+//! - `focus:z-10` ring queueing (FG-3) is ALREADY CLOSED: the focused
+//!   item's ring paints above its siblings (S5 + S10 verified).
+//! - Recorded limitations (gate G6, Expert Reviewer rules): `min-w-0`
+//!   unexpressible; fused per-side icon-inline padding unexpressible.
+//! - The two-phase theme-install transient (OBS-TG-S7-2) is a foundation
+//!   backlog item, never a defect.
+//!
+//! ## Deviations (D1–D3 PROPOSED — Expert Reviewer rules at the wave pack; D4 RATIFIED)
 //!
 //! D1 (no ARIA tree / group semantics), D2 (`:focus-visible` modality — the
 //! ring shows on any focus), D3 (`data-*` attributes dropped; their styling
-//! effects are implemented directly). See spec §10.
+//! effects are implemented directly), D4 (roving-tabindex deviation — see
+//! the Keyboard section above). See spec §10.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -132,7 +238,8 @@ pub(crate) fn is_fused(spacing: f32) -> bool {
 
 /// Horizontal padding of group items (spec §2.2, §2.5).
 ///
-/// Under working assumption W-TG-1 (OPEN-4, merge-wins), the item string's
+/// Under working assumption W-TG-1 (OPEN-4, merge-wins — stays a working
+/// assumption, OPEN-4 stays OPEN per gate G1 item 5 / G3), the item string's
 /// `px-3` (12px) overrides the size `px-*` at ALL spacings in base. Under
 /// nova the fused `px-2` (8px) is specificity-settled regardless of OPEN-4
 /// (spec §2.3), and the spaced value follows W-TG-1 (`px-3`, 12px).
@@ -152,18 +259,17 @@ pub(crate) fn resolve_context<T: Copy>(group: Option<T>, item: Option<T>, defaul
 }
 
 /// Effective disabled state of one item: the group flag OR the item flag.
-/// Group-level propagation is the OPEN-2-pending port convention (see the
-/// module docs); the per-item flag mirrors the original's per-item prop.
+/// Group-level propagation is CONFIRMED as original behaviour (S6 Work B;
+/// gate G1 item 3); the per-item flag mirrors the original's per-item prop.
 pub(crate) fn effective_disabled(group_disabled: bool, item_disabled: bool) -> bool {
     group_disabled || item_disabled
 }
 
-/// Single-mode click transition (working assumption W-TG-2, OPEN-1):
-/// pressing the pressed item deselects it. Pure, so the assumption is
-/// pinned in one place and S9 can change it in one place when the Radix
-/// evidence settles OPEN-1. This is the crate's established behaviour kept
-/// as a labelled hypothesis, NOT a Radix claim (spec §9 case 4: S1 must not
-/// implement deselect — or its absence — as established fact).
+/// Single-mode click transition (W-TG-2, SETTLED): pressing the pressed
+/// item deselects it. CONFIRMED as original behaviour by S6 Work B
+/// (`onItemDeactivate = setValue('')`) + runtime confirmation (S6 R2, all
+/// 4 configs; gate G1 item 4). Pure, so the transition is pinned in one
+/// place (spec §9 case 4).
 pub(crate) fn single_click_next(selected: Option<usize>, index: usize) -> Option<usize> {
     if selected == Some(index) {
         None
@@ -244,10 +350,11 @@ impl GroupItem {
 /// Selection mode of a [`ToggleGroup`].
 #[derive(Debug)]
 pub enum GroupMode<'a> {
-    /// `type="single"` — `Option<usize>` is the pressed item. Index
-    /// identity and the deselect-on-repress transition are working
-    /// assumptions pending OPEN-1 (Radix identifies items by `value`
-    /// string; see the module docs).
+    /// `type="single"` — `Option<usize>` is the pressed item.
+    /// Deselect-on-repress is SETTLED (W-TG-2, CONFIRMED as original
+    /// behaviour; gate G1 item 4). Index identity is the port's value
+    /// model (Radix identifies items by `value` string; see the module
+    /// docs).
     Single(&'a mut Option<usize>),
     /// `type="multiple"` — one bool per item (auto-sized to the item count).
     Multiple(&'a mut Vec<bool>),
@@ -268,8 +375,8 @@ pub struct ToggleGroup<'a> {
     /// 4 × this value in points. `0` (default) fuses items.
     spacing: f32,
     orientation: GroupOrientation,
-    /// Group-level disabled flag, propagated to every item (OPEN-2-pending
-    /// port convention; see the module docs).
+    /// Group-level disabled flag, propagated to every item (CONFIRMED as
+    /// original behaviour, S6 Work B; gate G1 item 3 — see the module docs).
     disabled: bool,
     id_salt: Option<String>,
 }
@@ -352,15 +459,17 @@ impl<'a> ToggleGroup<'a> {
     }
 
     /// Sets the layout orientation. Port API addition: the original
-    /// declares no orientation prop (Radix prop via `...props`, OPEN-2/3);
-    /// vertical lays out as a flex column (port reading).
+    /// declares no orientation prop; vertical lays out as a flex column
+    /// (port reading). The vertical fusing intent is OPEN-3, which stays
+    /// OPEN (gate G3; see the module docs).
     pub fn orientation(mut self, orientation: GroupOrientation) -> Self {
         self.orientation = orientation;
         self
     }
 
-    /// Disables every item (OPEN-2-pending port convention; see the module
-    /// docs). Per-item disabling is available via [`GroupItem::disabled`].
+    /// Disables every item (group propagation CONFIRMED as original
+    /// behaviour, S6 Work B; gate G1 item 3). Per-item disabling is
+    /// available via [`GroupItem::disabled`].
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -746,7 +855,8 @@ mod tests {
 
     #[test]
     fn single_click_next_deselects_on_repress() {
-        // W-TG-2 (OPEN-1 hypothesis, labelled — not a Radix claim).
+        // W-TG-2 CONFIRMED as original behaviour (Work B + S6 R2; gate G1
+        // item 4, SETTLED).
         assert_eq!(single_click_next(Some(0), 0), None);
         assert_eq!(single_click_next(Some(1), 0), Some(0));
         assert_eq!(single_click_next(None, 2), Some(2));
@@ -960,7 +1070,8 @@ mod tests {
     fn fused_outline_has_no_shadow_spaced_outline_has_shadow() {
         // Spec §4.5 + S-1: fused items render shadow-none in both styles;
         // spaced outline items keep shadow-xs (Vega here — the base
-        // recipe; nova spaced shadow is the toggle line's S-1 fix).
+        // recipe; the nova spaced shadow follows S-1, S10-verified on
+        // the integrated tree: identical halo under nova and vega).
         // Shadow reality (rebuilt toggle paint): `paint_shadow_layers`
         // draws the cached shadow texture as 8 atlas quads per shadowed
         // widget (4 corners + 4 edges, no center) — see `shadow_shapes`.
