@@ -91,7 +91,8 @@
 //! ring and handles no keys, so only thumb ids are focusable. Pointerdown on a thumb focuses it, and every user-driven value
 //! change re-focuses the changed thumb (Radix focus model, SLD-INT-03),
 //! so arrow keys act on the thumb just clicked or dragged. Default step
-//! is 1% of the range (W-1, OPEN-1, one named constant).
+//! is 1 absolute (W-1 CORRECTED by S6 Work B, OPEN-1 CLOSED, one named
+//! constant).
 //! S6 Work B confirms or corrects each assumption from Radix source.
 //!
 //! # Platform limits (spec §11, proposed deviations)
@@ -129,11 +130,12 @@ pub const SLIDER_TRACK_HEIGHT: f32 = 6.0;
 /// Extra room so the focus/hover ring is not clipped.
 const WIDGET_WIDTH: f32 = 24.0;
 
-/// Default step as a fraction of the domain span (working assumption W-1,
-/// spec §8.1/OPEN-1): when the caller supplies no `step`, the step size is
-/// 1% of (`max` − `min`). ONE named place — S6's closure of OPEN-1 changes
-/// exactly this constant.
-const DEFAULT_STEP_FRACTION: f32 = 0.01;
+/// Default step as an ABSOLUTE value (working assumption W-1, corrected
+/// by S6 Work B, spec §8.1/OPEN-1 CLOSED): when the caller supplies no
+/// `step`, the step size is 1, regardless of the domain span (Radix
+/// `step` = 1 absolute at every era, 2020–2026; gate G5). ONE named
+/// place.
+const DEFAULT_STEP: f32 = 1.0;
 
 /// PageUp/PageDown magnitude as a multiple of the step (working assumption
 /// W-2, spec §8.1/OPEN-2): a large step is 10 × `step`. ONE named place.
@@ -470,7 +472,8 @@ impl<'a> Slider<'a> {
 
     /// Snaps values to this increment while dragging and on Arrow keys
     /// (step grid anchored at `min`, spec §7.4). When unset, the step is
-    /// the default step (1% of the range, W-1/OPEN-1). Non-positive steps
+    /// the default step (1 absolute, W-1 corrected by S6 Work B,
+    /// OPEN-1 CLOSED). Non-positive steps
     /// clamp to `f32::EPSILON`, which renders snapping a no-op in practice
     /// (spec §10 choice: clamp to a positive step, never panic).
     pub fn step(mut self, step: f32) -> Self {
@@ -510,11 +513,10 @@ impl<'a> Slider<'a> {
     }
 
     /// The ABSOLUTE step size: the explicit step, or the default step
-    /// (1% of the domain span, W-1/OPEN-1, [`DEFAULT_STEP_FRACTION`]).
+    /// (1 absolute, W-1 corrected by S6 Work B, OPEN-1 CLOSED,
+    /// [`DEFAULT_STEP`]).
     fn step_size(&self) -> f32 {
-        let (lo, hi) = self.ordered_bounds();
-        self.step
-            .unwrap_or_else(|| DEFAULT_STEP_FRACTION * (hi - lo).max(0.0))
+        self.step.unwrap_or(DEFAULT_STEP)
     }
 
     fn read_value(&self, index: usize) -> f32 {
@@ -2460,18 +2462,128 @@ mod tests {
         assert_eq!(snap_value_to_grid(27.3, 0.0, -2.0), 27.3);
     }
 
+    // S9-C1 (gate G5): the default step is 1 ABSOLUTE (Work B correction
+    // of W-1/OPEN-1), not 1% of the range. These pins drive the real
+    // keyboard pipeline without an explicit `.step()`; the show()-driven
+    // pin sends a real key event through `show()`.
+    fn step_once_default(value: f32, min: f32, max: f32, key: Key) -> (f32, bool) {
+        let mut v = value;
+        let mut changed = false;
+        {
+            let mut slider = Slider::new(&mut v).min(min).max(max);
+            slider.keyboard_step(0, key, false, &mut changed);
+        }
+        (v, changed)
+    }
+
     #[test]
-    fn default_step_is_one_percent_of_range() {
-        // W-1 (OPEN-1): one named constant, one helper.
+    fn default_step_is_one_absolute_on_0_50_s9_c1() {
+        // Discriminating fixture: 1% of 50 is 0.5, but the default step
+        // is 1 absolute. RED before the fix (step_size 0.5, 25 -> 25.5).
+        let mut v = 0.0;
+        let slider = Slider::new(&mut v).min(0.0).max(50.0);
+        assert_eq!(slider.step_size(), 1.0);
+        let (v, changed) = step_once_default(25.0, 0.0, 50.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 26.0);
+    }
+
+    #[test]
+    fn default_step_is_one_absolute_nonzero_min_s9_c1() {
+        // Discriminating fixture with a nonzero min: 1% of the 50-wide
+        // span is 0.5; the default step is 1 absolute. RED before the fix.
+        let mut v = 0.0;
+        let slider = Slider::new(&mut v).min(10.0).max(60.0);
+        assert_eq!(slider.step_size(), 1.0);
+        let (v, changed) = step_once_default(30.0, 10.0, 60.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 31.0);
+    }
+
+    #[test]
+    fn default_step_0_100_control_s9_c1() {
+        // Control: on 0-100, 1% == 1, so this passes both before and
+        // after the fix — it proves the control is non-discriminating,
+        // which is why the fixtures above carry the verdict (and why no
+        // demo target can discriminate: every no-step demo slider is
+        // 0-100, gate G5).
         let mut v = 0.0;
         let slider = Slider::new(&mut v).min(0.0).max(100.0);
         assert_eq!(slider.step_size(), 1.0);
+        let (v, changed) = step_once_default(50.0, 0.0, 100.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 51.0);
+    }
+
+    #[test]
+    fn explicit_step_unchanged_s9_c1() {
+        // Guard: an explicit `.step(5)` still steps 5, before and after.
         let mut v = 0.0;
-        let slider = Slider::new(&mut v).min(0.0).max(10.0);
-        assert!((slider.step_size() - 0.1).abs() < 1e-6);
-        let mut v = 0.0;
-        let slider = Slider::new(&mut v).min(0.0).max(100.0).step(5.0);
+        let slider = Slider::new(&mut v).min(0.0).max(50.0).step(5.0);
         assert_eq!(slider.step_size(), 5.0);
+        let (v, changed) = step_once(25.0, 0.0, 50.0, 5.0, Key::ArrowRight);
+        assert!(changed);
+        assert_eq!(v, 30.0);
+    }
+
+    #[test]
+    fn default_step_show_path_steps_one_s9_c1() {
+        // S9-C1 through the real `show()` path: a 0-50 slider with no
+        // explicit step, one ArrowRight key event, 25 -> 26. RED before
+        // the fix (25 -> 25.5). Mirrors the INT-01 pin's frame pattern
+        // (register, request focus directly, two settle frames so the
+        // focus-lock filter latches, SLD-INT-04).
+        use egui::{Event, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut v = 25.0f32;
+
+        let run_frame = |ctx: &egui::Context, v: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_s9c1"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(v).min(0.0).max(50.0).id_salt("s9c1").show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut v, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_s9c1")
+            .with("s9c1")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        run_frame(&ctx, &mut v, 1.1, vec![]);
+        run_frame(&ctx, &mut v, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        run_frame(
+            &ctx,
+            &mut v,
+            1.3,
+            vec![
+                Event::ModifiersChanged(Modifiers::default()),
+                Event::Key {
+                    key: Key::ArrowRight,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                },
+            ],
+        );
+        assert_eq!(v, 26.0);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
     }
 
     #[test]
