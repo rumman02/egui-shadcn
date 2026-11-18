@@ -65,8 +65,8 @@
 //! items, WITHOUT changing the selection (focus-only; settled OPEN-2),
 //! and the stored tab stop follows the move. Space activates the focused item on
 //! keyup, once per press, and Enter never activates it (RAD-INT-04/05, settled
-//! OPEN-3); clicks select and
-//! never uncheck, but do not focus yet (RAD-INT-06). Focus-visible
+//! OPEN-3); clicks select and focus the clicked item, and
+//! never uncheck (RAD-INT-06). Focus-visible
 //! modality is proposed deviation D1 (the ring shows on any focus;
 //! egui cannot distinguish keyboard from pointer focus).
 //!
@@ -572,6 +572,10 @@ impl<'a> RadioGroupItem<'a> {
         if response.clicked() && !self.disabled {
             *self.checked = true;
             response.mark_changed();
+            // Clicking focuses AND selects (RAD-INT-06, settled
+            // OPEN-3): egui's `interact` never grants focus on a
+            // pointer click, so the click must request it explicitly.
+            response.request_focus();
         }
 
         let state = RadioState {
@@ -1028,9 +1032,19 @@ fn render_items(
             p.background,
         );
 
-        // Clicking selects (radios never uncheck).
-        if response.clicked() && !item_disabled && *selected != Some(i) {
-            *selected = Some(i);
+        // Clicking selects AND focuses (RAD-INT-06, settled OPEN-3):
+        // egui's `interact` never grants focus on a pointer click, so
+        // the click must request it explicitly — including on the
+        // already-checked item, where the selection write is a no-op
+        // but the focus grant is not. The grant lands after
+        // `interact`, so the next pass's holds-focus clause presents
+        // a focusable sense and `create_widget` keeps the focus
+        // (radios never uncheck).
+        if response.clicked() && !item_disabled {
+            if *selected != Some(i) {
+                *selected = Some(i);
+            }
+            response.request_focus();
         }
         responses.push(response);
     }
@@ -3450,5 +3464,215 @@ mod tests {
         press(&ctx, &mut selected, Key::Home);
         assert_eq!(selected, Some(2), "jump must not change selection");
         assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
+    }
+
+    #[test]
+    fn direct_click_focuses_standalone_item() {
+        // RAD-INT-06: a direct click on a standalone item selects AND
+        // focuses it (settled OPEN-3). Fails pre-fix: the click
+        // checks the item but focus stays nowhere — egui's
+        // `interact` never grants focus on a pointer click
+        // (`get_response` only ever surrenders it).
+        let ctx = test_ctx();
+        let checked = std::cell::RefCell::new(false);
+        let item_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_click_focus_standalone"));
+            let mut guard = checked.borrow_mut();
+            let resp = RadioGroupItem::new(&mut guard)
+                .id_salt("radio_click_focus_standalone")
+                .show(ui);
+            item_rect.set(resp.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(!ctx.memory(|m| m.has_focus(item_id.get())));
+        let center = item_rect.get().center();
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(*checked.borrow(), "click must check the item");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "click must focus the item"
+        );
+    }
+
+    #[test]
+    fn direct_click_focuses_group_item() {
+        // RAD-INT-06, group path: a direct click on a NON-stop item
+        // (`Sense::CLICK`, no FOCUSABLE bit) selects AND focuses it.
+        // The grant lands on the click pass via `request_focus`
+        // (unconditional in egui's `Memory`), and the next pass's
+        // holds-focus clause presents a focusable sense so
+        // `create_widget` does not clear it. Fails pre-fix: the
+        // click selects but focus stays nowhere.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(1));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_click_focus_group").with(0usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_click_focus_group")
+                .option("AAA")
+                .option("BBB")
+                .option("CCC")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert!(!ctx.memory(|m| m.has_focus(item_id.get())));
+        // Row 0's circle centre (opt0 is not the stop: opt1 is checked).
+        let rect = group_rect.get();
+        let center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(*selected.borrow(), Some(0), "click must select opt0");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id.get())),
+            "click must focus the non-stop item"
+        );
+    }
+
+    #[test]
+    fn click_then_arrow_moves_within_group() {
+        // RAD-INT-06 repro step 4: after a click, arrow keys move
+        // within the clicked group. Fails pre-fix: the click grants
+        // no focus, so the arrow leg sees no focused item and
+        // nothing moves.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(1));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let group_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            group_id.set(ui.scope_id().with("radio_click_focus_arrow"));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_click_focus_arrow")
+                .option("AAA")
+                .option("BBB")
+                .option("CCC")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let rect = group_rect.get();
+        let center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(*selected.borrow(), Some(0));
+        run_ui(&ctx, key_input(Key::ArrowDown), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(
+            *selected.borrow(),
+            Some(1),
+            "Down after a click must move the selection"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(group_id.get().with(1usize)),
+            "Down after a click must move focus to opt1"
+        );
+    }
+
+    #[test]
+    fn disabled_circle_click_grants_no_focus() {
+        // Guard: a click on a disabled circle stays inert — no
+        // selection, no focus. Passes both before and after the fix
+        // (the fix is enabled-only).
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(None);
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(
+                ui.scope_id()
+                    .with("radio_click_focus_disabled")
+                    .with(0usize),
+            );
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_click_focus_disabled")
+                .option_disabled("Unavailable")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let rect = group_rect.get();
+        let center = rect.min + Vec2::new(RADIO_SIZE / 2.0, RADIO_SIZE / 2.0);
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(&ctx, click_event(center, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(*selected.borrow(), None);
+        assert!(
+            !ctx.memory(|m| m.has_focus(item_id.get())),
+            "disabled click must not focus"
+        );
+    }
+
+    #[test]
+    fn drag_off_circle_grants_no_focus() {
+        // Guard: press-drag-release-off changes nothing — no click
+        // fires (40px exceeds egui's 6px `max_click_dist`), so no
+        // selection and no focus grant. Passes both before and after
+        // the fix.
+        let ctx = test_ctx();
+        let selected = std::cell::RefCell::new(Some(0));
+        let group_rect = std::cell::Cell::new(Rect::NOTHING);
+        let item_id = std::cell::Cell::new(Id::NULL);
+
+        let render = |ui: &mut Ui| {
+            item_id.set(ui.scope_id().with("radio_click_focus_dragoff").with(1usize));
+            let mut guard = selected.borrow_mut();
+            let resp = RadioGroup::new(&mut guard)
+                .id_salt("radio_click_focus_dragoff")
+                .option("AAA")
+                .option("BBB")
+                .option("CCC")
+                .show(ui);
+            group_rect.set(resp.response.rect);
+        };
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        // Row 1's circle centre; rows are 16px with the style gap.
+        let rect = group_rect.get();
+        let pitch = (rect.height() - RADIO_SIZE) / 2.0;
+        let center = Pos2::new(
+            rect.min.x + RADIO_SIZE / 2.0,
+            rect.min.y + pitch + RADIO_SIZE / 2.0,
+        );
+        let off = Pos2::new(center.x + 40.0, center.y);
+        run_ui(&ctx, click_event(center, true), |ui| render(ui));
+        run_ui(
+            &ctx,
+            egui::RawInput {
+                events: vec![egui::Event::PointerMoved(off)],
+                ..Default::default()
+            },
+            |ui| render(ui),
+        );
+        run_ui(&ctx, click_event(off, false), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(
+            *selected.borrow(),
+            Some(0),
+            "drag-off must not change the selection"
+        );
+        assert!(
+            !ctx.memory(|m| m.has_focus(item_id.get())),
+            "drag-off must not focus the dragged item"
+        );
     }
 }
