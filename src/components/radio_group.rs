@@ -64,8 +64,8 @@
 //! focusable item and End/PageDown to the last, skipping disabled
 //! items, WITHOUT changing the selection (focus-only; settled OPEN-2),
 //! and the stored tab stop follows the move. Space activates the focused item on
-//! keyup, once per press (RAD-INT-05, settled OPEN-3), and Enter checks it on
-//! keydown (RAD-INT-04 owns Enter); clicks select and
+//! keyup, once per press, and Enter never activates it (RAD-INT-04/05, settled
+//! OPEN-3); clicks select and
 //! never uncheck, but do not focus yet (RAD-INT-06). Focus-visible
 //! modality is proposed deviation D1 (the ring shows on any focus;
 //! egui cannot distinguish keyboard from pointer focus).
@@ -483,9 +483,9 @@ fn label_rect_in_row(row_rect: Rect, label_w: f32) -> Rect {
 /// A single radio circle bound to a boolean (`RadioGroupItem`).
 ///
 /// Clicking selects it (radios never uncheck themselves). Space
-/// activates the focused item on keyup, once per press (settled
-/// OPEN-3, RAD-INT-05); Enter checks on keydown (RAD-INT-04 owns
-/// Enter). For a group of mutually exclusive options prefer
+/// activates the focused item on keyup, once per press, and Enter
+/// never activates it (settled OPEN-3, RAD-INT-04/05). For a group
+/// of mutually exclusive options prefer
 /// [`RadioGroup`].
 #[derive(Debug)]
 pub struct RadioGroupItem<'a> {
@@ -562,6 +562,11 @@ impl<'a> RadioGroupItem<'a> {
         // settled OPEN-3): hide the keydown from `interact` and
         // re-create it on the release pass.
         space_keyup_fire(ui.ctx(), id);
+        // Enter never activates (RAD-INT-04, settled OPEN-3): hide
+        // Enter keydowns from `interact` while this item holds focus,
+        // so egui's fake primary click cannot fire. Pure suppression
+        // — no re-fire, in any phase.
+        suppress_enter_activation(ui.ctx(), ui.ctx().memory(|m| m.has_focus(id)));
         let mut response = ui.interact(rect, id, sense);
 
         if response.clicked() && !self.disabled {
@@ -840,6 +845,46 @@ fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
     ctx.data_mut(|data| data.insert_temp(armed_id, armed));
 }
 
+/// Suppresses Enter activation (RAD-INT-04, settled OPEN-3: WAI-ARIA
+/// radio groups don't activate items on Enter — the Radix trigger's
+/// `onKeyDown` calls `preventDefault()` for Enter).
+///
+/// egui's `interact` reports a fake primary click for a focused
+/// click-sense widget whenever `key_pressed(Enter)` is true
+/// (`egui-0.37.0/src/context.rs:1761`, `FAKE_PRIMARY_CLICKED`), and
+/// `key_pressed` counts every `pressed: true` key event in the LIVE
+/// event list (`input_state/mod.rs:767-785`, `num_presses`) — so
+/// removing Enter keydowns from the list before the widget's
+/// `interact` makes the fake click impossible. Unlike
+/// `space_keyup_fire` there is no re-fire: Enter must NEVER
+/// activate, in any phase (keydown, repeat, or keyup).
+///
+/// The strip is gated on the widget holding focus (`has_focus`):
+/// the fake click requires focus, so stripping only while focused
+/// removes exactly the activation path and never eats an Enter meant
+/// for another widget later in the pass. Enter releases are left
+/// untouched (releases never fake-click), `Key::NumpadEnter` is
+/// untouched (`create_widget` checks `Key::Enter` only), and the
+/// label-forwarding synthetic Space pair carries no Enter event and
+/// is unaffected.
+fn suppress_enter_activation(ctx: &egui::Context, has_focus: bool) {
+    if !has_focus {
+        return;
+    }
+    ctx.input_mut(|input| {
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+    });
+}
+
 fn render_items(
     ui: &mut Ui,
     group_id: egui::Id,
@@ -953,6 +998,12 @@ fn render_items(
         } else {
             Sense::CLICK
         };
+        // Enter never activates (RAD-INT-04, settled OPEN-3): hide
+        // Enter keydowns from `interact` while this item holds focus,
+        // so egui's fake primary click cannot fire. Pure suppression
+        // — no re-fire. `holds_focus` is read after the label runs,
+        // so label-forwarded focus is covered too.
+        suppress_enter_activation(ui.ctx(), holds_focus);
         let response = ui.interact(circle_rect, item_id, sense);
         let is_selected = *selected == Some(i);
         let state = RadioState {
@@ -1005,7 +1056,9 @@ fn render_items(
     // are handled by the jump leg below (RAD-INT-03, settled OPEN-2);
     // Space is handled by `space_keyup_fire` at the top of this
     // function (RAD-INT-05, settled OPEN-3: keyup, once per press);
-    // Enter and Escape are untouched (RAD-INT-04/07 own them).
+    // Enter is suppressed per item before `interact` (RAD-INT-04,
+    // settled OPEN-3: never activates); Escape is untouched
+    // (RAD-INT-07 owns it).
     let focused_id = ui.ctx().memory(|m| m.focused());
     let focused_idx =
         focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
@@ -3145,25 +3198,140 @@ mod tests {
     }
 
     #[test]
-    fn enter_still_checks_on_keydown() {
-        // Guard (RAD-INT-04 owns Enter): the Space deferral must not
-        // change Enter behaviour — Enter still checks on keydown.
-        // Passes both before and after the INT-05 fix.
+    fn enter_does_nothing_on_focused_unchecked_standalone() {
+        // Settled OPEN-3 (RAD-INT-04): Enter NEVER activates a radio
+        // item (Radix `onKeyDown` preventDefault; WAI-ARIA: radio
+        // groups don't activate items on enter keypress). The
+        // standalone item carries the verdict: it can be
+        // focused-but-unchecked, which group items cannot (arrows
+        // move selection with focus). Fails pre-fix: Enter checks the
+        // item on the keydown pass itself.
         let ctx = test_ctx();
         let mut checked = false;
-        let item_id = egui::Id::unique("radio_enter_guard_test").with("radio_enter_guard");
+        let item_id = egui::Id::unique("radio_enter_test").with("radio_enter");
 
         let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
             let mut changed = false;
             let mut out = ctx.run_ui(input, |ctx| {
                 let ui = &mut egui::Ui::new(
                     ctx.clone(),
-                    egui::Id::unique("radio_enter_guard_test"),
+                    egui::Id::unique("radio_enter_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                let resp = RadioGroupItem::new(checked).id_salt("radio_enter").show(ui);
+                changed = resp.changed();
+            });
+            out.textures_delta.clear();
+            changed
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        // Keydown: must NOT fire, focus retained.
+        assert!(
+            !run(&ctx, &mut checked, key_input(Key::Enter)),
+            "Enter keydown must not fire"
+        );
+        assert!(!checked, "item must stay unchecked after Enter");
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "Enter must not move focus"
+        );
+        // Hold with autorepeat: still must NOT fire.
+        assert!(
+            !run(&ctx, &mut checked, key_repeat_input(Key::Enter)),
+            "Enter repeat must not fire"
+        );
+        assert!(!checked);
+        // Release: must NOT fire either (pure suppression, no re-fire).
+        assert!(
+            !run(&ctx, &mut checked, key_release_input(Key::Enter)),
+            "Enter keyup must not fire"
+        );
+        assert!(!checked);
+        // Settle: no delayed fire.
+        assert!(
+            !run(&ctx, &mut checked, egui::RawInput::default()),
+            "no delayed fire after Enter"
+        );
+        assert!(!checked);
+    }
+
+    #[test]
+    fn enter_does_nothing_on_focused_group_item() {
+        // Same settled OPEN-3 rule inside a group: Enter on the
+        // focused item must not move the selection. Focus is requested
+        // directly on the middle item with no selection — the focus !=
+        // checked state (reachable at runtime via an INT-03 jump).
+        // Fails pre-fix: Enter selects the focused item on the
+        // keydown pass.
+        let ctx = test_ctx();
+        let mut selected: Option<usize> = None;
+        let base = egui::Id::unique("radio_enter_group_test").with("radio_enter_group");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_enter_group_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_enter_group")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+
+        run(&ctx, &mut selected, key_input(Key::Enter));
+        assert_eq!(selected, None, "Enter keydown must not select");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(base.with(1usize)),
+            "Enter must not move focus"
+        );
+        run(&ctx, &mut selected, key_repeat_input(Key::Enter));
+        assert_eq!(selected, None, "Enter repeat must not select");
+        run(&ctx, &mut selected, key_release_input(Key::Enter));
+        assert_eq!(selected, None, "Enter keyup must not select");
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn enter_does_nothing_on_focused_checked_standalone() {
+        // Guard: Enter on a CHECKED item is a no-op too — no uncheck,
+        // no spurious `changed()`. Fails pre-fix on the `changed()`
+        // assertion only: the fake click re-checks the item and marks
+        // it changed.
+        let ctx = test_ctx();
+        let mut checked = true;
+        let item_id = egui::Id::unique("radio_enter_checked_test").with("radio_enter_checked");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_enter_checked_test"),
                     egui::UiBuilder::new()
                         .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
                 );
                 let resp = RadioGroupItem::new(checked)
-                    .id_salt("radio_enter_guard")
+                    .id_salt("radio_enter_checked")
                     .show(ui);
                 changed = resp.changed();
             });
@@ -3177,8 +3345,69 @@ mod tests {
         assert!(ctx.memory(|m| m.has_focus(item_id)));
 
         assert!(
-            run(&ctx, &mut checked, key_input(Key::Enter)),
-            "Enter keydown must still check (RAD-INT-04 owns any change)"
+            !run(&ctx, &mut checked, key_input(Key::Enter)),
+            "Enter must not report changed on a checked item"
+        );
+        assert!(checked, "Enter must not uncheck");
+        assert!(
+            !run(&ctx, &mut checked, key_release_input(Key::Enter)),
+            "Enter keyup must not report changed"
+        );
+        assert!(checked);
+    }
+
+    #[test]
+    fn space_keyup_fire_unaffected_by_enter() {
+        // Guard: the Enter suppression must not disturb the Space
+        // keyup deferral (RAD-INT-05) — an Enter press interleaved
+        // with a Space press leaves the Space phase sequence intact:
+        // Enter fires nothing, Space fires once on keyup, no second
+        // fire. Fails pre-fix on the Enter assertion only.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_enter_space_test").with("radio_enter_space");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_enter_space_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                let resp = RadioGroupItem::new(checked)
+                    .id_salt("radio_enter_space")
+                    .show(ui);
+                changed = resp.changed();
+            });
+            out.textures_delta.clear();
+            changed
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        assert!(
+            !run(&ctx, &mut checked, key_input(Key::Enter)),
+            "Enter keydown must not fire"
+        );
+        assert!(!checked);
+        assert!(
+            !run(&ctx, &mut checked, key_input(Key::Space)),
+            "Space keydown must not fire"
+        );
+        assert!(!checked);
+        assert!(
+            run(&ctx, &mut checked, key_release_input(Key::Space)),
+            "Space keyup must fire"
+        );
+        assert!(checked, "item must be checked after Space keyup");
+        assert!(
+            !run(&ctx, &mut checked, egui::RawInput::default()),
+            "no second fire after release"
         );
         assert!(checked);
     }
