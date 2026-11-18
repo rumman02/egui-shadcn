@@ -85,20 +85,26 @@ use egui::{Color32, FontId, Id, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 /// Shared field state passed to children through the temp stack.
 ///
-/// The stack shadows like CSS ancestry: each container pushes its own
-/// entry and pops it after its content, so the top entry describes the
-/// nearest enclosing field context. Containers copy through the entries
-/// they do not own and reset the ones scoped to direct children.
+/// Each container pushes its own entry and pops it after its content,
+/// so the top entry describes the nearest enclosing field context.
+/// `invalid`/`disabled` follow ANY-ancestor inheritance (FLD-VIS-02):
+/// a container OR-accumulates its own flags with the enclosing entry,
+/// so a nested Field never shadows an outer Field's flags. Group
+/// ancestry passes through unchanged, and
+/// `horizontal_content_present` stays scoped to direct children (every
+/// container except the horizontal [`Field`] itself resets it).
 #[derive(Clone, Copy, Debug)]
 struct FieldCtx {
-    /// Nearest enclosing [`Field`]'s invalid flag (D1 explicit flag for
-    /// `data-invalid="true"`; label/title text renders destructive).
+    /// Whether ANY enclosing [`Field`] declares the invalid flag (D1
+    /// explicit flag for `data-invalid="true"`; label/title text
+    /// renders destructive). OR-accumulated down the stack.
     invalid: bool,
-    /// Nearest enclosing [`Field`]'s disabled flag (D1 explicit flag for
-    /// the field group's `data-disabled="true"`; label/title render at
-    /// element-level 50% opacity, clicks still forward — the opacity-only
-    /// condition of spec §4.2, distinct from the label's own
-    /// pointer-events-none flag).
+    /// Whether ANY enclosing [`Field`] declares the disabled flag (D1
+    /// explicit flag for the field group's `data-disabled="true"`;
+    /// label/title render at element-level 50% opacity, clicks still
+    /// forward — the opacity-only condition of spec §4.2, distinct
+    /// from the label's own pointer-events-none flag).
+    /// OR-accumulated down the stack.
     disabled: bool,
     /// Number of enclosing [`FieldGroup`]s. A group with depth > 0 is
     /// directly nested in another group and renders the N14 16px gap.
@@ -526,8 +532,20 @@ impl Field {
         push_ctx(
             ui,
             FieldCtx {
-                invalid: self.invalid,
-                disabled: self.disabled,
+                // ANY-ancestor inheritance (FLD-VIS-02, spec §4.2/§4.4):
+                // the snapshot's named-group disabled rule is a
+                // descendant selector matching ANY ancestor Field, and
+                // the invalid text colour inherits through intermediate
+                // elements. A nested Field that declares no flag must
+                // NOT shadow an outer Field's flag, so the pushed
+                // values OR-accumulate with the enclosing context. This
+                // changes only what descendants OBSERVE for visuals;
+                // the forwarding distinction (the label's own flag =
+                // pointer-events-none, the field flag = opacity-only)
+                // lives in the consumers' use of `self.disabled` vs the
+                // ctx flag and is untouched.
+                invalid: self.invalid || enclosing.invalid,
+                disabled: self.disabled || enclosing.disabled,
                 // Group ancestry passes through: a Field neither opens
                 // nor closes a field-group container.
                 group_depth: enclosing.group_depth,
@@ -2716,5 +2734,194 @@ mod tests {
         }
         // The focus request itself landed (else the test is vacuous).
         assert_eq!(ctx.memory(|mem| mem.focused()), Some(target.get()));
+    }
+
+    // --- FLD-VIS-02 pins: nested Field inherits outer disabled/invalid
+    // flags (ANY-ancestor semantics, spec §4.2/§4.4). The title/label
+    // text shape carries the paint color in its galley section (the
+    // widgets lay out with the paint color directly), so the emitted
+    // shape proves which flags the nested widget observed.
+
+    fn title_text_color(output: &egui::FullOutput, text: &str) -> Option<Color32> {
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text_shape) = &clipped.shape {
+                if text_shape.galley.job.text == text {
+                    return text_shape
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|s| s.format.color);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn nested_field_inherits_outer_disabled_flag() {
+        // FLD-VIS-02 (disabled half): outer disabled Field -> inner
+        // plain Field -> FieldTitle renders at 50% opacity. Before the
+        // fix the inner Field shadowed the outer flag and the title
+        // painted full foreground.
+        let ctx = test_ctx();
+        let output = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new().disabled(true).show(ui, |ui| {
+                Field::new().show(ui, |ui| {
+                    FieldTitle::new("Inner title").show(ui);
+                });
+            });
+        });
+        let p = palette(Mode::Light);
+        assert_eq!(
+            title_text_color(&output, "Inner title"),
+            Some(color_alpha(p.foreground, 0.5)),
+            "nested title fades under a disabled outer Field"
+        );
+    }
+
+    #[test]
+    fn nested_field_inherits_outer_invalid_flag() {
+        // FLD-VIS-02 (invalid half): outer invalid Field -> inner plain
+        // Field -> FieldTitle renders destructive. Before the fix the
+        // inner Field shadowed the outer flag and the title painted
+        // foreground.
+        let ctx = test_ctx();
+        let output = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new().invalid(true).show(ui, |ui| {
+                Field::new().show(ui, |ui| {
+                    FieldTitle::new("Inner title").show(ui);
+                });
+            });
+        });
+        let p = palette(Mode::Light);
+        assert_eq!(
+            title_text_color(&output, "Inner title"),
+            Some(p.destructive),
+            "nested title is destructive under an invalid outer Field"
+        );
+    }
+
+    #[test]
+    fn nested_field_inherits_combined_flags_for_label() {
+        // The same inheritance through FieldLabel, both flags at once:
+        // outer disabled + invalid -> inner plain Field -> label paints
+        // destructive at 50%. Also pins that the label path observes the
+        // inherited flags, not just the title path.
+        let ctx = test_ctx();
+        let output = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new().disabled(true).invalid(true).show(ui, |ui| {
+                Field::new().show(ui, |ui| {
+                    FieldLabel::new("Inner label").show(ui);
+                });
+            });
+        });
+        let p = palette(Mode::Light);
+        assert_eq!(
+            title_text_color(&output, "Inner label"),
+            Some(color_alpha(p.destructive, 0.5)),
+            "nested label is faded destructive under a disabled+invalid outer Field"
+        );
+    }
+
+    #[test]
+    fn nested_field_inherits_through_group_and_content() {
+        // The §8 card shape: outer disabled Field -> FieldGroup ->
+        // inner plain Field -> FieldContent -> FieldTitle. Groups and
+        // content already pass flags through; the inner Field was the
+        // only shadowing site.
+        let ctx = test_ctx();
+        let output = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new().disabled(true).show(ui, |ui| {
+                FieldGroup::new().show(ui, |ui| {
+                    Field::new().show(ui, |ui| {
+                        FieldContent::new().show(ui, |ui| {
+                            FieldTitle::new("Inner title").show(ui);
+                        });
+                    });
+                });
+            });
+        });
+        let p = palette(Mode::Light);
+        assert_eq!(
+            title_text_color(&output, "Inner title"),
+            Some(color_alpha(p.foreground, 0.5)),
+            "nested title fades through group + content boundaries"
+        );
+    }
+
+    #[test]
+    fn nested_field_own_flags_and_plain_cases_unchanged() {
+        // Guards: the fix OR-accumulates, so (a) an inner Field's own
+        // flags still apply with a plain outer Field, (b) outer +
+        // inner both declaring a flag fades exactly once (no double
+        // fade — the flag is a bool, not an alpha), (c) plain outer +
+        // plain inner stays full opacity.
+        let p = palette(Mode::Light);
+        for (outer_disabled, inner_disabled, expected) in [
+            (false, true, color_alpha(p.foreground, 0.5)),
+            (true, true, color_alpha(p.foreground, 0.5)),
+            (false, false, p.foreground),
+        ] {
+            let ctx = test_ctx();
+            let output = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+                Field::new().disabled(outer_disabled).show(ui, |ui| {
+                    Field::new().disabled(inner_disabled).show(ui, |ui| {
+                        FieldTitle::new("Inner title").show(ui);
+                    });
+                });
+            });
+            assert_eq!(
+                title_text_color(&output, "Inner title"),
+                Some(expected),
+                "outer_disabled={outer_disabled} inner_disabled={inner_disabled}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_inherited_disabled_still_forwards_clicks() {
+        // Guard for the G1-item-3 distinction: an INHERITED field flag
+        // is the opacity-only condition — clicks still forward. Only
+        // the label's OWN `.disabled()` suppresses forwarding. This
+        // must hold before and after the fix (forwarding never read
+        // the ctx flag); it pins that the inheritance change cannot
+        // leak into the pointer-events-none condition.
+        use std::cell::{Cell, RefCell};
+        for (own_disabled, expect_forward) in [(false, true), (true, false)] {
+            let ctx = test_ctx();
+            let checked = RefCell::new(false);
+            let label_rect = Cell::new(Rect::NOTHING);
+            let target = Cell::new(Id::unique("field_nested_dis_placeholder"));
+            let render = |ui: &mut Ui| {
+                Field::new().disabled(true).show(ui, |ui| {
+                    Field::new().show(ui, |ui| {
+                        label_rect.set(
+                            FieldLabel::new("Accept")
+                                .for_id(target.get())
+                                .disabled(own_disabled)
+                                .show(ui)
+                                .rect,
+                        );
+                        target.set(
+                            Checkbox::new(&mut checked.borrow_mut())
+                                .id_salt("field_nested_dis_target")
+                                .show(ui)
+                                .id,
+                        );
+                    });
+                });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            let at = label_rect.get().center();
+            run_ui(&ctx, click_event(at, true), &render);
+            run_ui(&ctx, click_event(at, false), &render);
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                *checked.borrow(),
+                expect_forward,
+                "own_disabled={own_disabled} under an inherited disabled flag"
+            );
+        }
     }
 }
