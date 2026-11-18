@@ -56,14 +56,16 @@
 //! roving tabindex — one Tab stop per group (zero when all items are
 //! disabled), Tab entry focuses the checked item (else the first
 //! focusable item) and does NOT check it, and selection follows focus
-//! ONLY for arrow-key moves. Up/Down move focus within the group
-//! (disabled items skipped); arrow wrap-around, Left/Right navigation,
-//! and Home/End/PageUp/PageDown are RAD-INT-02/03's, not yet built.
-//! Space activates the focused item and Enter checks it (RAD-INT-04/05
-//! own the phases); clicks select and never uncheck, but do not focus
-//! yet (RAD-INT-06). Focus-visible modality is proposed deviation D1
-//! (the ring shows on any focus; egui cannot distinguish keyboard from
-//! pointer focus).
+//! ONLY for arrow-key moves. All four arrows navigate (Left/Up =
+//! previous, Right/Down = next), wrapping at the edges (`loop = true`
+//! by default; no orientation is set, so the filter never engages)
+//! and skipping disabled items, uniformly for vertical and horizontal
+//! groups (gate G6 amendment). Home/End/PageUp/PageDown are
+//! RAD-INT-03's, not yet built. Space activates the focused item and
+//! Enter checks it (RAD-INT-04/05 own the phases); clicks select and
+//! never uncheck, but do not focus yet (RAD-INT-06). Focus-visible
+//! modality is proposed deviation D1 (the ring shows on any focus;
+//! egui cannot distinguish keyboard from pointer focus).
 //!
 //! Focus+invalid border precedence is deliberately NOT frozen by the
 //! spec (§4 precedence note): this build keeps invalid-wins as
@@ -862,19 +864,26 @@ fn render_items(
         responses.push(response);
     }
 
-    // Roving tabindex, arrow leg (RAD-INT-01; settled OPEN-1/OPEN-4):
+    // Roving tabindex, arrow leg (RAD-INT-01/02; settled OPEN-1/OPEN-4):
     // selection follows focus ONLY for arrow-key-driven moves. Tab
     // entry, click-focus, and programmatic focus never check — there
     // is deliberately no focus-gain follower anymore (the old
-    // `last_focused` mechanism is gone). Up/Down are handled here:
-    // each unmodified keydown steps to the next/previous enabled item
-    // (disabled skipped, no wrap — wrap and Left/Right are
-    // RAD-INT-02's), checks it, and moves the tab stop with it. An
-    // arrow at the edge is left entirely alone so egui's spatial
-    // navigation still carries focus out of the group, as S6 recorded.
-    // Modifier+arrow receives NO handling (gate G5, HEAD Radix
-    // behaviour). Left/Right, Home/End, PageUp/PageDown, Enter, Space,
-    // and Escape are untouched (RAD-INT-02…05/07 own them).
+    // `last_focused` mechanism is gone). All four arrows navigate
+    // (Left/Up = previous, Right/Down = next) with wrap-around
+    // (`loop = true` by default; shadcn sets no `orientation`, so the
+    // orientation filter never engages) and disabled items skipped,
+    // uniformly for vertical and horizontal groups alike (gate G6
+    // amendment — no orientation gating). Each unmodified keydown
+    // steps to the next/previous enabled item, checks it, and moves
+    // the tab stop with it. A group with no other enabled item
+    // (single-item group, or all others disabled) is a no-op (spec
+    // §9), but the key is still consumed: the group owns unmodified
+    // arrows while focus is inside it, so egui's spatial move is
+    // cancelled even when nothing moves (else `end_pass` would carry
+    // focus out of the group). Modifier+arrow receives NO handling
+    // (gate G5, HEAD Radix behaviour). Home/End, PageUp/PageDown,
+    // Enter, Space, and Escape are untouched (RAD-INT-03…05/07 own
+    // them).
     let focused_id = ui.ctx().memory(|m| m.focused());
     let focused_idx =
         focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
@@ -890,8 +899,8 @@ fn render_items(
                         modifiers,
                         ..
                     } if !modifiers.any() => match key {
-                        egui::Key::ArrowDown => Some(1),
-                        egui::Key::ArrowUp => Some(-1),
+                        egui::Key::ArrowDown | egui::Key::ArrowRight => Some(1),
+                        egui::Key::ArrowUp | egui::Key::ArrowLeft => Some(-1),
                         _ => None,
                     },
                     _ => None,
@@ -900,29 +909,42 @@ fn render_items(
         });
         let mut target = current;
         let mut moved = false;
-        for step in steps {
-            let mut next = target as isize + step;
-            while (0..options.len() as isize).contains(&next)
-                && (disabled || options[next as usize].disabled)
-            {
-                next += step;
+        for &step in steps.iter() {
+            // Step ±1, skipping disabled items, wrapping at the
+            // edges. The search is bounded by the group length, so a
+            // group with no other enabled item finds only the current
+            // item and does not move.
+            let n = options.len() as isize;
+            let mut next = target as isize;
+            let mut found = false;
+            for _ in 0..options.len() {
+                next = (next + step).rem_euclid(n);
+                if !(disabled || options[next as usize].disabled) {
+                    found = true;
+                    break;
+                }
             }
-            if (0..options.len() as isize).contains(&next) {
+            if found && next as usize != target {
                 target = next as usize;
                 moved = true;
             }
         }
-        if moved {
-            *selected = Some(target);
-            responses[target].mark_changed();
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(group_id.with("tab_stop"), target));
+        if !steps.is_empty() {
+            if moved {
+                *selected = Some(target);
+                responses[target].mark_changed();
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(group_id.with("tab_stop"), target));
+            }
             ui.ctx().memory_mut(|m| {
-                m.request_focus(group_id.with(target));
+                if moved {
+                    m.request_focus(group_id.with(target));
+                }
                 // Cancel egui's spatial arrow move for this pass:
                 // `begin_pass` already set the cardinal direction from
                 // the key event, and `end_pass` would otherwise move
-                // focus AGAIN, starting from the newly focused item.
+                // focus AGAIN, starting from the newly focused item —
+                // or, when nothing moved, out of the group entirely.
                 m.move_focus(egui::FocusDirection::None);
             });
         }
@@ -1737,6 +1759,228 @@ mod tests {
         run(&ctx, &mut selected, arrow_input);
         run(&ctx, &mut selected, egui::RawInput::default());
         assert_eq!(selected, Some(2));
+    }
+
+    #[test]
+    fn arrows_wrap_at_edges_and_left_right_navigate() {
+        // Settled OPEN-1 (RAD-INT-02): loop=true by default and no
+        // orientation is set, so ALL FOUR arrows navigate (Left/Up =
+        // previous, Right/Down = next), wrapping at both edges, with
+        // selection following every move. Fails pre-fix: no wrap and
+        // Left/Right unhandled.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(0);
+        let base = egui::Id::unique("radio_wrap_test").with("radio_wrap");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_wrap_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_wrap")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(want));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        // Up from the first item wraps to the last.
+        press(&ctx, &mut selected, Key::ArrowUp);
+        check(&ctx, &selected, 2);
+        // Down from the last item wraps to the first.
+        press(&ctx, &mut selected, Key::ArrowDown);
+        check(&ctx, &selected, 0);
+        // Left/Right mid-group.
+        press(&ctx, &mut selected, Key::ArrowDown);
+        check(&ctx, &selected, 1);
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 1);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 2);
+        // Left from the first wraps to the last; Right from the last
+        // wraps to the first.
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 1);
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 0);
+    }
+
+    #[test]
+    fn arrows_skip_disabled_across_wrap_boundary() {
+        // Settled OPEN-1 (RAD-INT-02): disabled items are skipped in
+        // both directions AND across the wrap boundary — wrapping from
+        // the first item lands on the last ENABLED item, not on a
+        // disabled neighbour of the edge.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(0);
+        let base = egui::Id::unique("radio_wrapskip_test").with("radio_wrapskip");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_wrapskip_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_wrapskip")
+                    .option("A")
+                    .option_disabled("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(want));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        // Up from the first wraps past the disabled middle item to C.
+        press(&ctx, &mut selected, Key::ArrowUp);
+        check(&ctx, &selected, 2);
+        // Down from the last wraps back to A.
+        press(&ctx, &mut selected, Key::ArrowDown);
+        check(&ctx, &selected, 0);
+        // Left/Right wrap with the same skip.
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 0);
+        // Down from A skips B mid-group (kept behaviour).
+        press(&ctx, &mut selected, Key::ArrowDown);
+        check(&ctx, &selected, 2);
+    }
+
+    #[test]
+    fn horizontal_group_arrows_wrap_uniformly() {
+        // G6 amendment (RAD-INT-02): the roving handler applies
+        // uniformly regardless of orientation — the horizontal group
+        // gets the same wrap + all-four-arrows model as vertical
+        // groups. No orientation gating.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(0);
+        let base = egui::Id::unique("radio_hwrap_test").with("radio_hwrap");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_hwrap_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_hwrap")
+                    .orientation(GroupOrientation::Horizontal)
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(want));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        press(&ctx, &mut selected, Key::ArrowUp);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::ArrowDown);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::ArrowRight);
+        check(&ctx, &selected, 1);
+        press(&ctx, &mut selected, Key::ArrowLeft);
+        check(&ctx, &selected, 0);
+    }
+
+    #[test]
+    fn single_item_group_arrow_is_noop() {
+        // Spec §9 edge case (RAD-INT-02): a single-item group has
+        // nowhere to move — an arrow key leaves focus and selection
+        // unchanged (the group consumes the key; egui's spatial nav
+        // must not carry focus out of the group).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = None;
+        let base = egui::Id::unique("radio_single_test").with("radio_single");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_single_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_single")
+                    .option("A")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        for key in [
+            Key::ArrowDown,
+            Key::ArrowUp,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+        ] {
+            run(&ctx, &mut selected, key_input(key));
+            run(&ctx, &mut selected, egui::RawInput::default());
+            assert_eq!(selected, None);
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
+        }
     }
 
     #[test]
