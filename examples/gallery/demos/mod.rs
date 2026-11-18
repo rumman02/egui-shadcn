@@ -3098,7 +3098,7 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
         "Checkbox — one size, no variants. Active recipe: {recipe} (style: {}, mode: {mode}).",
         theme.style.name()
     ));
-    ui.label("Box 16px, radius 4px, 1px border, 14px icon box, 3px ring (§3). Transition 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the OPEN-8 interim framework default, not snapshot-verified. OPEN-1 Radix key/click semantics are open for S6 Work B; OPEN-2 indeterminate rendering is PROVISIONAL (no icon); OPEN-4 combined-state precedence is PROVISIONAL.");
+    ui.label("Box 16px, radius 4px, 1px border, 14px icon box, 3px ring (§3). Transition 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the OPEN-8 interim framework default, not snapshot-verified. OPEN-1 Radix key/click semantics settled by S6 Work B (all (a)-(h) closed); OPEN-2 settled — indeterminate renders the Check icon; OPEN-4 combined-state precedence is PROVISIONAL.");
 
     let store = egui::Id::unique("checkbox_demo_values");
     let mut values: [bool; 13] = ui.ctx().data_mut(|d| {
@@ -3218,13 +3218,14 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
         ind_rect.height()
     ));
 
-    // 5. Indeterminate (spec §4.4 / OPEN-2): PROVISIONAL rendering —
-    // unchecked-recipe box, NO icon. The minus glyph was removed as a
-    // port invention (D3); whether the Radix Indicator renders (and
-    // what glyph) awaits S6 Work B / S4 evidence. S5 must NOT judge
-    // this row as parity and must NOT file the missing icon.
+    // 5. Indeterminate (spec §4.4 / OPEN-2, settled by S6 Work B):
+    // unchecked-recipe box + the Check icon (the Radix Indicator
+    // renders in this state with the consumer's CheckIcon; the minus
+    // glyph was a port invention, D3 unexercised). S10 verified the
+    // render by the coverage model (glyph masks pixel-identical to
+    // the checked icon).
     ui.add_space(12.0);
-    ui.label("5. Indeterminate — PROVISIONAL (spec §4.4 / OPEN-2: unchecked-recipe box, NO icon; pending Radix Indicator evidence, S6 Work B / S4 — NOT parity, do not file the missing icon)");
+    ui.label("5. Indeterminate (spec §4.4 / OPEN-2 settled: unchecked-recipe box + Check icon, S10-verified by the coverage model)");
     ui.add_space(4.0);
     let row = ui.horizontal(|ui| {
         let r_ind = Checkbox::new(&mut values[8])
@@ -3239,7 +3240,7 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
     });
     let (ind_rect, e5_rect) = row.inner;
     ui.label(format!(
-        "PROVISIONAL row rect: {:.1} x {:.1} px; indeterminate unchecked: {:.1} x {:.1} px; E5 indeterminate + checked (renders as checked, OPEN-3 proposal): {:.1} x {:.1} px",
+        "row rect: {:.1} x {:.1} px; indeterminate unchecked: {:.1} x {:.1} px; E5 indeterminate + checked (renders as checked, OPEN-3 ratified at S8): {:.1} x {:.1} px",
         row.response.rect.width(),
         row.response.rect.height(),
         ind_rect.width(),
@@ -3322,7 +3323,7 @@ pub fn checkbox_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab moves focus (one stop per checkbox expected, OPEN-1). Which keys toggle, keydown-vs-keyup timing, and click-to-focus behaviour are OPEN-1 (Radix, S6 Work B); the current click-sense activation is implementation, not spec truth.");
+    ui.label("Keyboard (OPEN-1 settled by S6 Work B, S10-verified): Tab moves focus, one stop per checkbox; Space toggles on keyup, once per press; Enter never toggles; arrows/Home/End/Escape do nothing; a direct click focuses AND toggles.");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }

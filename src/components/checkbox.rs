@@ -1,5 +1,14 @@
 //! shadcn `checkbox.tsx` — a binary (or indeterminate) check control.
 //!
+//! Verified final state (Batch B S10, 2026-11-18): all seven defects
+//! (CHK-VIS-01/02, CHK-INT-01…05) verified closed with fresh probes in
+//! all four style/theme combinations; the §4.8 suppression builder is
+//! verified at code + unit level; the label regression is verified on
+//! the final HEAD. Every behavioural statement below cites the S10
+//! report section, the S8 gate item, or the coordinator ruling it
+//! rests on. Statements marked PROVISIONAL/PROPOSED stay that way
+//! until the Expert Reviewer rules.
+//!
 //! Ported from `apps/v4/registry/new-york-v4/ui/checkbox.tsx` (31 lines).
 //! Base recipe — Root class string, verbatim (`checkbox.tsx:16`):
 //!
@@ -43,6 +52,28 @@
 //! (`style-nova.css:291-293`) restates the 14px icon box
 //! (`[&>svg]:size-3.5`).
 //!
+//! Rest rendering: the box is exactly 16px in every state — no state
+//! rule touches size or radius (spec §3.1). There is no hover or
+//! pressed visual: neither recipe has a `hover:*` or `active:*` class
+//! (spec §4.9), and S10 verified hover = resting (round-trip frame
+//! diff 0, hover interiors 0; S10 §12, R6). `shadow-xs` applies in
+//! every state, both styles, both modes, including disabled at
+//! element opacity (spec §4.7). The checkbox is standalone: it has
+//! no group-fusing paint path, and no label, gap, or margin of its
+//! own (spec §3.4).
+//!
+//! Disabled compositing is whole-element GROUP FADE (CSS `opacity`
+//! semantics — spec §4.3, coordinator ruling 7 item 1): the enabled
+//! chrome composites once at 50% over the backdrop; per-slot halving
+//! would double-fade the overlap pixels (the CHK-VIS-01 defect).
+//! S10 closing values, exact in all four combinations (S10 §3):
+//! disabled checked border-over-fill (139) light / (120) dark,
+//! disabled unchecked border (242) light / (33) dark, differential
+//! patches maxdev ≤3. On backdrops other than the theme page
+//! background the overlap pixels use the theme background as the
+//! fade target (a recorded limitation, see the `disabled_composite`
+//! helper).
+//!
 //! Nova deltas that matter here (frozen spec §§2–4): nova ADDS
 //! `aria-invalid:ring-3`, so an invalid-but-unfocused nova checkbox SHOWS a
 //! 3px destructive ring, while the base recipe (ring colour only, no width
@@ -64,7 +95,10 @@
 //! instantly (its colour follows the Root text-colour leg under nova).
 //! The 75ms cross-fade the previous build used has no snapshot basis and
 //! is gone. Disabled opacity is instant in both styles (opacity is in
-//! neither transition set).
+//! neither transition set). S7 verified the property sets hold
+//! exactly in all four combinations (M1–M8 PASS); S10 §12 confirmed
+//! the sets stand on the animator-diff audit + endpoint values (no
+//! new motion evidence claimed).
 //!
 //! Indeterminate (spec §4.4, OPEN-2 CLOSED by S6 Work B, D3): the box
 //! renders the UNCHECKED recipe, and the Indicator renders the `Check`
@@ -75,32 +109,50 @@
 //! inherits the ancestor text colour, the theme `foreground`. The lucide
 //! minus glyph the previous build rendered was a port invention and
 //! stays removed (D3 unexercised — no deviation is needed to render the
-//! `CheckIcon`).
+//! `CheckIcon`). S10 verified the render by the coverage model (mask
+//! peak ~0.967, never single-pixel reads; S10 §4): the indeterminate
+//! and checked glyph masks are pixel-identical, glyph counts 30/30 at
+//! the dev>30 threshold, extremes 18 light / 243 dark. The
+//! indeterminate → next-state rule is settled: indeterminate toggles
+//! to checked (OPEN-1(d), closed by S6 Work B; S10 §12 verified
+//! indeterminate Space → checked).
 //!
 //! Keyboard/click (spec §7, OPEN-1): S6 Work B settled the Radix
 //! semantics from the public Radix Checkbox source (OPEN-1(a)–(h)
 //! CLOSED). Space toggles on KEYUP, once per press, with no repeat
 //! while held (the native `<button>` rule — Radix adds no Space
-//! handler). egui fires Space on keydown, so this build intervenes
-//! (see `space_keyup_fire`, the button BTN-INT-04 shape) to toggle on
-//! keyup. Enter never toggles: the build suppresses Enter keydown
-//! events before `interact` (see `suppress_enter_activation`,
-//! CHK-INT-03), the Radix `preventDefault()` equivalent. A direct
-//! click focuses AND toggles (CHK-INT-01): egui's `interact` never
-//! grants focus on a pointer click, so the build requests focus on
-//! `clicked()`, the button BTN-INT-01 shape. Label-click composition
-//! (spec §7.3) is implemented (CHK-INT-04): the label side is settled
-//! — a label click fires a click on the control AND focuses it. The
-//! label requests focus on the checkbox's returned [`Response::id`]
-//! and pushes a synthetic Space pair, which `interact` reports as a
-//! click on the focused widget (the pair survives the Space-keyup
-//! intervention: both halves arrive in one frame, so the hidden
-//! keydown is re-created on that same frame). In the control-first
-//! (shadcn) layout the label runs AFTER the checkbox, so the
-//! checkbox consumes its own pending click at the top of `show`,
-//! before `interact`; in label-first order the label already
-//! consumed it and the call is a no-op. Bind labels with the
-//! returned `Response::id` (scoped-widget id rule).
+//! handler; S10 §6: hold frames 0/0/0, release one toggle, keycount
+//! 1 press / 1 release). egui fires Space on keydown, so this build
+//! intervenes (see `space_keyup_fire`, the button BTN-INT-04 shape)
+//! to toggle on keyup. Enter never toggles: the build suppresses
+//! Enter keydown events before `interact` (see
+//! `suppress_enter_activation`, CHK-INT-03), the Radix
+//! `preventDefault()` equivalent (S10 §7: Enter 0 throughout, focus
+//! retained). A direct click focuses AND toggles (CHK-INT-01, S10
+//! §5: click 144/196, drag-off 0/0): egui's `interact` never grants
+//! focus on a pointer click, so the build requests focus on
+//! `clicked()`, the button BTN-INT-01 shape. Arrows, Home/End,
+//! PageUp/PageDown, and Escape have no checkbox behaviour
+//! (OPEN-1(c) negatives, closed by S6 Work B; S10 §12 R2: all
+//! interiors 0). Label-click composition (spec §7.3) is implemented
+//! (CHK-INT-04, S10 §8): the label side is settled — a label click
+//! fires a click on the control AND focuses it. The label pushes a
+//! synthetic Space pair, which `interact` reports as a click on the
+//! focused widget (the pair survives the Space-keyup intervention:
+//! both halves arrive in one frame, so the hidden keydown is
+//! re-created on that same frame). In the control-first (shadcn)
+//! layout the label runs AFTER the checkbox, so the checkbox
+//! consumes its own pending click at the top of `show`, before
+//! `interact`; in label-first order the label already consumed it
+//! and the call is a no-op. Focus reaches the target through
+//! DEFERRED forwarding only: the label's immediate `request_focus`
+//! was removed (CHK-INT-05, `aa82b99` — a behaviour change to
+//! `label.rs` carried by the S12 merge), so bound-label focus lands
+//! one pass later than it did before that fix; a disabled checkbox
+//! drops its own pending click, so a disabled pair does nothing —
+//! not even a one-frame focus transient (S10 §9: 0 flips in 180
+//! first-grab captures). Bind labels with the returned
+//! [`Response::id`] (scoped-widget id rule).
 //!
 //! Combined-state precedence (spec §4.6, OPEN-4) is UNESTABLISHED except
 //! for the nova invalid+checked border (`primary`, explicit). The
@@ -119,7 +171,38 @@
 //! standalone S5/S6 do not test it. The indeterminate corner (border
 //! `input`) and the suppression-wins precedence are PROVISIONAL
 //! (coordinator ruling 12); field S8 / the Expert Reviewer may revise
-//! them.
+//! them. Gating is FLAG-ONLY: no own-focus gate (ruling 12). The
+//! builder is verified at code + unit level only (S10 §10: diff read
+//! in full, all 6 pins pass, no resting-paint change); RENDERED
+//! verification of the card composition belongs to field S10 via a
+//! scratch merge (ruling 12 §3) and is NOT claimed here.
+//!
+//! Tracked, NOT implemented: the `mt-px` 1px offset for direct-child
+//! controls in horizontal fields with content (field spec OPEN-6
+//! contract). The field-side accessor lives only on the field
+//! branch, so consumption DEFERS to a dedicated post-field-merge
+//! integration run (coordinator ruling 12 amendment, 2026-11-18);
+//! S10 neither filed nor judged it. No switch follow-up: the `mt-px`
+//! selector names only `[role=checkbox]` and `[role=radio]` (ruling
+//! 12, C10 adjudication).
+//!
+//! Accepted gaps and observations: M9 (resize repaint separation)
+//! is NOT VERIFIED — the environment cannot separate app repaints
+//! from X exposure changes at ~2 fps during resize (S8 gate G2;
+//! S10 did not re-attempt it). The theme-switch fill-snap limitation
+//! (S1-known, spec §6-silent) stays an observation, not a defect
+//! (S8 gate G7).
+//!
+//! OPEN dispositions: OPEN-1(a)–(h) and OPEN-2 CLOSED by S6 Work B;
+//! OPEN-3 RATIFIED at S8 (separate `.indeterminate(bool)` flag; E5
+//! renders as checked); OPEN-4 stays PROVISIONAL (gate G4); OPEN-6
+//! settled by the light-token-divergence note (Palette follows
+//! `themes.ts`); OPEN-8 stays INTERIM (150ms framework default);
+//! OPEN-5/OPEN-7/OPEN-9 stay OPEN. Deviations: D1 (`:focus-visible`
+//! modality — the ring shows whenever the checkbox holds focus,
+//! regardless of how focus arrived) stays PROPOSED for the Expert
+//! Reviewer; D3 stays unexercised (no deviation needed to render
+//! the `CheckIcon`); D2/D4/D7 are recorded limitations.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -550,7 +633,9 @@ impl<'a> Checkbox<'a> {
 
     /// Shows the indeterminate (mixed) state. Display-only; the caller
     /// owns the tri-state logic, and clicking toggles the bound boolean
-    /// (the indeterminate → next-state rule is OPEN-1).
+    /// (the settled Radix rule is indeterminate → checked on toggle:
+    /// OPEN-1(d), closed by S6 Work B; S10 §12 verified indeterminate
+    /// Space → checked).
     ///
     /// Rendering (spec §4.4, OPEN-2 settled by S6 Work B): the box
     /// renders the unchecked recipe with the `Check` icon in the
