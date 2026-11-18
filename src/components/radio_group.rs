@@ -60,8 +60,10 @@
 //! previous, Right/Down = next), wrapping at the edges (`loop = true`
 //! by default; no orientation is set, so the filter never engages)
 //! and skipping disabled items, uniformly for vertical and horizontal
-//! groups (gate G6 amendment). Home/End/PageUp/PageDown are
-//! RAD-INT-03's, not yet built. Space activates the focused item and
+//! groups (gate G6 amendment). Home/PageUp move focus to the first
+//! focusable item and End/PageDown to the last, skipping disabled
+//! items, WITHOUT changing the selection (focus-only; settled OPEN-2),
+//! and the stored tab stop follows the move. Space activates the focused item and
 //! Enter checks it (RAD-INT-04/05 own the phases); clicks select and
 //! never uncheck, but do not focus yet (RAD-INT-06). Focus-visible
 //! modality is proposed deviation D1 (the ring shows on any focus;
@@ -777,6 +779,19 @@ fn render_items(
             .filter(|&i| i < options.len() && !disabled && !options[i].disabled)
             .or(first_enabled),
     };
+    // Whether focus is inside this group at pass start. When it is, the
+    // focused item is the group's sole Tab stop (Radix
+    // `roving-focus-group.tsx:306`: every item `onFocus` updates the
+    // current tab stop), so Tab leaves the group directly. When focus
+    // is outside, the entry candidate above (checked → stored → first)
+    // is the sole stop, and Tab entry lands on it. The jump keys
+    // (RAD-INT-03) are the first mechanism to separate focus from the
+    // checked item; without this distinction Tab from a jumped-to item
+    // would visit the checked item first (two focusable items).
+    let focus_in_group = ui
+        .ctx()
+        .memory(|m| m.focused())
+        .is_some_and(|id| (0..options.len()).any(|i| group_id.with(i) == id));
     let mut responses: Vec<Response> = Vec::with_capacity(options.len());
     for (i, option) in options.iter().enumerate() {
         let item_disabled = disabled || option.disabled;
@@ -815,20 +830,27 @@ fn render_items(
                 .show(&mut child);
         }
 
-        // Roving tabindex: only the tab-stop item is focusable, so Tab
-        // visits one stop per group. The other enabled items stay
+        // Roving tabindex: exactly one item per group is focusable, so
+        // Tab visits one stop per group. While focus is inside the
+        // group, the FOCUSED item is the sole stop (see
+        // `focus_in_group` above); while focus is outside, the entry
+        // candidate (`tab_stop`) is. The other enabled items stay
         // clickable (`Sense::CLICK`, no FOCUSABLE bit) but are invisible
         // to Tab and to egui's spatial arrow navigation; arrows are
         // handled component-level below. An item that already holds
         // focus (label-forwarded focus is requested earlier in this
         // same pass, before this interact) MUST stay focusable:
         // egui's `create_widget` calls `ignore_focus` on a
-        // non-focusable widget and clears focus it holds. Disabled
+        // non-focusable widget and clears focus it holds — so the
+        // focus-holder is focusable unconditionally, which also covers
+        // the label-click pass where the snapshot above still says
+        // focus is outside (a one-pass transient also present in the
+        // INT-01 model; the next pass restores a single stop). Disabled
         // items are not focusable (`Sense::hover`).
         let holds_focus = ui.ctx().memory(|m| m.has_focus(item_id));
         let sense = if item_disabled {
             Sense::hover()
-        } else if tab_stop == Some(i) || holds_focus {
+        } else if holds_focus || (!focus_in_group && tab_stop == Some(i)) {
             Sense::click()
         } else {
             Sense::CLICK
@@ -881,8 +903,9 @@ fn render_items(
     // arrows while focus is inside it, so egui's spatial move is
     // cancelled even when nothing moves (else `end_pass` would carry
     // focus out of the group). Modifier+arrow receives NO handling
-    // (gate G5, HEAD Radix behaviour). Home/End, PageUp/PageDown,
-    // Enter, Space, and Escape are untouched (RAD-INT-03…05/07 own
+    // (gate G5, HEAD Radix behaviour). Home/End and PageUp/PageDown
+    // are handled by the jump leg below (RAD-INT-03, settled OPEN-2);
+    // Enter, Space, and Escape are untouched (RAD-INT-04/05/07 own
     // them).
     let focused_id = ui.ctx().memory(|m| m.focused());
     let focused_idx =
@@ -945,6 +968,76 @@ fn render_items(
                 // the key event, and `end_pass` would otherwise move
                 // focus AGAIN, starting from the newly focused item —
                 // or, when nothing moved, out of the group entirely.
+                m.move_focus(egui::FocusDirection::None);
+            });
+        }
+    }
+
+    // Roving tabindex, jump leg (RAD-INT-03; settled OPEN-2):
+    // Home/PageUp move focus to the FIRST focusable item, End/PageDown
+    // to the LAST, skipping disabled items — and the move is
+    // FOCUS-ONLY. These keys are not in Radix `ARROW_KEYS`, so no
+    // synthetic click fires and selection is unchanged. This leg
+    // deliberately never writes `*selected` and never calls
+    // `mark_changed()`; there is no focus-gain follower, so focus
+    // landing on an item checks nothing by itself. The stored tab stop
+    // DOES follow the move (Radix `roving-focus-group.tsx:306`: every
+    // item `onFocus` updates the current tab stop) — it only takes
+    // effect while the group has no selection, since the checked item
+    // wins the tab-stop computation at entry. Uniform for vertical and
+    // horizontal groups alike (gate G6 amendment — no orientation
+    // gating, same as the arrow leg). A jump key is consumed even when
+    // nothing moves (already at the edge, or a single-item group), so
+    // the spatial direction is cancelled whenever a jump keydown was
+    // collected while focus is in the group. Modifier+jump receives NO
+    // handling (G5 spirit). Focus is re-read here, after the arrow
+    // leg, so a combined arrow+jump burst in one pass applies
+    // sequentially (arrow first, then jump from the new position),
+    // matching Radix's per-event semantics.
+    let focused_id = ui.ctx().memory(|m| m.focused());
+    let focused_idx =
+        focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
+    if let Some(current) = focused_idx {
+        let jumps: Vec<bool> = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !modifiers.any() => match key {
+                        egui::Key::Home | egui::Key::PageUp => Some(false),
+                        egui::Key::End | egui::Key::PageDown => Some(true),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        });
+        let last_enabled = options.iter().rposition(|o| !disabled && !o.disabled);
+        let mut target = current;
+        for &to_last in jumps.iter() {
+            let dest = if to_last { last_enabled } else { first_enabled };
+            if let Some(dest) = dest {
+                target = dest;
+            }
+        }
+        if !jumps.is_empty() {
+            let moved = target != current;
+            if moved {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(group_id.with("tab_stop"), target));
+            }
+            ui.ctx().memory_mut(|m| {
+                if moved {
+                    m.request_focus(group_id.with(target));
+                }
+                // Cancel any spatial move for this pass, mirroring the
+                // arrow leg: the group owns unmodified jump keys while
+                // focus is inside it.
                 m.move_focus(egui::FocusDirection::None);
             });
         }
@@ -1981,6 +2074,378 @@ mod tests {
             assert_eq!(selected, None);
             assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
         }
+    }
+
+    #[test]
+    fn jump_keys_move_focus_only_to_first_and_last() {
+        // Settled OPEN-2 (RAD-INT-03): Home/PageUp move focus to the
+        // FIRST focusable item, End/PageDown to the LAST, and the move
+        // is focus-only — selection is UNCHANGED (these keys are not
+        // in Radix ARROW_KEYS, so no synthetic click fires). Edge
+        // presses are no-op moves that keep focus in the group.
+        // Fails pre-fix: all four keys are complete no-ops.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(1);
+        let base = egui::Id::unique("radio_jump_test").with("radio_jump");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_jump_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_jump")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(1));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+
+        // Home/PageUp from the middle land on the first item.
+        press(&ctx, &mut selected, Key::Home);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::ArrowDown);
+        assert_eq!(selected, Some(1));
+        press(&ctx, &mut selected, Key::PageUp);
+        check(&ctx, &selected, 0);
+        // Home from the first item is a no-op move (focus stays).
+        press(&ctx, &mut selected, Key::Home);
+        check(&ctx, &selected, 0);
+        // End/PageDown from the first land on the last item.
+        press(&ctx, &mut selected, Key::End);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::ArrowUp);
+        assert_eq!(selected, Some(1));
+        press(&ctx, &mut selected, Key::PageDown);
+        check(&ctx, &selected, 2);
+        // End from the last item is a no-op move (focus stays).
+        press(&ctx, &mut selected, Key::End);
+        check(&ctx, &selected, 2);
+    }
+
+    #[test]
+    fn jump_keys_skip_disabled_items_including_edges() {
+        // Settled OPEN-2 (RAD-INT-03): jump targets are the first/last
+        // ENABLED item — disabled items are skipped even at the edges,
+        // where no demo group exercises the case (rendered probes cover
+        // the disabled-middle group only). Focus-only throughout.
+        // Fails pre-fix: the keys do nothing at all.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(1);
+        let base = egui::Id::unique("radio_jumpskip_test").with("radio_jumpskip");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_jumpskip_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_jumpskip")
+                    .option_disabled("A")
+                    .option("B")
+                    .option("C")
+                    .option_disabled("D")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(1));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+
+        // End skips the disabled last item, landing on C.
+        press(&ctx, &mut selected, Key::End);
+        check(&ctx, &selected, 2);
+        // Home skips the disabled first item, landing on B.
+        press(&ctx, &mut selected, Key::Home);
+        check(&ctx, &selected, 1);
+        // PageUp/PageDown honour the same edges.
+        press(&ctx, &mut selected, Key::PageDown);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::PageUp);
+        check(&ctx, &selected, 1);
+    }
+
+    #[test]
+    fn jump_keys_update_stored_tab_stop() {
+        // Radix roving-focus (`roving-focus-group.tsx:306`): the item
+        // `onFocus` handler calls `onItemFocus(id)`, so ANY focus
+        // landing — including a jump-key move — updates the current
+        // tab stop. The stored stop only takes effect while the group
+        // has no selection (the checked item wins at entry); the
+        // rendered probes assert the re-entry behaviour, this pin
+        // asserts the stored write itself. Fails pre-fix: no move, no
+        // write.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected: Option<usize> = None;
+        let base = egui::Id::unique("radio_jumpstop_test").with("radio_jumpstop");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_jumpstop_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_jumpstop")
+                    .option("A")
+                    .option("B")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let stored =
+            |ctx: &egui::Context| ctx.data_mut(|d| d.get_temp::<usize>(base.with("tab_stop")));
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+        assert_eq!(stored(&ctx), None);
+
+        // End moves focus to B and stores it as the tab stop.
+        run(&ctx, &mut selected, key_input(Key::End));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(selected, None);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+        assert_eq!(stored(&ctx), Some(1));
+
+        // Home moves focus back to A and stores that.
+        run(&ctx, &mut selected, key_input(Key::Home));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(selected, None);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
+        assert_eq!(stored(&ctx), Some(0));
+    }
+
+    #[test]
+    fn single_item_group_jump_keys_are_noop() {
+        // Spec §9 edge case (RAD-INT-03): a single-item group has
+        // nowhere to jump — Home/End/PageUp/PageDown leave focus and
+        // selection unchanged (the group consumes the key; focus must
+        // not leak out). Passes red too: the keys are no-ops pre-fix
+        // for the wrong reason (unhandled). The pin guards the
+        // consume-without-move behaviour against regressions.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = None;
+        let base = egui::Id::unique("radio_single_jump_test").with("radio_single_jump");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_single_jump_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_single_jump")
+                    .option("A")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(0usize)));
+
+        for key in [Key::Home, Key::End, Key::PageUp, Key::PageDown] {
+            run(&ctx, &mut selected, key_input(key));
+            run(&ctx, &mut selected, egui::RawInput::default());
+            assert_eq!(selected, None);
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
+        }
+    }
+
+    #[test]
+    fn horizontal_group_jump_keys_uniform() {
+        // G6 amendment (RAD-INT-03): the roving handler never reads
+        // orientation, so the horizontal group gets the same
+        // focus-only jump model as vertical groups. Fails pre-fix.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(1);
+        let base = egui::Id::unique("radio_hjump_test").with("radio_hjump");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_hjump_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_hjump")
+                    .orientation(GroupOrientation::Horizontal)
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+        let check = |ctx: &egui::Context, selected: &Option<usize>, want: usize| {
+            assert_eq!(*selected, Some(1));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(want)));
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+
+        press(&ctx, &mut selected, Key::Home);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::End);
+        check(&ctx, &selected, 2);
+        press(&ctx, &mut selected, Key::PageUp);
+        check(&ctx, &selected, 0);
+        press(&ctx, &mut selected, Key::PageDown);
+        check(&ctx, &selected, 2);
+    }
+
+    #[test]
+    fn modified_jump_keys_unhandled() {
+        // G5 spirit (RAD-INT-03): modified jump keys receive NO
+        // handling — no movement, no selection change, focus stays.
+        // Passes red too (unhandled pre-fix); the pin guards the
+        // no-handling rule against a future over-eager handler.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut selected = Some(1);
+        let base = egui::Id::unique("radio_modjump_test").with("radio_modjump");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_modjump_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_modjump")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+
+        for (key, mods) in [
+            (Key::Home, egui::Modifiers::SHIFT),
+            (Key::End, egui::Modifiers::CTRL),
+            (Key::PageUp, egui::Modifiers::ALT),
+            (Key::PageDown, egui::Modifiers::COMMAND),
+        ] {
+            run(&ctx, &mut selected, key_input_mod(key, mods));
+            run(&ctx, &mut selected, egui::RawInput::default());
+            assert_eq!(selected, Some(1));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+        }
+    }
+
+    #[test]
+    fn tab_leaves_group_after_jump_and_reentry_lands_on_checked() {
+        // RAD-INT-03, sense rule: the jump keys are the first mechanism
+        // to separate focus from the checked item, and Tab must still
+        // visit exactly one stop per group. While focus is inside the
+        // group, the FOCUSED item is the sole Tab stop (Radix
+        // `onItemFocus`: any focus landing updates the current tab
+        // stop), so Tab leaves the group directly; re-entry lands on
+        // the CHECKED item (Radix entry order [active, current, ...]).
+        // Fails pre-sense-fix: Tab from the jumped-to item lands on the
+        // checked item first (two focusable items in the group).
+        let ctx = test_ctx();
+        let sel_a = std::cell::RefCell::new(Some(1));
+        let sel_b = std::cell::RefCell::new(None);
+        let ids = std::cell::Cell::new([Id::NULL; 5]);
+
+        let render = |ui: &mut Ui| {
+            let base = ui.scope_id();
+            ids.set([
+                base.with("jump_tab_a").with(0usize),
+                base.with("jump_tab_a").with(1usize),
+                base.with("jump_tab_a").with(2usize),
+                base.with("jump_tab_b").with(0usize),
+                base.with("jump_tab_b").with(1usize),
+            ]);
+            RadioGroup::new(&mut sel_a.borrow_mut())
+                .id_salt("jump_tab_a")
+                .option("A0")
+                .option("A1")
+                .option("A2")
+                .show(ui);
+            RadioGroup::new(&mut sel_b.borrow_mut())
+                .id_salt("jump_tab_b")
+                .option("B0")
+                .option("B1")
+                .show(ui);
+        };
+
+        let focused = |ctx: &egui::Context| ctx.memory(|m| m.focused());
+
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        let [a0, a1, _a2, b0, _b1] = ids.get();
+        ctx.memory_mut(|mem| mem.request_focus(a1));
+
+        // Home: focus-only move to A0; selection stays on A1.
+        run_ui(&ctx, key_input(Key::Home), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a0));
+        assert_eq!(*sel_a.borrow(), Some(1));
+
+        // Tab leaves the group directly to B's stop (first enabled).
+        run_ui(&ctx, key_input(Key::Tab), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(b0));
+
+        // Shift+Tab back in: re-entry lands on the CHECKED item.
+        let shift = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        run_ui(&ctx, key_input_mod(Key::Tab, shift), |ui| render(ui));
+        run_ui(&ctx, egui::RawInput::default(), |ui| render(ui));
+        assert_eq!(focused(&ctx), Some(a1));
+        assert_eq!(*sel_a.borrow(), Some(1));
     }
 
     #[test]
