@@ -118,7 +118,8 @@ use crate::utils::shadow::{
     paint_shadow_layers, paint_shadow_resolved, resolve_shadow, ShadowLayer, ShadowSize, ShadowSlot,
 };
 use egui::{
-    Color32, CornerRadius, EventFilter, Key, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
+    Color32, CornerRadius, Event, EventFilter, Key, Painter, Pos2, Rect, Response, Sense, Stroke,
+    Ui, Vec2,
 };
 
 /// `size-4` — the (base) thumb diameter; nova renders `size-3` (12pt).
@@ -990,12 +991,22 @@ impl<'a> Slider<'a> {
                     );
                 });
                 // Shift state for the Radix `isSkipKey` rule (SLD-INT-01):
-                // `InputState::modifiers` is updated only from
-                // `Event::ModifiersChanged`, which the backend sends on
-                // modifier press/release, so it reflects the modifiers
-                // held at the time of the arrow press.
+                // read from the Key event itself, NOT from
+                // `InputState::modifiers`. `modifiers` holds the
+                // frame-END state (updated only from
+                // `Event::ModifiersChanged`), so a whole synthetic
+                // press — Shift down, arrow press/release, Shift up —
+                // landing in one frame reads as "no modifiers" and
+                // steps 1× (observed in the rendered after-phase
+                // probes: only the first Shift+Arrow stepped 10×). The
+                // Key event carries "the state of the modifier keys at
+                // the time of the event" (egui 0.37 `Event::Key`), which
+                // survives coalescing — the Radix `shiftKey`
+                // equivalent. This scan is exactly consistent with
+                // `key_pressed`, which `num_presses` implements by
+                // scanning the same events vector for `Event::Key {
+                // pressed: true, .. }`.
                 let (pressed_key, shift) = ui.input(|inp| {
-                    let shift = inp.modifiers.shift;
                     let pressed_key = [
                         Key::ArrowRight,
                         Key::ArrowUp,
@@ -1008,6 +1019,19 @@ impl<'a> Slider<'a> {
                     ]
                     .into_iter()
                     .find(|key| inp.key_pressed(*key));
+                    let shift = pressed_key.is_some_and(|key| {
+                        inp.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                Event::Key {
+                                    key: event_key,
+                                    pressed: true,
+                                    modifiers,
+                                    ..
+                                } if *event_key == key && modifiers.shift
+                            )
+                        })
+                    });
                     (pressed_key, shift)
                 });
                 if let Some(key) = pressed_key {
@@ -2100,9 +2124,10 @@ mod tests {
         // The modifier reaches `show()` two ways, and this pin sends
         // both, mirroring a real backend: the Key event carries
         // `modifiers` (which `Focus::begin_pass` reads, so a modified
-        // arrow never sets a focus direction), and an
-        // `Event::ModifiersChanged` updates `InputState::modifiers`
-        // (which `show()` reads — egui 0.37 updates it ONLY from
+        // arrow never sets a focus direction, and which `show()` reads
+        // for the `isSkipKey` rule — see the coalesced-frame pin
+        // below), and an `Event::ModifiersChanged` updates
+        // `InputState::modifiers` (which egui 0.37 updates ONLY from
         // `ModifiersChanged`, never from a Key event's own modifiers
         // field).
         use egui::{Event, Key, Modifiers};
@@ -2321,6 +2346,88 @@ mod tests {
             0.0,
             "Shift+Left clamp",
         );
+    }
+
+    #[test]
+    fn shift_arrow_coalesced_frame_steps_ten_times_sld_int_01() {
+        // SLD-INT-01 follow-up: the Shift state must come from the Key
+        // event itself, not from `InputState::modifiers`. Under load a
+        // whole synthetic press — Shift down, arrow press/release,
+        // Shift up — can land in ONE frame (exactly what `xdotool key
+        // shift+Right` produces at ~1 fps, and what the rendered
+        // after-phase probes showed: only the first Shift+Arrow stepped
+        // 10×, every later one stepped 1×, because frame-end
+        // `modifiers` had already returned to "no modifiers"). The Key
+        // event carries "the state of the modifier keys at the time of
+        // the event" (egui 0.37 `Event::Key`), so it survives
+        // coalescing — the Radix `shiftKey` equivalent. RED on the
+        // `inp.modifiers.shift` reading: the burst below lands on 2.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut v = 1.0f32;
+
+        let run_frame = |ctx: &egui::Context, v: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int01"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(v)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int01")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut v, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int01")
+            .with("int01")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        run_frame(&ctx, &mut v, 1.1, vec![]);
+        run_frame(&ctx, &mut v, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        // One frame, the whole burst: Shift down, arrow press/release,
+        // Shift up — frame-end modifiers are NONE, but the Key event
+        // itself carried Shift.
+        let key_ev = |key: Key, pressed: bool, mods: Modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: mods,
+        };
+        let burst = |key: Key| {
+            vec![
+                Event::ModifiersChanged(Modifiers::SHIFT),
+                key_ev(key, true, Modifiers::SHIFT),
+                key_ev(key, false, Modifiers::SHIFT),
+                Event::ModifiersChanged(Modifiers::default()),
+            ]
+        };
+        run_frame(&ctx, &mut v, 1.4, burst(Key::ArrowRight));
+        assert_eq!(v, 11.0, "coalesced Shift+Right: value");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "coalesced Shift+Right: focus must stay on the thumb"
+        );
+        run_frame(&ctx, &mut v, 1.6, burst(Key::ArrowLeft));
+        assert_eq!(v, 1.0, "coalesced Shift+Left: value");
     }
 
     #[test]
