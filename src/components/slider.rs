@@ -84,7 +84,8 @@
 //! move 10 × step (W-2, one named place); thumbs clamp to their neighbours
 //! without pushing or swapping (W-5); track presses move the nearest thumb
 //! and begin a drag (W-6a/W-6b); every thumb is a Tab stop in value order
-//! (W-9). Pointerdown on a thumb focuses it, and every user-driven value
+//! (W-9). The track itself is not a Tab stop (SLD-INT-05): it paints no
+//! ring and handles no keys, so only thumb ids are focusable. Pointerdown on a thumb focuses it, and every user-driven value
 //! change re-focuses the changed thumb (Radix focus model, SLD-INT-03),
 //! so arrow keys act on the thumb just clicked or dragged. Default step
 //! is 1% of the range (W-1, OPEN-1, one named constant).
@@ -743,10 +744,31 @@ impl<'a> Slider<'a> {
         // Track interaction: the thumbs are interacted after the track, so
         // they win when the pointer is directly over them. A disabled
         // control takes no focus and no input (spec §8.4, W-10).
+        //
+        // SLD-INT-05: the track itself must NOT be focusable. The
+        // enabled track used `Sense::drag()` (`DRAG | FOCUSABLE`), so
+        // its id (`id.with("track")`) was a Tab stop — and a silent
+        // one: nothing paints a ring for the track id, and the keyboard
+        // block below reads thumb responses only, so arrows at a track
+        // stop changed nothing anywhere. Tab order is the pass order
+        // of focusable interacts (egui's give-to-next), and the track
+        // is interacted before the thumbs, so each slider contributed
+        // one gap stop BEFORE its thumbs — the gap S6 filed "after"
+        // each slider's thumbs is the NEXT slider's track id (the
+        // pin `tab_walk_lands_only_on_thumbs_no_gap_stops_sld_int_05`
+        // names every landing and proves the identity and order).
+        // `Sense::DRAG` is the documented non-focusable drag sense
+        // (egui `sense.rs`: "Use `Sense::DRAG` if you don't want the
+        // widget to be focusable"). Drag behaviour is unchanged: drag
+        // sensing is independent of focusability, the INT-03 focus
+        // grants target thumb ids (never the track id), and the
+        // keyboard block reads thumb responses only. Removing the
+        // track from the focus cache also removes it as an arrow-key
+        // cone-search landing spot (the INT-04 silent-drop shape).
         let track_sense = if self.disabled {
             Sense::hover()
         } else {
-            Sense::drag()
+            Sense::DRAG
         };
         let track_response = ui.interact(rect, id.with("track"), track_sense);
 
@@ -1888,6 +1910,150 @@ mod tests {
             vec![key_event(Key::ArrowRight, true)],
         );
         assert_eq!(value, 50.0, "arrows must stay inert when disabled");
+    }
+
+    #[test]
+    fn tab_walk_lands_only_on_thumbs_no_gap_stops_sld_int_05() {
+        // SLD-INT-05: every Tab stop in a slider must be a thumb with a
+        // visible ring (spec §8.1/§8.5, W-9: every thumb is a Tab stop
+        // in value order, no roving model). The track id must NOT be a
+        // Tab stop: nothing paints a ring for it and no key handling
+        // reads it, so a Tab landing on it is a silent gap stop that
+        // shows nothing and does nothing. This pin Tab-walks one
+        // single-thumb slider and one range slider and NAMES every
+        // landing; on the unfixed tree the landings include the track
+        // ids, which is the empirical proof of the gap-stop mechanism
+        // (which id holds focus at a gap stop, and where it sits in
+        // the Tab order). Focus is read after a settle frame: a wrap
+        // landing is granted on the frame AFTER the Tab (the
+        // give-to-next flag survives to the next pass), and a
+        // Shift+Tab landing is frame-delayed by construction
+        // (`id_next_frame`), so a read taken on the Tab frame itself
+        // would see `None` at exactly those landings.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut a = 50.0f32;
+        let mut b = (30.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context,
+                         a: &mut f32,
+                         b: &mut (f32, f32),
+                         time: f64,
+                         events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui_a = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int05_a"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(a)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int05-a")
+                    .show(ui_a);
+                let ui_b = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int05_b"),
+                    egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                        Pos2::new(0.0, 100.0),
+                        Vec2::new(200.0, 24.0),
+                    )),
+                );
+                Slider::range(b)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int05-b")
+                    .show(ui_b);
+            });
+            out.textures_delta.clear();
+        };
+
+        // Id chains mirror `show()`: scope id + salt + "track"/"thumb"
+        // + the usize index.
+        let scope_a = egui::Id::unique("slider_int05_a").with("int05-a");
+        let scope_b = egui::Id::unique("slider_int05_b").with("int05-b");
+        let track_a = scope_a.with("track");
+        let thumb_a = scope_a.with("thumb").with(0usize);
+        let track_b = scope_b.with("track");
+        let thumb_b0 = scope_b.with("thumb").with(0usize);
+        let thumb_b1 = scope_b.with("thumb").with(1usize);
+        let name = |id: Option<egui::Id>| -> &'static str {
+            match id {
+                Some(x) if x == track_a => "track_a",
+                Some(x) if x == thumb_a => "thumb_a",
+                Some(x) if x == track_b => "track_b",
+                Some(x) if x == thumb_b0 => "thumb_b0",
+                Some(x) if x == thumb_b1 => "thumb_b1",
+                Some(_) => "other",
+                None => "none",
+            }
+        };
+
+        // Frame 1: register both sliders. No focus yet.
+        run_frame(&ctx, &mut a, &mut b, 1.0, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+
+        // Six Tabs: two full cycles of the three thumb stops after the
+        // fix (wrap included); on the unfixed tree the five-stop cycle
+        // (two tracks + three thumbs) shows up inside six Tabs too.
+        let mut landings: Vec<&'static str> = Vec::new();
+        for k in 1..=6 {
+            let t = 1.0 + f64::from(k) * 0.2;
+            run_frame(&ctx, &mut a, &mut b, t, vec![key_event(Key::Tab, true)]);
+            run_frame(
+                &ctx,
+                &mut a,
+                &mut b,
+                t + 0.1,
+                vec![key_event(Key::Tab, false)],
+            );
+            landings.push(name(ctx.memory(|m| m.focused())));
+        }
+        assert_eq!(
+            landings,
+            ["thumb_a", "thumb_b0", "thumb_b1", "thumb_a", "thumb_b0", "thumb_b1"],
+            "every Tab landing must be a thumb, in layout order, wrapping"
+        );
+
+        // Shift+Tab walks backwards through thumbs only: from thumb_b1
+        // back to thumb_b0, thumb_a, then wrap to thumb_b1.
+        let shift_tab = |pressed: bool| Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        };
+        let mut back: Vec<&'static str> = Vec::new();
+        for k in 1..=3 {
+            let t = 2.5 + f64::from(k) * 0.2;
+            run_frame(&ctx, &mut a, &mut b, t, vec![shift_tab(true)]);
+            run_frame(&ctx, &mut a, &mut b, t + 0.1, vec![shift_tab(false)]);
+            back.push(name(ctx.memory(|m| m.focused())));
+        }
+        assert_eq!(
+            back,
+            ["thumb_b0", "thumb_a", "thumb_b1"],
+            "Shift+Tab must walk backwards through thumbs only"
+        );
     }
 
     #[test]
