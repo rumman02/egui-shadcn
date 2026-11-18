@@ -3903,8 +3903,8 @@ pub fn field_demo(ui: &mut egui::Ui) {
     // Header: what field is + the honest positions (S5/S6 judge labels
     // as part of honesty).
     ui.label("Field — form layout + typography composition: 10 parts, no state of its own (spec §1). Nothing animates (spec §6).");
-    ui.label("Honest positions: the 448px @md breakpoint is a Tailwind v4 framework default, NOT snapshot evidence (OPEN-1). OPEN-3 combined-state precedences are PROVISIONAL (S1 decisions, S8 ratifies). N14 self-wins is PROVISIONAL. Description co-match: legend-follow wins (OPEN-5, S1 decision).");
-    ui.label("Suppression: card sections below do NOT wire .suppress_focus_indication — the builders do not exist on this branch (ruling 12 §3). Nested control rings in card captures are expected pre-merge; S5/S6 must not judge suppression renders here.");
+    ui.label("Honest positions: the 448px @md breakpoint is a Tailwind v4 framework default, NOT snapshot evidence (OPEN-1). OPEN-3 combined-state precedences are PROVISIONAL readings RATIFIED by gate G1. N14 self-wins is PROVISIONAL (RATIFIED, gate G1). Description co-match: legend-follow wins (OPEN-5, RATIFIED as PROVISIONAL, gate G1).");
+    ui.label("Suppression: card sections below do NOT wire .suppress_focus_indication — field S3 cannot wire it (ruling 12 §3). Nested control rings in card captures are expected; rendered §4.8 verification happened at field S10 via scratch merge.");
     ui.label("All for_id bindings use ids captured from the control's returned Response::id on the previous pass (scoped-id rule); Id::NULL on the first pass targets no widget.");
     ui.add_space(12.0);
 
@@ -4157,10 +4157,10 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ));
     ui.add_space(4.0);
 
-    // 2f. PROVISIONAL (S1 decision 2, S8 ratifies): a nested group that
+    // 2f. PROVISIONAL (RATIFIED, gate G1 item 2): a nested group that
     // also carries the checkbox-group slot renders 12px (self wins over
     // the nested 16px).
-    ui.label("2f. PROVISIONAL — nested + .checkbox_group(true): self-wins (expected: 12px both styles; S1 decision, S8 ratifies)");
+    ui.label("2f. PROVISIONAL — nested + .checkbox_group(true): self-wins (expected: 12px both styles; RATIFIED as PROVISIONAL, gate G1)");
     ui.add_space(4.0);
     let (r1, r2) = FieldGroup::new()
         .id_salt("field-s3-s2f-outer")
@@ -4303,8 +4303,8 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ));
     ui.add_space(4.0);
 
-    // 3e. OPEN-5 co-match: both flags — legend-follow wins (S1 decision).
-    ui.label("3e. OPEN-5 co-match: description .after_legend(true) + .second_from_last(true) — legend-follow wins, -6px (expected offset: 30 base / 16 nova; S1 decision, PROVISIONAL)");
+    // 3e. OPEN-5 co-match: both flags — legend-follow wins (RATIFIED as PROVISIONAL, gate G1 item 8).
+    ui.label("3e. OPEN-5 co-match: description .after_legend(true) + .second_from_last(true) — legend-follow wins, -6px (expected offset: 30 base / 16 nova; RATIFIED as PROVISIONAL, gate G1)");
     ui.add_space(4.0);
     let (lr, dr) = FieldSet::new()
         .id_salt("field-s3-s3e-set")
@@ -4687,15 +4687,16 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ));
 
     // §7. Choice cards (F2 + N9). Every card section carries the
-    // suppression-pending label (ruling 12 §3): the nested control's
-    // ring is NOT suppressed on this branch.
+    // suppression label (ruling 12 §3): the nested control's ring is
+    // NOT suppressed in this demo — field S3 cannot wire it, and
+    // §4.8 was verified at S10 via scratch merge.
     ui.add_space(12.0);
     ui.label("7. Choice cards — FieldLabel wrapping a nested Field (F2 click forwarding + N9 focus-inside, spec §2.6/§4.5/§7.2)");
-    ui.label("Suppression wiring pending cross-line merge — nested control rings visible in the cards below are expected pre-merge (ruling 12 §3).");
+    ui.label("Suppression is NOT wired in this demo — field S3 cannot wire it (ruling 12 §3); nested control rings visible in the cards below are expected. Rendered §4.8 verification happened at field S10 via scratch merge.");
     ui.add_space(4.0);
 
     // 7a. Card + switch (unchecked resting state; N9 target).
-    ui.label("7a. Card + switch — unchecked resting state; N9 focus-inside target (nova: border ring + 3px ring/50 halo; base: no card chrome). Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7a. Card + switch — unchecked resting state; N9 focus-inside target (nova: border ring + 3px ring/50 halo; base: no card chrome). Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7a_id;
     let frame = FieldLabel::new("")
@@ -4741,7 +4742,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 
     // 7b. Card + checkbox (checked resting state).
-    ui.label("7b. Card + checkbox — CHECKED resting state (initially on). Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7b. Card + checkbox — CHECKED resting state (initially on). Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7b_id;
     let frame = FieldLabel::new("")
@@ -4787,7 +4788,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 
     // 7c. Card + standalone radio item.
-    ui.label("7c. Card + standalone radio item — unchecked resting state. Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7c. Card + standalone radio item — unchecked resting state. Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7c_id;
     let frame = FieldLabel::new("")
@@ -4834,7 +4835,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
 
     // 7d. Card + text input: card clicks focus the input (no
     // activation, no text inserted).
-    ui.label("7d. Card + text input — card clicks FOCUS the input (no activation, no text inserted). Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7d. Card + text input — card clicks FOCUS the input (no activation, no text inserted). Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7d_id;
     let frame = FieldLabel::new("")
@@ -4872,7 +4873,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
 
     // 7e. Disabled card: 50% opacity, no hover fill, clicks pass
     // through.
-    ui.label("7e. Disabled card — label disabled + switch disabled: 50% opacity, NO hover fill, clicks pass through (spec §4.2/§4.3). Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7e. Disabled card — label disabled + switch disabled: 50% opacity, NO hover fill, clicks pass through (spec §4.2/§4.3). Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7e_id;
     let frame = FieldLabel::new("")
@@ -4922,7 +4923,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     // 7f. COMBINED focus+checked card — observed without verdict
     // (OPEN-3 provisional precedence). Non-empty label text renders
     // above the wrapped field.
-    ui.label("7f. COMBINED focus+checked card — OBSERVED WITHOUT VERDICT (OPEN-3 provisional: focus-inside wins over checked for the border; S1 decision, S8 ratifies). Non-empty label text renders above the wrapped field. Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("7f. COMBINED focus+checked card — OBSERVED WITHOUT VERDICT (OPEN-3 provisional: focus-inside wins over checked for the border; RATIFIED as PROVISIONAL, gate G1 item 1). Non-empty label text renders above the wrapped field. Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     let target = state.s7f_id;
     let frame = FieldLabel::new("Notifications")
@@ -4966,14 +4967,14 @@ pub fn field_demo(ui: &mut egui::Ui) {
         state.s7f_act
     ));
 
-    // §8. Disabled distinction (S1 API decision 3, D1): the label's OWN
+    // §8. Disabled distinction (RATIFIED as settled, gate G1 item 3, D1): the label's OWN
     // .disabled() is the pointer-events-none condition (clicks pass
     // through); the enclosing Field's flag is the opacity-only
     // condition (clicks still forward). Both render 50% opacity. The
     // checkboxes stay enabled in all four combinations so only the
     // label/field flags vary.
     ui.add_space(12.0);
-    ui.label("8. Disabled distinction — own-disabled (pass-through) vs field-disabled (opacity-only, still forwards) (spec §4.2/§7.2; S1 decision 3)");
+    ui.label("8. Disabled distinction — own-disabled (pass-through) vs field-disabled (opacity-only, still forwards) (spec §4.2/§7.2; RATIFIED as settled, gate G1 item 3)");
     ui.add_space(4.0);
 
     ui.label("8a–8d. Plain label + checkbox — click each LABEL: own=false must toggle exactly once; own=true must not toggle (pass-through).");
@@ -5007,7 +5008,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
 
-    ui.label("8e–8h. Choice card + checkbox — click each CARD BODY: own=false must toggle exactly once; own=true must not toggle (pass-through). Suppression wiring pending cross-line merge — nested control rings visible here are expected pre-merge.");
+    ui.label("8e–8h. Choice card + checkbox — click each CARD BODY: own=false must toggle exactly once; own=true must not toggle (pass-through). Suppression NOT wired here (ruling 12 §3); nested control rings expected — §4.8 verified at S10 via scratch merge.");
     ui.add_space(4.0);
     for (i, (own, field)) in [(false, false), (true, false), (false, true), (true, true)]
         .iter()

@@ -1,10 +1,18 @@
 //! shadcn `field.tsx` — form field layout and typography primitives.
 //!
-//! Rebuilt to the frozen Batch B S0 spec (`~/workspace/batch-b/specs/
-//! field-spec.md`): all ten parts, base + nova recipes under LAYER (nova
-//! layers over base; silence keeps the base value). Nothing animates
-//! (spec §6); field parts take no Tab stop and show no focus ring of
-//! their own (spec §7.1/§7.4).
+//! **Verified final state (Batch B S10 PASS at `cfc5388`, zero new
+//! defects).** Rebuilt to the frozen Batch B S0 spec
+//! (`~/workspace/batch-b/specs/field-spec.md`): all ten parts, base +
+//! nova recipes under LAYER (nova layers over base; silence keeps the
+//! base value). S5 judged 12/13 visual checks PASS (check 7 PARTIAL →
+//! FLD-VIS-03, fixed); S6 passed all 10 interaction rows with zero
+//! defects; S7 passed with two accepted qualifications (gate G2); S10
+//! re-verified every defect closure with fresh probes in all 4 configs
+//! (nova/vega × light/dark) and reproduced all 12 S5 checks plus the
+//! S6 R-matrix. Nothing animates (spec §6); field parts take no Tab
+//! stop and show no focus ring of their own (spec §7.1/§7.4) — S6 R1
+//! converged 31 content stops in all configs and both directions, and
+//! field adds ZERO Tab stops (S10 §7b re-verified the map).
 //!
 //! - [`Field`] — a labeled control group (`vertical` / `horizontal` /
 //!   `responsive` orientation, `gap-3` base / `gap-2` nova); `invalid`
@@ -25,7 +33,8 @@
 //!   settled label rule, spec §7.2).
 //! - [`FieldDescription`] — `text-sm text-muted-foreground` helper text
 //!   (21px line box, `leading-normal`), with the three frozen top-margin
-//!   rules (§2.8, OPEN-5 legend-follow-wins).
+//!   rules (§2.8; OPEN-5 legend-follow-wins, RATIFIED as PROVISIONAL,
+//!   gate G1 item 8).
 //! - [`FieldError`] — `text-sm text-destructive`; renders nothing when
 //!   empty, one message as bare text, or a bulleted list after the
 //!   frozen dedup algorithm (N13).
@@ -34,26 +43,107 @@
 //!   (`flex-1`).
 //! - [`FieldGroup`] — stacks fields (`gap-7` base / `gap-5` nova; 16px
 //!   when directly nested in another group, 12px when carrying the
-//!   checkbox-group slot — N14), [`FieldSet`] — a form section (`gap-6`
+//!   checkbox-group slot — N14, self-wins when both hold, RATIFIED as
+//!   PROVISIONAL per gate G1 item 2), [`FieldSet`] — a form section (`gap-6`
 //!   base / `gap-4` nova; 12px with a direct checkbox/radio-group child
 //!   — N14), [`FieldLegend`] — a section heading (`mb-3` base / `mb-1.5`
 //!   nova), and [`FieldSeparator`] — a rule with optional centered text
 //!   (`h-5`, `-my-2` overlap).
 //!
-//! **Field-label focus contract (§4.5, coordinator decision S1).** In a
+//! **Field-label focus contract (§4.5, gate G1 item 4 RATIFIED).** In a
 //! nova card composition the CARD ring is the visible focus indicator,
 //! not the nested control's own ring: the nova checkbox/radio/switch
 //! rules suppress the control's ring inside a field-label group. The
 //! composing code wires this by constructing each card-nested control
 //! with `.suppress_focus_indication(true)` (switch D4, radio-group D6,
-//! and checkbox once the checkbox line lands the mechanism decided in
-//! the field S1 report). The flag is static per composition — the
-//! control suppresses its own indication only while IT holds focus —
-//! and a no-op under the base recipe, where the control ring is the
-//! visible indicator and the card paints no chrome. The card itself
-//! cannot set the flag (it does not construct the control); the
-//! composition author owns the wiring, and S3 demos must wire every
-//! card-nested toggleable control.
+//! checkbox `d234a6b`: an additive builder, nova-only, with the two
+//! provisional corners as built — indeterminate → border `input`,
+//! invalid + suppression → suppression wins). The flag is static per
+//! composition — the control suppresses its own indication only while
+//! IT holds focus — and a no-op under the base recipe, where the
+//! control ring is the visible indicator and the card paints no
+//! chrome. The card itself cannot set the flag (it does not construct
+//! the control); the composition author owns the wiring. Rendered
+//! verification happened at field S10 via a scratch merge of the
+//! integration tree + this line (S10 §5: under nova, suppressed
+//! renders are pixel-identical to rest while the unwired control
+//! shows its ring; under base styles the flag is inert). The gallery
+//! demo does NOT wire suppression — field S3 cannot wire it (ruling
+//! 12 §3) — so nested control rings visible in demo card captures
+//! are expected.
+//!
+//! **S8 gate ratifications (G1).** (1) OPEN-3 combined-state
+//! precedences RATIFIED as PROVISIONAL readings: focus-inside wins
+//! over checked for the border, checked wins over hover for the fill;
+//! combined cases are observed without verdict and the Expert
+//! Reviewer rules. (2) N14 self-wins RATIFIED as PROVISIONAL. (3) The
+//! disabled distinction RATIFIED as settled: the label's own
+//! `.disabled()` is pointer-events-none (clicks pass through), the
+//! enclosing Field's flag is opacity-only (clicks still forward) —
+//! S6 R4 verified all 4 flag combinations × plain+card at runtime,
+//! S10 §7b re-verified. (4) Checkbox §4.8 suppression RATIFIED (see
+//! the focus contract above). (5) The `mt-px` context contract
+//! RATIFIED; consumption is a TRACKED DEFERRAL to the post-field-
+//! merge integration run (see `field_horizontal_content_present`).
+//! (6) Flex-auto treatment RATIFIED: the label stays content-sized,
+//! only "content fills the row" is judged. (7) OPEN-8 RATIFIED: no
+//! fieldset-disabled propagation API. (8) OPEN-5 precedence RATIFIED
+//! as PROVISIONAL: legend-follow `-mt-1.5` wins over second-from-
+//! last `-mt-1` on co-match.
+//!
+//! **Accepted qualifications (gate G2).** Timing is UNRESOLVED on the
+//! code-fact basis: `field.rs` carries zero animation/lerp/ease code
+//! and `field_label_card_colors` is a pure function of state
+//! booleans, so field paint is instant by construction; all 24 S7
+//! video legs show endpoint-only values with settled-endpoint
+//! cross-checks. The render floor is NOT VERIFIED (environment-
+//! limited: 3.97–4.48 fps is load-independent on the 1200×8000
+//! software-rendered surface). **Gate G3:** the dark-nova hover
+//! border-row reading (48 vs resting 35) is a compositing
+//! observation, NOT a defect — the translucent border stroke
+//! composites over the hover-changed fill; hover border-row values
+//! must never be judged against resting expectations.
+//!
+//! **S9 fixes.** FLD-VIS-02: nested Fields OR-accumulate the
+//! enclosing context's `invalid`/`disabled` flags instead of
+//! shadowing them (the single shadowing site in [`Field::show`]);
+//! the disabled half is rendered-verified (S10 §2: §8 titles at
+//! exactly the 50% values in all 4 configs), while the invalid half
+//! is verified at PIN level only — no demo composition nests a Field
+//! inside an invalid outer Field, a recorded verification
+//! limitation, NOT a defect. The fix preserves the G1-item-3
+//! disabled distinction. FLD-VIS-03: the card-form label gap is
+//! exactly 8px in every context because the frame's inner `Ui` pins
+//! `item_spacing.y` to 8px (the pin is the guard against the naive
+//! `add_space` deletion, which would leave a 28px gap inside a
+//! FieldGroup); S10 §3 re-measured D = 26 / gap 7.86 in all configs.
+//!
+//! **Deviations (spec §10).** D1 attribute-selector wiring → explicit
+//! flags (PROPOSED, Expert Reviewer approval); D2 description links
+//! render as plain text (PROPOSED); D3 ARIA/native-element semantics
+//! (limitation, no deviation requested); D4 `:focus-visible` modality
+//! (approved class — pilot button D3); D5 negative margins as
+//! explicit spacing adjustments (implementation note); D6 container
+//! queries measured at layout time (implementation note); D7
+//! `text-wrap: balance` (limitation); D8 `asChild`/Slot (limitation).
+//!
+//! **OPEN dispositions.** OPEN-1: 448px `@md` framework default
+//! (not snapshot evidence). OPEN-2: CONFIRMED — the 19.25px line box
+//! (S5 mean 19.40 ± 0.49, n=20; S10 §7a reproduced). OPEN-3:
+//! PROVISIONAL (gate G1 item 1). OPEN-4: settled by the
+//! light-token-divergence ruling (Palette follows `themes.ts`).
+//! OPEN-5: PROVISIONAL (gate G1 item 8). OPEN-6: contract — the
+//! field side is complete, consumption deferred (see above). OPEN-7:
+//! font family (Phase 1 Inter assumption). OPEN-8: DECIDED — no
+//! propagation API (gate G1 item 7). OPEN-9: observation-only
+//! (bullet marker geometry is a browser default).
+//!
+//! **Accepted gaps.** Same-card focus-move is untestable in the demo
+//! (no 2-control card — OBS-FLD-S6-3, recorded limitation). Direct
+//! click on a card-nested switch does not focus it on the merged
+//! tree (S10 §6) — the recorded ruling-8 observation, harmonization
+//! to the Expert Reviewer; checkbox and input DO focus after a
+//! direct click (OBS-FLD-S6-1 resolved for both).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -74,7 +164,10 @@
 //!     .checked(Some(plan))
 //!     .show_with_card(ui, |ui| {
 //!         Field::new().orientation(FieldOrientation::Horizontal).show(ui, |ui| {
-//!             Checkbox::new(&mut plan).id_salt("plan").show(ui);
+//!             Checkbox::new(&mut plan)
+//!                 .id_salt("plan")
+//!                 .suppress_focus_indication(true)
+//!                 .show(ui);
 //!         });
 //!     });
 //! ```
@@ -177,9 +270,11 @@ fn current_ctx(ui: &Ui) -> FieldCtx {
 ///
 /// The readers land on the checkbox and radio-group lines, which is
 /// why this accessor carries `#[allow(dead_code)]` until they do:
-/// the field side of the OPEN-6 contract is complete here, and the
-/// consumers arrive with their S1s (recorded in the field S1 report
-/// for S8 ratification).
+/// the `mt-px` context contract is RATIFIED (gate G1 item 5) and the
+/// field side is complete here; consumption is a TRACKED DEFERRAL to
+/// the post-field-merge integration run (ruling-12 amendment), and
+/// the `#[allow(dead_code)]` drops when the consumers land. S10
+/// neither filed nor judged `mt-px`.
 #[allow(dead_code)]
 pub(crate) fn field_horizontal_content_present(ui: &Ui) -> bool {
     current_ctx(ui).horizontal_content_present
@@ -187,7 +282,8 @@ pub(crate) fn field_horizontal_content_present(ui: &Ui) -> bool {
 
 /// The `@md` container-query breakpoint for the `field-group` container:
 /// 28rem = 448px (Tailwind v4 framework default, OPEN-1 — not snapshot
-/// evidence; S1 implements it as stated, S4/S6 own the value).
+/// evidence; the value stands as the marked framework default per the
+/// gate G10 OPEN dispositions).
 pub(crate) const FIELD_GROUP_MD_BREAKPOINT: f32 = 448.0;
 
 /// Resolves a responsive [`Field`]'s effective orientation from the
@@ -222,9 +318,9 @@ pub(crate) fn field_content_gap(style: Style) -> f32 {
 /// (pure, testable): `gap-7` base / `gap-5` nova by default; 16px when
 /// the group is directly nested in another [`FieldGroup`] (both styles);
 /// 12px when the group itself carries the checkbox-group slot (both
-/// styles). When both conditions hold, the self-conditional wins (S1
-/// precedence choice, PROVISIONAL — the snapshot cannot establish the
-/// cascade order; S8 ratifies).
+/// styles). When both conditions hold, the self-conditional wins
+/// (RATIFIED as PROVISIONAL, gate G1 item 2 — the snapshot cannot
+/// establish the cascade order; Expert Reviewer rules).
 pub(crate) fn field_group_gap_for(style: Style, nested: bool, checkbox_group: bool) -> f32 {
     if checkbox_group {
         crate::theme::tokens::spacing::MD // gap-3
@@ -286,8 +382,9 @@ pub(crate) fn field_label_card_radius(radius: &RadiusTokens, style: Style) -> u8
 /// the description 4px toward the previous sibling; the legend-follow
 /// `-mt-1.5` pulls it 6px. When legend-follow co-matches with
 /// second-from-last, legend-follow wins (OPEN-5, the more specific
-/// contextual rule — S1 precedence, S5 judges single-condition cases
-/// exactly and records the co-match as OPEN-5).
+/// contextual rule — RATIFIED as PROVISIONAL, gate G1 item 8; S5/S10
+/// judge single-condition cases exactly and record the co-match
+/// without verdict; Expert Reviewer rules).
 pub(crate) fn description_margin_top(after_legend: bool, second_from_last: bool) -> f32 {
     if after_legend {
         -6.0 // -mt-1.5
@@ -304,9 +401,10 @@ pub(crate) fn description_margin_top(after_legend: bool, second_from_last: bool)
 /// fills `bg-primary/10` in dark mode and adds a `bg-muted/50` hover fill
 /// while enabled. Under nova, a focused descendant (`focus_inside`, N9)
 /// recolors the border to `ring` at full alpha; the focus border wins
-/// over the checked border (PROVISIONAL, OPEN-3 — generated-CSS order is
-/// unestablishable; S5 judges each state separately and records the
-/// combined case without verdict). Checked wins over hover for the fill
+/// over the checked border (PROVISIONAL, OPEN-3, RATIFIED gate G1
+/// item 1 — generated-CSS order is unestablishable; S5/S10 judge each
+/// state separately and record the combined case without verdict;
+/// Expert Reviewer rules). Checked wins over hover for the fill
 /// (PROVISIONAL, OPEN-3, same basis).
 ///
 /// Disabled compositing: the label/title rule is element-level
@@ -728,8 +826,8 @@ impl FieldLabel {
     /// no activation. It is DISTINCT from the enclosing [`Field`]'s
     /// disabled flag, which expresses the named-field-group condition
     /// (opacity only — clicks still forward). Both conditions render
-    /// the label at 50% opacity; only this one suppresses clicks (S1
-    /// API decision, D1 — S8 ratifies).
+    /// the label at 50% opacity; only this one suppresses clicks
+    /// (RATIFIED as settled, gate G1 item 3, D1).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -1087,7 +1185,7 @@ pub struct FieldDescription {
     text: String,
     /// Immediately preceded by a `legend`-variant [`FieldLegend`]
     /// sibling: `-mt-1.5` (spec §2.8; wins over second-from-last,
-    /// OPEN-5).
+    /// OPEN-5, RATIFIED as PROVISIONAL per gate G1 item 8).
     after_legend: bool,
     /// Second-from-last child of its parent: `nth-last-2:-mt-1`
     /// (spec §2.8).
@@ -1454,7 +1552,7 @@ impl FieldGroup {
 /// [`FieldSet::has_group_child`] — a closure's children cannot be
 /// inspected, D1).
 ///
-/// Native fieldset semantics (OPEN-8, S1 decision): a native disabled
+/// Native fieldset semantics (OPEN-8, RATIFIED gate G1 item 7): a native disabled
 /// `<fieldset>` disables its descendant controls, but egui has no
 /// fieldset element and no propagation mechanism (D3 limitation) — the
 /// Rust API models no disabled propagation, and callers disable
