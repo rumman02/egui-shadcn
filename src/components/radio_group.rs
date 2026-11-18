@@ -63,8 +63,9 @@
 //! groups (gate G6 amendment). Home/PageUp move focus to the first
 //! focusable item and End/PageDown to the last, skipping disabled
 //! items, WITHOUT changing the selection (focus-only; settled OPEN-2),
-//! and the stored tab stop follows the move. Space activates the focused item and
-//! Enter checks it (RAD-INT-04/05 own the phases); clicks select and
+//! and the stored tab stop follows the move. Space activates the focused item on
+//! keyup, once per press (RAD-INT-05, settled OPEN-3), and Enter checks it on
+//! keydown (RAD-INT-04 owns Enter); clicks select and
 //! never uncheck, but do not focus yet (RAD-INT-06). Focus-visible
 //! modality is proposed deviation D1 (the ring shows on any focus;
 //! egui cannot distinguish keyboard from pointer focus).
@@ -482,9 +483,9 @@ fn label_rect_in_row(row_rect: Rect, label_w: f32) -> Rect {
 /// A single radio circle bound to a boolean (`RadioGroupItem`).
 ///
 /// Clicking selects it (radios never uncheck themselves). Space
-/// activation of the focused item is the current egui-natural behaviour;
-/// the Radix activation rules are OPEN-3 hypotheses (spec §7), not
-/// established truth. For a group of mutually exclusive options prefer
+/// activates the focused item on keyup, once per press (settled
+/// OPEN-3, RAD-INT-05); Enter checks on keydown (RAD-INT-04 owns
+/// Enter). For a group of mutually exclusive options prefer
 /// [`RadioGroup`].
 #[derive(Debug)]
 pub struct RadioGroupItem<'a> {
@@ -557,6 +558,10 @@ impl<'a> RadioGroupItem<'a> {
         // Reserve space without an auto-id widget so egui's built-in
         // spatial arrow navigation only sees the explicit item ids.
         let (_, rect) = ui.allocate_space(Vec2::splat(RADIO_SIZE));
+        // Space activates on keyup, once per press (RAD-INT-05,
+        // settled OPEN-3): hide the keydown from `interact` and
+        // re-create it on the release pass.
+        space_keyup_fire(ui.ctx(), id);
         let mut response = ui.interact(rect, id, sense);
 
         if response.clicked() && !self.disabled {
@@ -749,6 +754,92 @@ struct ItemStyle<'a> {
     suppressed: bool,
 }
 
+/// Defers Space activation to keyup, once per press (RAD-INT-05,
+/// settled OPEN-3: the native-button rule).
+///
+/// egui's `interact` reports a fake primary click for a focused
+/// click-sense widget whenever `key_pressed(Space)` is true
+/// (`egui-0.37.0/src/context.rs`, `FAKE_PRIMARY_CLICKED`), and
+/// `key_pressed` counts every `pressed: true` key event INCLUDING
+/// repeats (`input_state/mod.rs`, `num_presses`) — so a held Space
+/// fires on keydown and re-fires on every autorepeat. This helper,
+/// called before the widget's `interact`, hides Space keydown events
+/// from the live event list (arming the widget) and re-creates a
+/// single keydown when the release arrives, so the widget's
+/// `clicked()` fires on the release pass only. The armed flag is per
+/// widget id (`id.with("space_armed")`) in temp data; a release with
+/// no preceding keydown fires nothing, and the flag clears whenever
+/// Space is no longer down (`key_down` reads the begin-pass
+/// `keys_down` snapshot, so stripping events mid-pass leaves it
+/// intact during a hold).
+///
+/// Verbatim reuse of the `space_keyup_fire` shape in `button.rs`,
+/// `switch.rs`, `checkbox.rs`, and `toggle.rs` (SWI-INT-01,
+/// CHK-INT-02, TOG-INT-01) — the fifth copy; the duplication is a
+/// known wave-pack observation, kept identical so the behaviour
+/// cannot drift between components. The label-forwarding synthetic
+/// Space pair (`label.rs`, `consume_pending_click`) survives this
+/// handling by design: the pair carries its own release, so the
+/// helper re-creates the keydown in the same pass — and in the group
+/// path the pair is pushed mid-pass, after this helper runs, so
+/// label clicks are unaffected either way.
+fn space_keyup_fire(ctx: &egui::Context, id: egui::Id) {
+    let armed_id = id.with("space_armed");
+    let mut armed = ctx
+        .data_mut(|data| data.get_temp::<bool>(armed_id))
+        .unwrap_or(false);
+    ctx.input_mut(|input| {
+        let space_pressed = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    ..
+                }
+            )
+        });
+        let release = input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: false,
+                physical_key,
+                modifiers,
+                ..
+            } => Some((*physical_key, *modifiers)),
+            _ => None,
+        });
+        if space_pressed {
+            input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+            armed = true;
+        }
+        if let Some((physical_key, modifiers)) = release {
+            if armed {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Space,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            armed = false;
+        } else if !input.key_down(egui::Key::Space) {
+            armed = false;
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(armed_id, armed));
+}
+
 fn render_items(
     ui: &mut Ui,
     group_id: egui::Id,
@@ -756,6 +847,13 @@ fn render_items(
     options: &[RadioOption],
     style: &ItemStyle<'_>,
 ) {
+    // Space activates on keyup, once per press (RAD-INT-05, settled
+    // OPEN-3), for every item in the group: one group-level call
+    // hides the keydown from all of the items' `interact`s and
+    // re-creates it on the release pass, when only the focused item
+    // can see it. The label-forwarding synthetic Space pair is pushed
+    // mid-pass, during the item loop below, so it is unaffected.
+    space_keyup_fire(ui.ctx(), group_id);
     let ItemStyle {
         p,
         dark,
@@ -905,8 +1003,9 @@ fn render_items(
     // focus out of the group). Modifier+arrow receives NO handling
     // (gate G5, HEAD Radix behaviour). Home/End and PageUp/PageDown
     // are handled by the jump leg below (RAD-INT-03, settled OPEN-2);
-    // Enter, Space, and Escape are untouched (RAD-INT-04/05/07 own
-    // them).
+    // Space is handled by `space_keyup_fire` at the top of this
+    // function (RAD-INT-05, settled OPEN-3: keyup, once per press);
+    // Enter and Escape are untouched (RAD-INT-04/07 own them).
     let focused_id = ui.ctx().memory(|m| m.focused());
     let focused_idx =
         focused_id.and_then(|id| (0..options.len()).find(|&i| group_id.with(i) == id));
@@ -1083,6 +1182,46 @@ mod tests {
             repeat: false,
             modifiers,
         });
+        input
+    }
+
+    fn key_release_input(key: Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        input
+    }
+
+    fn key_repeat_input(key: Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        input
+    }
+
+    /// Keydown + keyup in a single pass — the label-forwarding pair
+    /// shape (`label.rs`, `consume_pending_click`).
+    fn key_pair_input(key: Key) -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        for pressed in [true, false] {
+            input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
         input
     }
 
@@ -2848,5 +2987,239 @@ mod tests {
             mid_alpha > 0 && mid_alpha < full_alpha,
             "mid-leg alpha {mid_alpha} must be strictly between 0 and {full_alpha}"
         );
+    }
+
+    #[test]
+    fn space_activates_on_keyup_not_keydown_standalone() {
+        // Settled OPEN-3 (RAD-INT-05): Space activation is the native
+        // button click — it fires on KEYUP, once per press, with no
+        // hold-repeat. The standalone item carries the verdict: it can
+        // be focused-but-unchecked, which group items cannot (arrows
+        // move selection with focus). Fails pre-fix: the item is
+        // checked on the keydown pass itself.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_space_test").with("radio_space");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_space_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                let resp = RadioGroupItem::new(checked).id_salt("radio_space").show(ui);
+                changed = resp.changed();
+            });
+            out.textures_delta.clear();
+            changed
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        // Keydown: must NOT fire.
+        assert!(
+            !run(&ctx, &mut checked, key_input(Key::Space)),
+            "Space keydown must not fire"
+        );
+        assert!(!checked, "item must stay unchecked while Space is held");
+        // Hold with autorepeat: still must NOT fire.
+        assert!(
+            !run(&ctx, &mut checked, key_repeat_input(Key::Space)),
+            "Space repeat must not fire"
+        );
+        assert!(!checked);
+        // Release: fires exactly once.
+        assert!(
+            run(&ctx, &mut checked, key_release_input(Key::Space)),
+            "Space keyup must fire"
+        );
+        assert!(checked, "item must be checked after keyup");
+        // Settle: no second fire.
+        assert!(
+            !run(&ctx, &mut checked, egui::RawInput::default()),
+            "no second fire after release"
+        );
+        assert!(checked);
+    }
+
+    #[test]
+    fn space_activates_on_keyup_not_keydown_group() {
+        // Same settled OPEN-3 rule inside a group: after an INT-03
+        // jump, focus can sit on an unchecked item, so the group path
+        // must defer Space to keyup too. Focus is requested directly
+        // on the middle item with no selection — the focus != checked
+        // state. Fails pre-fix: selection moves on the keydown pass.
+        let ctx = test_ctx();
+        let mut selected: Option<usize> = None;
+        let base = egui::Id::unique("radio_space_group_test").with("radio_space_group");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_space_group_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_space_group")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1usize)));
+
+        run(&ctx, &mut selected, key_input(Key::Space));
+        assert_eq!(selected, None, "Space keydown must not select");
+        run(&ctx, &mut selected, key_repeat_input(Key::Space));
+        assert_eq!(selected, None, "Space repeat must not select");
+        run(&ctx, &mut selected, key_release_input(Key::Space));
+        assert_eq!(
+            selected,
+            Some(1),
+            "Space keyup must select the focused item"
+        );
+        run(&ctx, &mut selected, egui::RawInput::default());
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn space_keydown_and_keyup_same_pass_fires_once() {
+        // Guard: the label-forwarding pair shape (keydown + keyup in
+        // one pass) must still activate through the keyup deferral —
+        // the helper hides the keydown and re-creates it when the
+        // release arrives in the same pass. Passes both before and
+        // after the fix; it guards the label-click path against the
+        // deferral. (The real label pair is pushed mid-pass, after
+        // the helper runs; this pin proves the helper's own pair
+        // handling.)
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_space_pair_test").with("radio_space_pair");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_space_pair_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                let resp = RadioGroupItem::new(checked)
+                    .id_salt("radio_space_pair")
+                    .show(ui);
+                changed = resp.changed();
+            });
+            out.textures_delta.clear();
+            changed
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        assert!(
+            run(&ctx, &mut checked, key_pair_input(Key::Space)),
+            "same-pass Space pair must fire"
+        );
+        assert!(checked);
+        assert!(
+            !run(&ctx, &mut checked, egui::RawInput::default()),
+            "no second fire after the pair"
+        );
+    }
+
+    #[test]
+    fn enter_still_checks_on_keydown() {
+        // Guard (RAD-INT-04 owns Enter): the Space deferral must not
+        // change Enter behaviour — Enter still checks on keydown.
+        // Passes both before and after the INT-05 fix.
+        let ctx = test_ctx();
+        let mut checked = false;
+        let item_id = egui::Id::unique("radio_enter_guard_test").with("radio_enter_guard");
+
+        let run = |ctx: &egui::Context, checked: &mut bool, input: egui::RawInput| -> bool {
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_enter_guard_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                let resp = RadioGroupItem::new(checked)
+                    .id_salt("radio_enter_guard")
+                    .show(ui);
+                changed = resp.changed();
+            });
+            out.textures_delta.clear();
+            changed
+        };
+
+        run(&ctx, &mut checked, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(item_id));
+        run(&ctx, &mut checked, egui::RawInput::default());
+        assert!(ctx.memory(|m| m.has_focus(item_id)));
+
+        assert!(
+            run(&ctx, &mut checked, key_input(Key::Enter)),
+            "Enter keydown must still check (RAD-INT-04 owns any change)"
+        );
+        assert!(checked);
+    }
+
+    #[test]
+    fn arrow_and_jump_moves_unchanged_by_space_fix() {
+        // Guard: arrow + jump behaviour (INT-01/02/03) is untouched by
+        // the Space deferral. Passes both before and after the fix.
+        let ctx = test_ctx();
+        let mut selected = Some(1);
+        let base = egui::Id::unique("radio_space_arrow_test").with("radio_space_arrow");
+
+        let run = |ctx: &egui::Context, selected: &mut Option<usize>, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("radio_space_arrow_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                );
+                RadioGroup::new(selected)
+                    .id_salt("radio_space_arrow")
+                    .option("A")
+                    .option("B")
+                    .option("C")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let press = |ctx: &egui::Context, selected: &mut Option<usize>, key: Key| {
+            run(ctx, selected, key_input(key));
+            run(ctx, selected, egui::RawInput::default());
+        };
+
+        run(&ctx, &mut selected, egui::RawInput::default());
+        ctx.memory_mut(|mem| mem.request_focus(base.with(1usize)));
+        press(&ctx, &mut selected, Key::ArrowDown);
+        assert_eq!(selected, Some(2));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(2usize)));
+        press(&ctx, &mut selected, Key::Home);
+        assert_eq!(selected, Some(2), "jump must not change selection");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(0usize)));
     }
 }
