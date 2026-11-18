@@ -871,6 +871,10 @@ impl<'a> NativeSelect<'a> {
                 }
                 if tab {
                     // OPEN-9: close the list; focus moves per egui default.
+                    // Unreachable in practice: Tab moves focus during
+                    // `interact`, before this gated block runs, so the gate
+                    // reads `has_focus() == false` on the Tab frame. The
+                    // out-of-gate NSL-INT-02 handler below is operative.
                     close_requested = true;
                 }
                 self.apply_typeahead(&ctx, &labels, &disabled_flags, &mut state, true);
@@ -891,6 +895,45 @@ impl<'a> NativeSelect<'a> {
                 // (egui surfaces them as clicks on the focused trigger).
                 // Escape (closed): nothing (the focus lock keeps focus).
                 self.apply_typeahead(&ctx, &labels, &disabled_flags, &mut state, false);
+            }
+        }
+
+        // ---- NSL-INT-02: Tab/Escape handlers OUTSIDE the focus gate.
+        // Tab: egui moves focus during `interact` (before the gated block
+        // above runs), so on the Tab frame the gate reads `has_focus() ==
+        // false` and the in-gate Tab branch never fires; without this
+        // handler the popup stays open and focus lands on the first popup
+        // row (orphan). Tab-while-open must ALWAYS close, so this is
+        // unconditional on focus state; focus moves per egui default (no
+        // refocus). Closing here also keeps the rows from ever running
+        // `interact` on the Tab frame, so `give_to_next` passes to the
+        // next widget after the trigger.
+        // Escape: the focus-lock filter latches only on the pass AFTER
+        // the focus grant, so an Escape arriving in that first post-grant
+        // pass is cleared by `begin_pass` before the UI pass and the
+        // in-gate Escape branch never fires; the popup still closes via
+        // egui's internal handling, leaving the trigger unfocused.
+        // `lost_focus()` (2-frame window) identifies exactly that pass;
+        // the latched path is already handled in-gate. `open_at_start`
+        // gates both handlers so closed-popup Tab/Escape behaviour is
+        // unchanged.
+        if !self.disabled && open_at_start {
+            let (tab, escape) = ctx.input(|i| {
+                let modifiers = i.modifiers;
+                (
+                    !modifiers.ctrl
+                        && !modifiers.command
+                        && !modifiers.alt
+                        && i.key_pressed(Key::Tab),
+                    modifiers.is_none() && i.key_pressed(Key::Escape),
+                )
+            });
+            if tab {
+                close_requested = true;
+            }
+            if escape && response.lost_focus() {
+                close_requested = true;
+                refocus_trigger = true;
             }
         }
 
@@ -2246,5 +2289,272 @@ mod tests {
             empty_ui(ui, &mut selected, &mut rect, &mut trigger_id)
         });
         assert!(!h.is_popup_open(trigger_id), "trigger reclick closes");
+    }
+
+    /// Two selects stacked: the Tab pins need a next focus stop after A.
+    fn two_ui(
+        ui: &mut Ui,
+        sel_a: &mut Option<usize>,
+        sel_b: &mut Option<usize>,
+        rect_a: &mut Rect,
+        rect_b: &mut Rect,
+        id_a: &mut Id,
+        id_b: &mut Id,
+    ) {
+        let r = NativeSelect::new(sel_a)
+            .id_salt("int02-a")
+            .options(["Alpha", "Beta", "Gamma", "Delta"])
+            .show(ui);
+        *rect_a = r.rect;
+        *id_a = r.id;
+        let r = NativeSelect::new(sel_b)
+            .id_salt("int02-b")
+            .options(["Alpha", "Beta", "Gamma", "Delta"])
+            .show(ui);
+        *rect_b = r.rect;
+        *id_b = r.id;
+    }
+
+    fn focused_id(h: &Harness) -> Option<Id> {
+        h.ctx.memory(|m| m.focused())
+    }
+
+    #[test]
+    fn nsl_int02_tab_while_open_closes_and_moves_focus() {
+        // NSL-INT-02 (manifestation A): Tab while the popup is open must
+        // close the popup and move focus to the next stop (B), per the
+        // gate-G3-decided OPEN-9 contract. RED before the fix: Tab moves
+        // focus during `interact`, before the gated keyboard block runs,
+        // so the in-gate Tab branch never fires — the popup stays open
+        // and focus lands on the first popup row (orphan), then walks the
+        // rows on further Tabs. Calibration asserts prove the click-open
+        // + settle actually established open + focused before the Tab.
+        let mut h = Harness::new();
+        let mut sel_a = Some(0);
+        let mut sel_b = Some(0);
+        let mut rect_a = Rect::NOTHING;
+        let mut rect_b = Rect::NOTHING;
+        let mut id_a = Id::NULL;
+        let mut id_b = Id::NULL;
+        macro_rules! ui2 {
+            () => {
+                |ui: &mut Ui| {
+                    two_ui(
+                        ui,
+                        &mut sel_a,
+                        &mut sel_b,
+                        &mut rect_a,
+                        &mut rect_b,
+                        &mut id_a,
+                        &mut id_b,
+                    )
+                }
+            };
+        }
+        h.run(ui2!());
+        h.click(rect_a.center(), ui2!());
+        assert!(h.is_popup_open(id_a), "calibration: popup A opens");
+        assert_eq!(focused_id(&h), Some(id_a), "calibration: A focused");
+        h.run(ui2!());
+        h.run(ui2!());
+        assert!(h.is_popup_open(id_a), "calibration: popup A stays open");
+        assert_eq!(
+            focused_id(&h),
+            Some(id_a),
+            "calibration: A still focused after settling"
+        );
+        h.key(Key::Tab, ui2!());
+        assert!(
+            !h.is_popup_open(id_a),
+            "NSL-INT-02: Tab while open closes the popup"
+        );
+        assert_eq!(
+            focused_id(&h),
+            Some(id_b),
+            "NSL-INT-02: Tab while open moves focus to the next stop"
+        );
+        assert_eq!(sel_a, Some(0), "Tab while open changes no selection");
+        // No orphan residue: a further Tab leaves A closed and moves on.
+        h.key(Key::Tab, ui2!());
+        assert!(!h.is_popup_open(id_a), "popup A stays closed");
+        assert_ne!(focused_id(&h), Some(id_a), "focus does not return to A");
+    }
+
+    #[test]
+    fn nsl_int02_escape_right_after_click_open_refocuses_trigger() {
+        // NSL-INT-02 (manifestation B): Escape on the very next frame
+        // after a click-open must close the popup AND leave focus on the
+        // trigger. RED before the fix: the focus-lock filter latches only
+        // on the pass after the focus grant, so an Escape arriving in
+        // that first post-grant pass is cleared by `begin_pass` before
+        // the UI pass; the popup closes via egui's internal handling but
+        // focus stays None. One settling frame closes the window (see the
+        // settled pin below), so this no-settle probe is the
+        // discriminating one.
+        let mut h = Harness::new();
+        let mut selected = Some(0);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.click(rect.center(), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "calibration: popup opens");
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "calibration: click focuses the trigger"
+        );
+        h.key(Key::Escape, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(!h.is_popup_open(trigger_id), "Escape closes the popup");
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "NSL-INT-02: Escape right after click-open refocuses the trigger"
+        );
+        assert_eq!(selected, Some(0), "Escape changes no selection");
+    }
+
+    #[test]
+    fn nsl_int02_escape_after_settle_refocuses_trigger() {
+        // Regression pin for the latched path: Escape after settling
+        // already conformed before the fix (filter latched, in-gate
+        // branch runs); the fix must not regress it.
+        let mut h = Harness::new();
+        let mut selected = Some(0);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.click(rect.center(), |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        assert!(h.is_popup_open(trigger_id), "calibration: popup opens");
+        h.key(Key::Escape, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(!h.is_popup_open(trigger_id), "Escape closes the popup");
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "Escape after settling refocuses the trigger"
+        );
+        assert_eq!(selected, Some(0), "Escape changes no selection");
+    }
+
+    #[test]
+    fn nsl_int02_escape_after_keyboard_open_refocuses_trigger() {
+        // Regression pin for the keyboard-open flow (S6 R2c conforming
+        // case): Tab to focus, Space to open, settle, Escape. The filter
+        // is long-since latched, so the in-gate branch handles it; the
+        // fix must not regress it.
+        let mut h = Harness::new();
+        let mut selected = Some(0);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.key(Key::Tab, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "calibration: Tab focuses the trigger"
+        );
+        h.key(Key::Space, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(h.is_popup_open(trigger_id), "calibration: Space opens");
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.key(Key::Escape, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert!(!h.is_popup_open(trigger_id), "Escape closes the popup");
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "Escape after keyboard-open refocuses the trigger"
+        );
+        assert_eq!(selected, Some(0), "Escape changes no selection");
+    }
+
+    #[test]
+    fn nsl_int02_tab_while_closed_still_moves_focus() {
+        // Guard pin: the out-of-gate Tab handler is gated on
+        // `open_at_start`, so Tab while closed must keep plain egui
+        // focus movement (A -> B) with both popups closed.
+        let mut h = Harness::new();
+        let mut sel_a = Some(0);
+        let mut sel_b = Some(0);
+        let mut rect_a = Rect::NOTHING;
+        let mut rect_b = Rect::NOTHING;
+        let mut id_a = Id::NULL;
+        let mut id_b = Id::NULL;
+        macro_rules! ui2 {
+            () => {
+                |ui: &mut Ui| {
+                    two_ui(
+                        ui,
+                        &mut sel_a,
+                        &mut sel_b,
+                        &mut rect_a,
+                        &mut rect_b,
+                        &mut id_a,
+                        &mut id_b,
+                    )
+                }
+            };
+        }
+        h.run(ui2!());
+        h.key(Key::Tab, ui2!());
+        assert_eq!(
+            focused_id(&h),
+            Some(id_a),
+            "calibration: first Tab focuses A"
+        );
+        h.key(Key::Tab, ui2!());
+        assert_eq!(
+            focused_id(&h),
+            Some(id_b),
+            "Tab while closed moves focus A -> B"
+        );
+        assert!(!h.is_popup_open(id_a), "A stays closed");
+        assert!(!h.is_popup_open(id_b), "B stays closed");
+    }
+
+    #[test]
+    fn nsl_int02_escape_while_closed_keeps_focus() {
+        // Guard pin: Escape while closed (filter latched) must keep
+        // focus on the trigger with no selection change; the out-of-gate
+        // Escape handler is gated on `open_at_start` and must not fire.
+        let mut h = Harness::new();
+        let mut selected = Some(0);
+        let mut rect = Rect::NOTHING;
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.key(Key::Tab, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        h.run(|ui| select_ui(ui, &mut selected, &mut rect, &mut trigger_id));
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "calibration: trigger focused"
+        );
+        h.key(Key::Escape, |ui| {
+            select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
+        });
+        assert_eq!(
+            focused_id(&h),
+            Some(trigger_id),
+            "Escape while closed keeps focus on the trigger"
+        );
+        assert!(!h.is_popup_open(trigger_id), "popup stays closed");
+        assert_eq!(selected, Some(0), "Escape changes no selection");
     }
 }
