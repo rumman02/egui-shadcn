@@ -529,19 +529,29 @@ fn paint_toggle_shadow(
     }
 }
 
-/// Paints the 1px border with the leading edge omitted for non-first group
+/// Paints the 1px border with the LEFT edge omitted for non-first group
 /// children (toggle-group spec §2.2 border removal: `border-l-0` /
-/// `border-t-0`), mirroring the foundation fusing fix in
+/// `first:border-l`), mirroring the foundation fusing fix in
 /// [`crate::components::button::Button`] (`paint_fused_stroke`, BTG-VIS-01) and `paint_input_fused_stroke` —
 /// both private, so the shape is repeated here: the full `Inside` ring is
-/// painted through a clip that excludes the leading 1px column (horizontal
-/// groups) or row (vertical groups), and once more clipped to each of the
-/// two leading corner cells. The three clips tile the ring exactly: they
-/// share only zero-area boundaries, and the renderer's scissor conversion
-/// rounds every clip edge, so no pixel is painted twice — exact for
-/// translucent strokes, where overpainting would double-blend. First/only
-/// children take the plain `rect_stroke` path, identical to a standalone
-/// toggle.
+/// painted through a clip that excludes the leading 1px column, and once
+/// more clipped to each of the two leading corner cells. The three clips
+/// tile the ring exactly: they share only zero-area boundaries, and the
+/// renderer's scissor conversion rounds every clip edge, so no pixel is
+/// painted twice — exact for translucent strokes, where overpainting
+/// would double-blend. First/only children take the plain `rect_stroke`
+/// path, identical to a standalone toggle.
+///
+/// The omitted edge is ALWAYS the left column, in BOTH orientations
+/// (TOG-C1, toggle-group spec §9 case 5): no vertical border rule
+/// exists — `border-l-0`/`first:border-l` address the left edge
+/// regardless of orientation — so vertical fused groups keep full
+/// top/bottom borders and neighbouring items share NO border on their
+/// adjoining edges (2px seams), while the left border drops except on
+/// the first item. The corner ORIENTATION is a separate, style-dependent
+/// decision made by the caller (nova distinguishes orientations; base
+/// always takes the horizontal treatment); this painter only ever
+/// shifts the left edge.
 ///
 /// The fill paints on the FULL rect: border removal is achieved by omitting
 /// the leading edge of the stroke, NOT by insetting the draw rect (the old
@@ -554,35 +564,22 @@ fn paint_toggle_fused_stroke(
     rect: Rect,
     corner: CornerRadius,
     stroke: Stroke,
-    orientation: GroupOrientation,
     position: GroupPosition,
 ) {
     if !matches!(position, GroupPosition::Middle | GroupPosition::Last) {
         painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
         return;
     }
-    let (clip, corners) = match orientation {
-        GroupOrientation::Horizontal => (
-            Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
-            [
-                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
-                Rect::from_min_max(
-                    Pos2::new(rect.min.x, rect.max.y - 1.0),
-                    Pos2::new(rect.min.x + 1.0, rect.max.y),
-                ),
-            ],
+    // Always the left edge (see the doc comment): the clip excludes the
+    // leading 1px column; the corner cells are the two left cells.
+    let clip = Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max);
+    let corners = [
+        Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+        Rect::from_min_max(
+            Pos2::new(rect.min.x, rect.max.y - 1.0),
+            Pos2::new(rect.min.x + 1.0, rect.max.y),
         ),
-        GroupOrientation::Vertical => (
-            Rect::from_min_max(Pos2::new(rect.min.x, rect.min.y + 1.0), rect.max),
-            [
-                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
-                Rect::from_min_max(
-                    Pos2::new(rect.max.x - 1.0, rect.min.y),
-                    Pos2::new(rect.max.x, rect.min.y + 1.0),
-                ),
-            ],
-        ),
-    };
+    ];
     painter.with_clip_rect(clip).rect_stroke(
         rect,
         corner,
@@ -963,7 +960,20 @@ impl<'a> Toggle<'a> {
             }
 
             let radius = metrics::radius(&theme.radius, size, style);
-            let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
+            // Corner orientation is style-dependent, NOT axis-dependent
+            // (TOG-C1, toggle-group spec §2.5 / §9 case 5): nova
+            // distinguishes orientations (vertical groups round
+            // first-top / last-bottom), while the base recipe has no
+            // vertical corner rule, so the horizontal treatment
+            // (first-left / last-right) applies in both orientations.
+            // The border-shift direction is always the left edge — see
+            // `paint_toggle_fused_stroke`; the two decisions are
+            // decoupled.
+            let corner_orientation = match style {
+                Style::Nova => orientation,
+                _ => GroupOrientation::Horizontal,
+            };
+            let corner = fuse_radius(CornerRadius::same(radius), corner_orientation, position);
             let painter = ui.painter();
 
             // `shadow-xs` on the outline variant in ALL styles (Decision
@@ -985,7 +995,6 @@ impl<'a> Toggle<'a> {
                     rect,
                     corner,
                     Stroke::new(1.0, stroke_color),
-                    orientation,
                     position,
                 );
             }
@@ -1945,5 +1954,239 @@ mod tests {
         assert!(t.invalid);
         assert_eq!(t.id_salt.as_deref(), Some("t"));
         assert!(t.icon_inline_start);
+    }
+
+    /// Renders 3 outline toggles as a fused group in the given
+    /// orientation through the real group protocol, returning the LAST
+    /// frame's output. Several frames are required: the group protocol
+    /// learns the child count on the previous frame, so First/Middle/Last
+    /// positions are only correct from frame 2 on.
+    fn run_fused_outline_group(style: Style, orientation: GroupOrientation) -> egui::FullOutput {
+        let ctx = egui::Context::default();
+        Preset {
+            style,
+            ..Preset::default()
+        }
+        .build(Mode::Light)
+        .install(&ctx);
+        let mut last_out = None;
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("toggle_c1_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                );
+                let group_id = egui::Id::unique("toggle_c1_group");
+                group::begin(ui, group_id, orientation);
+                let labels = ["Top", "Middle", "Bottom"];
+                let mut pressed = [false; 3];
+                let mut show_items = |ui: &mut Ui| {
+                    for (i, p) in pressed.iter_mut().enumerate() {
+                        Toggle::new(p)
+                            .text(labels[i])
+                            .variant(ToggleVariant::Outline)
+                            .show(ui);
+                    }
+                };
+                match orientation {
+                    GroupOrientation::Horizontal => {
+                        ui.horizontal(|ui| show_items(ui));
+                    }
+                    GroupOrientation::Vertical => {
+                        ui.vertical(|ui| show_items(ui));
+                    }
+                }
+                group::end(ui, group_id);
+            });
+            out.textures_delta.clear();
+            last_out = Some(out);
+        }
+        last_out.expect("at least one frame")
+    }
+
+    /// Border-stroke shapes (`Shape::Rect` with a 1px stroke and a
+    /// transparent fill) grouped by item rect in paint order: one entry
+    /// per item, holding the item's stroke clips + shared corner radius.
+    /// Fused Middle/Last items paint 3 shapes (main clip + 2 corner
+    /// cells) with identical rect/radius; First/Only paint 1.
+    fn strokes_by_item(out: &egui::FullOutput) -> Vec<(Rect, Vec<Rect>, CornerRadius)> {
+        let mut items: Vec<(Rect, Vec<Rect>, CornerRadius)> = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rs) = &clipped.shape {
+                if rs.stroke.width == 1.0 && rs.fill == Color32::TRANSPARENT {
+                    if let Some(entry) = items.iter_mut().find(|(r, _, _)| *r == rs.rect) {
+                        entry.1.push(clipped.clip_rect);
+                        assert_eq!(entry.2, rs.corner_radius);
+                    } else {
+                        items.push((rs.rect, vec![clipped.clip_rect], rs.corner_radius));
+                    }
+                }
+            }
+        }
+        items
+    }
+
+    /// TOG-C1: the fused border removal is ALWAYS the left edge
+    /// (`border-l-0` / `first:border-l` — no vertical border rule
+    /// exists), so a vertical fused outline group drops the left column
+    /// of Middle/Last items and keeps full top/bottom borders (2px
+    /// seams, toggle-group spec §9 case 5). The old paint clipped the
+    /// TOP row for vertical groups (shared 1px seam).
+    #[test]
+    fn vertical_fused_outline_drops_left_edge_not_top() {
+        for style in [Style::Nova, Style::Vega] {
+            let out = run_fused_outline_group(style, GroupOrientation::Vertical);
+            let items = strokes_by_item(&out);
+            assert_eq!(items.len(), 3, "style {style:?}");
+            // First: one plain stroke, no clips.
+            assert_eq!(items[0].1.len(), 1, "style {style:?}");
+            for (rect, clips, _) in &items[1..] {
+                assert_eq!(clips.len(), 3, "style {style:?}");
+                // Main clip excludes the left 1px column and INCLUDES
+                // the top row (min.y == rect.min.y).
+                assert_eq!(
+                    clips[0],
+                    Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
+                    "style {style:?}"
+                );
+                // Corner cells are the two LEFT cells (top-left,
+                // bottom-left), not the top row's cells.
+                assert_eq!(
+                    clips[1],
+                    Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                    "style {style:?}"
+                );
+                assert_eq!(
+                    clips[2],
+                    Rect::from_min_max(
+                        Pos2::new(rect.min.x, rect.max.y - 1.0),
+                        Pos2::new(rect.min.x + 1.0, rect.max.y),
+                    ),
+                    "style {style:?}"
+                );
+            }
+        }
+    }
+
+    /// TOG-C1: under base styles a vertical fused group gets the
+    /// HORIZONTAL corner treatment (first-left / last-right — the base
+    /// recipe has no vertical corner rule, spec §2.5). The old paint
+    /// rounded first-top / last-bottom in both styles.
+    #[test]
+    fn vertical_fused_base_corners_use_horizontal_treatment() {
+        let style = Style::Vega;
+        let theme = Preset {
+            style,
+            ..Preset::default()
+        }
+        .build(Mode::Light);
+        let r = metrics::radius(&theme.radius, ToggleSize::Default, style);
+        let out = run_fused_outline_group(style, GroupOrientation::Vertical);
+        let items = strokes_by_item(&out);
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].2,
+            CornerRadius {
+                nw: r,
+                ne: 0,
+                sw: r,
+                se: 0
+            }
+        );
+        assert_eq!(items[1].2, CornerRadius::ZERO);
+        assert_eq!(
+            items[2].2,
+            CornerRadius {
+                nw: 0,
+                ne: r,
+                sw: 0,
+                se: r
+            }
+        );
+    }
+
+    /// TOG-C1 guard: under nova a vertical fused group keeps the
+    /// VERTICAL corner treatment (first-top / last-bottom, spec §2.5).
+    /// The fix must not flatten nova onto the horizontal treatment.
+    #[test]
+    fn vertical_fused_nova_corners_use_vertical_treatment() {
+        let style = Style::Nova;
+        let theme = Preset {
+            style,
+            ..Preset::default()
+        }
+        .build(Mode::Light);
+        let r = metrics::radius(&theme.radius, ToggleSize::Default, style);
+        let out = run_fused_outline_group(style, GroupOrientation::Vertical);
+        let items = strokes_by_item(&out);
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0].2,
+            CornerRadius {
+                nw: r,
+                ne: r,
+                sw: 0,
+                se: 0
+            }
+        );
+        assert_eq!(items[1].2, CornerRadius::ZERO);
+        assert_eq!(
+            items[2].2,
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: r,
+                se: r
+            }
+        );
+    }
+
+    /// TOG-C1 guard: horizontal fused groups are unchanged in both
+    /// styles — left-edge removal + first-left / last-right corners.
+    #[test]
+    fn horizontal_fused_unchanged() {
+        for style in [Style::Nova, Style::Vega] {
+            let theme = Preset {
+                style,
+                ..Preset::default()
+            }
+            .build(Mode::Light);
+            let r = metrics::radius(&theme.radius, ToggleSize::Default, style);
+            let out = run_fused_outline_group(style, GroupOrientation::Horizontal);
+            let items = strokes_by_item(&out);
+            assert_eq!(items.len(), 3, "style {style:?}");
+            assert_eq!(items[0].1.len(), 1, "style {style:?}");
+            assert_eq!(
+                items[0].2,
+                CornerRadius {
+                    nw: r,
+                    ne: 0,
+                    sw: r,
+                    se: 0
+                },
+                "style {style:?}"
+            );
+            assert_eq!(items[1].2, CornerRadius::ZERO, "style {style:?}");
+            assert_eq!(
+                items[2].2,
+                CornerRadius {
+                    nw: 0,
+                    ne: r,
+                    sw: 0,
+                    se: r
+                },
+                "style {style:?}"
+            );
+            for (rect, clips, _) in &items[1..] {
+                assert_eq!(clips.len(), 3, "style {style:?}");
+                assert_eq!(
+                    clips[0],
+                    Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
+                    "style {style:?}"
+                );
+            }
+        }
     }
 }
