@@ -1,10 +1,22 @@
 //! shadcn `native-select.tsx` — a styled `<select>` replacement.
 //!
+//! **Verified final state (Batch B S10 PASS at `b0d6121`, zero new
+//! defects; S11 docs).** The trigger matches the frozen spec exactly
+//! in all 4 configs (S5 trigger fully correct; S10 full-line
+//! regression PASS); the popup matches the 12 decided D1 values
+//! (ruling 9), audited 12/12 in all 4 configs at S10 (§7). Every
+//! decision below cites its evidence; the only remaining
+//! provisional/interim readings are OPEN-3 timing (INTERIM) and the
+//! deviations awaiting Expert Reviewer approval.
+//!
 //! Ported from `apps/v4/registry/new-york-v4/ui/native-select.tsx`: an
 //! `h-9 rounded-md border border-input bg-transparent px-3 pr-9 text-sm
 //! shadow-xs` trigger (`data-[size=sm]:h-8`) with a chevron-down icon at
 //! `right-3.5` (`text-muted-foreground opacity-50`), the shared
 //! focus/invalid/disabled styles and `dark:bg-input/30 dark:hover:bg-input/50`.
+//! The chevron never rotates or changes on open (spec §4.7); S10
+//! verified the label/chevron zones read 0 px open-vs-closed (S10 §4,
+//! stage F) — no other chevron behaviour is claimed.
 //!
 //! The nova style (`.cn-native-select`) reshapes the trigger to `h-8
 //! rounded-lg py-1 pr-8 pl-2.5` (sm: `h-7 rounded-[min(var(--radius-md),10px)] py-0.5`)
@@ -12,20 +24,102 @@
 //! (`has-[select:disabled]:opacity-50`) composites the WHOLE trigger — fill,
 //! border, text, chevron, shadow — at 50% over the backdrop (group fade;
 //! there are no separate disabled colours, and disabled text keeps the
-//! `foreground` slot — N11).
+//! `foreground` slot — N11). Measured disabled borders: (242) light /
+//! (33) dark in both styles (S10 §7–§8; the 41-vs-33 reconciliation is
+//! CLOSED at 33 — S5, S7, and S10 all measure 33, and "41" was an S7
+//! misattribution with no basis in S5's artifacts).
+//!
+//! Invalid wins over focus — DECIDED (OPEN-2, gate G1 item 7): border
+//! `destructive` (+ nova-dark `destructive/50` per N5, settled), ring
+//! `destructive/20` light / `/40` dark, a 3px rest ring under nova only
+//! when invalid (base focus-gated). Measured at S10: nova-dark invalid
+//! borders (138,60,62) with a 3-row gapless rest ring (108,46,47);
+//! vega-dark (255,100,103) with no rest ring; light (231,0,11).
 //!
 //! The browser's native dropdown list is replaced by an [`egui::Popup`]
-//! (deviation D1 — port design, never original behaviour): `popover` fill,
-//! 36px rows, `accent` hover/selected/highlight rows, `shadow-md`, max 8
-//! visible rows with internal scrolling, optgroup headers, and trigger-width
-//! sizing. The full decided design (12 coordinator values) is recorded in
-//! the S1 report; the trigger itself matches the frozen spec exactly.
+//! (deviation D1 — port design, never original behaviour). The 12
+//! decided values (ruling 9, all S10-verified): `popover` fill /
+//! `popover-foreground` text; 36px rows + 8px left pad (first ink at
+//! frame-left + 12); `accent` hover/selected/highlight rows;
+//! `shadow-md` via a direct painter call; below the trigger,
+//! left-aligned, gap 0; max 8 visible rows + internal `ScrollArea`
+//! (egui default scrollbar); 36px `muted-foreground` optgroup headers
+//! (non-interactive, group `disabled` disables all its options);
+//! per-slot halving for disabled rows (NOT group fade); one
+//! non-interactive "No options" row iff ZERO entries (empty groups
+//! render headers only); width = trigger width; radius md + 4px
+//! margins + 1px `border` stroke; disabled triggers never open.
+//! Row fills keep `radius-sm` corners (gate G1 item 9).
 //!
-//! Keyboard (§7.1): Tab focus, click to open, arrows change the selection
-//! while closed and move the highlight while open, Home/End/PageUp/PageDown
-//! while open, Enter confirms, Escape closes (selection unchanged),
-//! type-ahead jumps to the next matching option. Space while open,
-//! arrow wrap, and Alt+Arrow behaviour stay OPEN-1 (no guessed behaviour).
+//! Keyboard (§7.1, N3 CLOSED): Tab focus, click to open, arrows change
+//! the selection while closed and move the highlight while open,
+//! Home/End/PageUp/PageDown while open (page size 8 enabled steps,
+//! gate G1 item 4), Enter confirms, Escape closes (selection
+//! unchanged), type-ahead per the RATIFIED algorithm (gate G1 item 5:
+//! 1s buffer with reset, case-insensitive prefix, search-after-current
+//! with wrap-once, disabled-skip, repeated-char cycling,
+//! closed→selection / open→highlight-only, Space excluded). OPEN-1 is
+//! CLOSED as documented port behaviour (gate G2): Space while open,
+//! Alt+Arrows, Left/Right, and closed Home/End/PageUp/PageDown are all
+//! no-ops; there is NO arrow wrap (gate G1 item 6); provisional-
+//! selection semantics are RATIFIED (open arrows never change the
+//! selection; only Enter confirms; Escape keeps the pre-open value).
+//! The close-path focus contract is DECIDED (OPEN-9, gate G3): Tab
+//! while open CLOSES the popup and focus moves per egui default;
+//! Escape while open CLOSES, keeps the selection, and leaves focus on
+//! / returns it to the trigger in EVERY open flow, including
+//! click-open. Honest caveat (NSL-INT-02, S10 §3): the fast-Escape
+//! one-pass latching window is proven at unit level only — rendered
+//! fast-Escape is non-discriminating under load by mechanism, so S10
+//! judged the Escape contract on settled/keyboard-open legs + pins.
+//!
+//! Transitions (ruling 6, narrow reading — GOVERNS over spec §6's
+//! broader wording, S1 flag F3): base animates text/chevron colour +
+//! ring, border/fill SNAP; nova animates colours, ring SNAPS.
+//! Duration/easing are the INTERIM framework defaults (150ms,
+//! cubic-bezier(0.4,0,0.2,1) — OPEN-3). Timing is UNRESOLVED on the
+//! code-fact basis, ACCEPTED at gate G6 (`transition_specs` + the
+//! pinned 0.15s/0.0s test; exact endpoints in all 444 focus events
+//! and 216 dark-hover events at S7); S10 obtained NO quiet window
+//! (no sustained load < 2), so no timing re-resolution is claimed,
+//! and M5 runtime + M8 render floor are NOT VERIFIED. No SNAP claim
+//! is made from under-sampled video. The popup has no enter/exit
+//! animation; the disabled fade snaps.
+//!
+//! S9 fixes (all S10-verified in all 4 configs): NSL-VIS-01 — one
+//! layout-only line zeroing `item_spacing.y` inside the popup
+//! `ScrollArea` (the crate pattern), restoring the 36px pitch; the
+//! F-INT-03 hit-alignment question is RESOLVED (hit zones are the
+//! exact painted rects; S6's ~4px discrepancy was its aim reference
+//! sitting 4px low; the interact-radius hypothesis is refuted).
+//! NSL-INT-01 — `CloseOnClickOutside` + an explicit `Popup::close_id`
+//! on the selection path: egui's `CloseOnClick` closes on ANY click
+//! (`any_click()` is a raw pointer-event scan with no consumption
+//! concept), so no click-consuming sense could keep the popup open;
+//! native-select was the crate's only bare `CloseOnClick` user.
+//! Clicks on popup frame margins now do nothing (recorded
+//! observation — no spec rule requires closing there). NSL-INT-02 —
+//! a second Tab/Escape handler outside the focus gate: the Tab
+//! orphan (focus moves during `interact`, so the in-gate Tab branch
+//! never fires and focus lands on the first popup row) and the
+//! Escape one-pass latching window (the focus-lock filter latches
+//! only on the pass after the grant) are both proven from egui
+//! 0.37.0 source + frame-exact unit diagnostics.
+//!
+//! Deviations (Expert Reviewer approval pending): D1 popup = port
+//! design (above); D2 `:focus-visible` modality (ring shows on any
+//! egui focus — the approved button-D3 class); D3 no native form
+//! submission (`name`/`required` have no runtime behaviour); D4 the
+//! `.placeholder()` no-selection convention (muted-foreground text
+//! when nothing is selected, empty trigger when no placeholder is
+//! supplied — ruling 4; the placeholder joins the width
+//! computation, gate G1 item 8). Trigger text is CLIPPED, no
+//! ellipsis (D-NS2, gate G1 item 1). Single-select only (OPEN-8,
+//! ruling 4). No selection styling is built (spec §4.7 wins over
+//! the brief — gate G4, S1 flag F2). The popup CLOSES on a theme
+//! switch (F-INT-05, RECORDED behaviour, gate G5). `data-slot` /
+//! `data-size` attributes are dropped (D5 note); no ARIA tree
+//! exists in egui (approved deviation class).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -67,8 +161,8 @@ const POPUP_MAX_VISIBLE_ROWS: usize = 8;
 const POPUP_ROW_PAD_LEFT: f32 = 8.0;
 /// Popup frame inner margin (D1 decision 11: XS margins).
 const POPUP_MARGIN: f32 = 4.0;
-/// Type-ahead idle timeout (OPEN-1 working algorithm: 1s, the menu/select
-/// precedent; the exact timeout is unsettled).
+/// Type-ahead idle timeout (RATIFIED algorithm, gate G1 item 5: 1s
+/// buffer with reset, the menu/select precedent).
 const TYPEAHEAD_TIMEOUT_SECS: f64 = 1.0;
 /// Chevron icon size (`size-4`).
 const CHEVRON_SIZE: f32 = 16.0;
@@ -254,12 +348,12 @@ pub(crate) struct TriggerEndpoints {
     /// Resting border: `input`.
     rest_stroke: Color32,
     /// Active border: `ring` when focused, `destructive` when invalid
-    /// (OPEN-2 PROVISIONAL invalid-wins), `destructive/50` for nova-dark
+    /// (OPEN-2 DECIDED invalid-wins, gate G1 item 7), `destructive/50` for nova-dark
     /// invalid (N5 settled).
     active_stroke: Color32,
     /// Ring colour: `ring/50` when focused, `destructive/20` (light) /
-    /// `destructive/40` (dark) when invalid (OPEN-2 PROVISIONAL
-    /// invalid-wins).
+    /// `destructive/40` (dark) when invalid (OPEN-2 DECIDED
+    /// invalid-wins, gate G1 item 7).
     ring_target: Color32,
     /// Text colour: `foreground` with a selection (N11: the slot stays
     /// `foreground` when disabled — the fade composites it), `muted-foreground`
@@ -316,11 +410,13 @@ pub(crate) fn resolve_trigger_endpoints(
 }
 
 /// Per-property transition specs (coordinator ruling 6, narrow reading —
-/// supersedes the broad sentence in spec §6; S4 records the supersession).
+/// supersedes the broad sentence in spec §6; S4 recorded the supersession).
 /// Base `transition-[color,box-shadow]` reads NARROWLY: text colour +
 /// box-shadow (ring) animate, border/fill SNAP. Nova `transition-colors`:
 /// colours animate, box-shadow (ring) SNAPS. Duration/easing are the interim
-/// framework defaults (150ms, cubic-bezier(0.4,0,0.2,1) — OPEN-3).
+/// framework defaults (150ms, cubic-bezier(0.4,0,0.2,1) — OPEN-3); timing is
+/// UNRESOLVED on the code-fact basis, ACCEPTED at gate G6 (no quiet window
+/// obtained at S10; M5/M8 NOT VERIFIED).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TriggerTransitionSpecs {
     /// Text/chevron colour: animates under BOTH styles.
@@ -380,8 +476,8 @@ fn disabled_group_fade(
 }
 
 /// Next/previous ENABLED flat index from `from`, skipping disabled options
-/// and STOPPING at the list ends (NO wrap — OPEN-1 working assumption,
-/// recorded for S6/coordinator). `from: None` + down → first enabled;
+/// and STOPPING at the list ends (NO wrap — DECIDED, gate G1 item 6 / G2).
+/// `from: None` + down → first enabled;
 /// `None` + up → last enabled. Returns `None` when no enabled option exists
 /// in the direction (caller keeps the current value).
 fn step_enabled(disabled: &[bool], from: Option<usize>, dir: i32) -> Option<usize> {
@@ -432,7 +528,7 @@ fn page_enabled(disabled: &[bool], from: Option<usize>, dir: i32) -> Option<usiz
     cur
 }
 
-/// Type-ahead match (OPEN-1 working algorithm): the first ENABLED option
+/// Type-ahead match (RATIFIED algorithm, gate G1 item 5): the first ENABLED option
 /// AFTER `after` (wrapping once) whose label starts with `query`,
 /// case-insensitive. Disabled options are skipped (§10). `after: None`
 /// searches from the start.
@@ -458,8 +554,8 @@ fn typeahead_match<S: AsRef<str>>(
 }
 
 /// Printable characters typed this frame, excluding Space (Space drives
-/// open/confirm, never the type-ahead buffer — OPEN-1) and control
-/// characters. The caller gates on trigger focus.
+/// open/confirm, never the type-ahead buffer — RATIFIED algorithm, gate G1
+/// item 5) and control characters. The caller gates on trigger focus.
 fn typeahead_chars(ctx: &Context) -> Vec<char> {
     let mut chars = Vec::new();
     ctx.input(|i| {
@@ -476,7 +572,8 @@ fn typeahead_chars(ctx: &Context) -> Vec<char> {
 #[derive(Clone, Debug, Default)]
 struct NativeSelectState {
     /// Keyboard highlight while the popup is open (flat option index).
-    /// Provisional: the selection commits only on Enter or click (OPEN-1).
+    /// Provisional-selection semantics RATIFIED (gate G2): the selection
+    /// commits only on Enter or click.
     highlight: Option<usize>,
     /// Highlight value the popup last rendered (scroll-follow gating: the
     /// ScrollArea follows only on a highlight change, never on wheel
@@ -667,7 +764,7 @@ impl<'a> NativeSelect<'a> {
             .unwrap_or_default()
     }
 
-    /// Type-ahead (OPEN-1 working algorithm): printable characters
+    /// Type-ahead (RATIFIED algorithm, gate G1 item 5): printable characters
     /// accumulate in a 1s buffer; the search jumps to the next option whose
     /// label starts with the buffer (case-insensitive, wrapping once,
     /// skipping disabled options). A buffer of one repeated character
@@ -798,9 +895,9 @@ impl<'a> NativeSelect<'a> {
         let mut close_requested = false;
         let mut refocus_trigger = false;
 
-        // ---- Keyboard (§7.1 must-implement rows; OPEN-1 rows are recorded,
-        // not guessed). Modified keys (Ctrl/Cmd/Alt) never drive the
-        // select: Alt+ArrowDown/Up stays OPEN-1.
+        // ---- Keyboard (§7.1 must-implement rows; OPEN-1 rows CLOSED as
+        // documented port behaviour, gate G2). Modified keys (Ctrl/Cmd/Alt)
+        // never drive the select: Alt+ArrowDown/Up is a DECIDED no-op.
         if !self.disabled && response.has_focus() {
             let modifiers = ctx.input(|i| i.modifiers);
             let plain = modifiers.is_none();
@@ -823,7 +920,7 @@ impl<'a> NativeSelect<'a> {
             if open_at_start {
                 // Open: arrows/Home/End/PageUp/PageDown move the HIGHLIGHT
                 // only; the selection commits on Enter or click
-                // (provisional-selection semantics stay OPEN-1).
+                // (provisional-selection semantics RATIFIED, gate G2).
                 if down {
                     if let Some(next) = step_enabled(&disabled_flags, state.highlight, 1) {
                         state.highlight = Some(next);
@@ -859,18 +956,18 @@ impl<'a> NativeSelect<'a> {
                     close_requested = true;
                     refocus_trigger = true;
                 }
-                // Space (open): OPEN-1 — no port behaviour implemented.
+                // Space (open): DECIDED no-op (gate G2) — no behaviour.
                 // The keyboard-click toggle is suppressed below, so Space
-                // neither confirms nor closes; S6/coordinator decides.
+                // neither confirms nor closes.
                 if escape {
                     // Selection unchanged: the highlight is provisional, so
-                    // revert-vs-keep (OPEN-1) is moot — Escape keeps the
+                    // revert-vs-keep is moot (gate G2) — Escape keeps the
                     // pre-open value.
                     close_requested = true;
                     refocus_trigger = true;
                 }
                 if tab {
-                    // OPEN-9: close the list; focus moves per egui default.
+                    // OPEN-9 DECIDED (gate G3): close the list; focus moves per egui default.
                     // Unreachable in practice: Tab moves focus during
                     // `interact`, before this gated block runs, so the gate
                     // reads `has_focus() == false` on the Tab frame. The
@@ -890,7 +987,7 @@ impl<'a> NativeSelect<'a> {
                         *self.selected = Some(next);
                     }
                 }
-                // Home/End/PageUp/PageDown (closed): OPEN-1 — no behaviour.
+                // Home/End/PageUp/PageDown (closed): DECIDED no-ops (gate G2).
                 // Space/Enter (closed): open via the click toggle below
                 // (egui surfaces them as clicks on the focused trigger).
                 // Escape (closed): nothing (the focus lock keeps focus).
@@ -1069,8 +1166,9 @@ impl<'a> NativeSelect<'a> {
                 egui::epaint::StrokeKind::Inside,
             );
 
-            // Label: clipped to the text zone (S1 decision D-NS2: clip, no
-            // ellipsis — §10 leaves the truncation behaviour to S1).
+            // Label: clipped to the text zone (D-NS2 RATIFIED, gate G1
+            // item 1: clip, no ellipsis — §10 leaves the truncation
+            // behaviour to S1).
             let label = (*self.selected)
                 .map(|i| self.label_for(i))
                 .unwrap_or_else(|| self.placeholder.clone().unwrap_or_default());
@@ -1322,7 +1420,7 @@ fn paint_label_row(ui: &mut Ui, label: &str, p: &Palette) {
 
 /// One option row. Highlighted rows (keyboard) render with the same `accent`
 /// treatment as hover/selected rows — the highlight must be visible, and no
-/// separate highlight colour was decided (recorded S1 detail for S8).
+/// separate highlight colour exists (RATIFIED, gate G1 item 2).
 /// Returns true when an enabled row was clicked.
 #[allow(clippy::too_many_arguments)]
 fn render_option_row(
@@ -1974,7 +2072,7 @@ mod tests {
             select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
         });
         assert_eq!(selected, Some(3));
-        // No wrap at the end (OPEN-1 working assumption).
+        // No wrap at the end (DECIDED, gate G1 item 6).
         h.key(Key::ArrowDown, |ui| {
             select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
         });
@@ -2032,7 +2130,7 @@ mod tests {
             select_ui(ui, &mut selected, &mut rect, &mut trigger_id)
         });
         assert!(h.is_popup_open(trigger_id), "Space opens when closed");
-        // Space (open): OPEN-1 — no behaviour; the popup stays open and
+        // Space (open): DECIDED no-op (gate G2); the popup stays open and
         // the selection is unchanged.
         h.key(Key::Space, |ui| {
             select_ui(ui, &mut selected, &mut rect, &mut trigger_id)

@@ -3629,7 +3629,7 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
         "Native select — native <select> port. Active recipe: {recipe} (style: {}, mode: {mode}). Heights 36/32px base, 32/28px nova (default/sm); radii 8px base, 10/8px nova.",
         theme.style.name()
     ));
-    ui.label("Frozen: N5 nova-dark invalid border destructive/50; invalid rest ring 3px under nova ONLY (base: focus-gated); disabled = whole-wrapper group fade (ruling 7); shadow-xs under ALL styles incl. nova (LAYER); no-selection = D4 placeholder convention (ruling 4, port invention); single-select only (OPEN-8). PROVISIONAL: OPEN-2 invalid+focus precedence (invalid-wins as built — S8 decides; S5 records the combined cell findings-only). Popup = port design D1 per the 12 decided values (ruling 9): popover fill, 36px rows, accent hover/selected, shadow-md, max 8 visible rows + scroll, trigger width, radius md + 4px margins, 1px border stroke. Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-3); property sets per ruling 6 (base: text+ring animate, border/fill snap; nova: colours animate, ring snaps).");
+    ui.label("Frozen: N5 nova-dark invalid border destructive/50; invalid rest ring 3px under nova ONLY (base: focus-gated); disabled = whole-wrapper group fade (ruling 7); shadow-xs under ALL styles incl. nova (LAYER); no-selection = D4 placeholder convention (ruling 4, port invention); single-select only (OPEN-8). DECIDED: OPEN-2 invalid+focus precedence (invalid-wins, gate G1 item 7, S10-verified). Popup = port design D1 per the 12 decided values (ruling 9): popover fill, 36px rows, accent hover/selected, shadow-md, max 8 visible rows + scroll, trigger width, radius md + 4px margins, 1px border stroke. Transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is INTERIM (OPEN-3); property sets per ruling 6 (base: text+ring animate, border/fill snap; nova: colours animate, ring snaps).");
 
     // Index layout: 0-10 §1 trigger states, 11-14 §2 optgroups, 15-16 §3
     // long lists, 17 §4 empty state, 18-19 §5 disabled rows, 20 §6 keyboard
@@ -3801,7 +3801,7 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
     let focused = ui.ctx().memory(|m| m.has_focus(focus_id));
     let r = resp.rect;
     ui.label(format!(
-        "invalid + focus probe — PROVISIONAL (OPEN-2): invalid-wins as built, S8 decides, S5 findings-only; focused: {focused}; {:.1} x {:.1} px",
+        "invalid + focus probe — DECIDED (OPEN-2, gate G1 item 7): invalid-wins, S10-verified; focused: {focused}; {:.1} x {:.1} px",
         r.width(),
         r.height()
     ));
@@ -3872,7 +3872,7 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
         .show(ui)
         .rect;
     ui.label(format!(
-        "ONLY an empty group: popup shows the header only, no \"No options\" row (S1 interpretation, S8 ratifies): {:.1} x {:.1} px",
+        "ONLY an empty group: popup shows the header only, no \"No options\" row (RATIFIED, gate G1 item 3): {:.1} x {:.1} px",
         r.width(),
         r.height()
     ));
@@ -4004,10 +4004,10 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
         r.height()
     ));
 
-    // 8. Long label (spec §10): trigger truncation is an S1 decision —
-    // CLIP, no ellipsis (D-NS2, S8 ratifies).
+    // 8. Long label (spec §10): trigger truncation is RATIFIED —
+    // CLIP, no ellipsis (D-NS2, gate G1 item 1).
     ui.add_space(12.0);
-    ui.label("8. Long label — explicit narrow width; trigger text CLIPS, no ellipsis (D-NS2, S1 decision, S8 ratifies)");
+    ui.label("8. Long label — explicit narrow width; trigger text CLIPS, no ellipsis (D-NS2 RATIFIED, gate G1 item 1)");
     ui.add_space(4.0);
     let r = NativeSelect::new(&mut values[22])
         .id_salt("s3-long-label")
@@ -4023,7 +4023,7 @@ pub fn native_select_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("S5/S6/S7 handoff: F4 — settle 2+ frames after focusing the trigger (click or Tab) before sending Escape/arrows, or keys misbehave for focus-lock reasons (egui 0.37). Popup targets: 36px rows, max 8 visible + internal scroll (§3), trigger width, radius md + 4px margins, shadow-md, accent hover/selected/highlight, muted-foreground headers + \"No options\" row. Tab calibration is NOT measured here — S6 establishes the stop inventory via the §6 focused: readout. OPEN-1 keyboard details stay OPEN; the combined invalid+focus cell (§1) is findings-only (OPEN-2 provisional). Disabled triggers never open a popup.");
+    ui.label("S5/S6/S7 handoff: F4 — settle 2+ frames after focusing the trigger (click or Tab) before sending Escape/arrows, or keys misbehave for focus-lock reasons (egui 0.37). Popup targets: 36px rows, max 8 visible + internal scroll (§3), trigger width, radius md + 4px margins, shadow-md, accent hover/selected/highlight, muted-foreground headers + \"No options\" row. Tab calibration is NOT measured here — S6 establishes the stop inventory via the §6 focused: readout. OPEN-1 keyboard details CLOSED as documented port behaviour (gate G2); the combined invalid+focus cell (§1) is DECIDED invalid-wins (OPEN-2, gate G1 item 7). Disabled triggers never open a popup.");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, values));
 }
