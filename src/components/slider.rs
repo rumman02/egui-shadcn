@@ -189,6 +189,58 @@ pub(crate) fn thumb_hit_size(style: Style) -> f32 {
     }
 }
 
+/// Whether the pointer is exactly inside a hit rect (spec §3.5,
+/// SLD-INT-06). egui's hit test reports a widget hovered/dragged when
+/// the pointer is within `interact_radius` (5px) of its rect — the
+/// closest/small-widget arms — so `Response::hovered()` and
+/// `Response::dragged()` over-report by up to 5px. This exact check
+/// gates both. `Rect::contains` is closed ([min, max]), matching the
+/// frozen rect's inclusive edges; `None` (no pointer) is never inside.
+pub(crate) fn pointer_in_hit_rect(pointer_pos: Option<Pos2>, hit_rect: Rect) -> bool {
+    pointer_pos.is_some_and(|pos| hit_rect.contains(pos))
+}
+
+/// Which behaviour a thumb drag started at a given press position must
+/// follow (SLD-INT-06). A thumb can win a drag egui routed to it from
+/// outside its hit rect (the radius arms); the press position decides
+/// what the drag IS, and the decision is made once, at the press.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ThumbDragArm {
+    /// Press inside the hit rect: the thumb drags.
+    Thumb,
+    /// Press inside the row rect but outside the hit rect: a track
+    /// press (W-6a) — the nearest thumb moves to the pointer. Without
+    /// this arm the band would be a dead zone: the thumb won the drag
+    /// id, so the track branch never fires on its own.
+    Track,
+    /// Press outside the row rect: the drag is suppressed entirely —
+    /// no value change, no focus grant. The default: no decision
+    /// means no action.
+    #[default]
+    Suppress,
+}
+
+/// Classifies a thumb drag from its press position (SLD-INT-06). The
+/// hit rect wins over the row rect where they overlap (they always
+/// overlap: the hit rect is centred on the thumb line inside the row).
+/// A missing pointer position suppresses: no press, no drag.
+pub(crate) fn classify_thumb_drag(
+    pointer_pos: Option<Pos2>,
+    hit_rect: Rect,
+    row_rect: Rect,
+) -> ThumbDragArm {
+    let Some(pos) = pointer_pos else {
+        return ThumbDragArm::Suppress;
+    };
+    if hit_rect.contains(pos) {
+        ThumbDragArm::Thumb
+    } else if row_rect.contains(pos) {
+        ThumbDragArm::Track
+    } else {
+        ThumbDragArm::Suppress
+    }
+}
+
 /// Reserved column height for `data-[orientation=vertical]`
 /// (base `min-h-44` = 176, nova `min-h-40` = 160). This is a MINIMUM floor
 /// (spec §3.2): the slider stretches to the offered height (`h-full`).
@@ -825,6 +877,17 @@ impl<'a> Slider<'a> {
         };
         let track_response = ui.interact(rect, id.with("track"), track_sense);
 
+        // SLD-INT-06: the exact pointer position for this frame (the
+        // same `interact_pos` the hit test reads). Read once; the
+        // thumb loop classifies drags against it and the paint loop
+        // gates the hover ring on it.
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        // Set by the thumb loop when a thumb-won drag is classified
+        // Track; consumed by the track branch below.
+        let mut thumb_track_started = false;
+        let mut thumb_track_dragging = false;
+        let mut thumb_track_stopped = false;
+
         let mut changed = false;
         let pointer_fraction = |ui: &Ui| -> f32 {
             ui.input(|i| {
@@ -854,25 +917,68 @@ impl<'a> Slider<'a> {
                 Sense::drag()
             };
             let response = ui.interact(hit_rect, id.with("thumb").with(i), sense);
+            // SLD-INT-06: egui's hit test can route a drag to this
+            // thumb from up to 5px outside `hit_rect` (the
+            // closest/small-widget arms of `hit_test`, driven by
+            // `interact_radius`). The press position decides what the
+            // drag IS, once, at `drag_started()`; the arm is stored in
+            // temp data for the drag's duration and cleared on
+            // release, so a drag that leaves the hit rect mid-drag
+            // keeps its original arm (a Thumb drag keeps following the
+            // pointer; a Track drag keeps moving the nearest thumb).
+            // A missing arm (the drag started while the widget was
+            // off-screen) falls back to Thumb — the pre-fix behaviour.
+            let arm_id = id.with("thumb").with(i).with("drag_arm");
+            if response.drag_started() {
+                let arm = classify_thumb_drag(pointer_pos, hit_rect, rect);
+                ui.ctx().data_mut(|d| d.insert_temp(arm_id, arm));
+                if arm == ThumbDragArm::Track {
+                    thumb_track_started = true;
+                }
+            }
             if response.dragged() {
-                // SLD-INT-03: pointerdown focuses the thumb (Radix
-                // focus model: pointerdown focuses the thumb, and every
-                // user-driven value change re-focuses the changed
-                // thumb). egui 0.37's `interact` never grants focus on
-                // a pointer press — it only surrenders focus when the
-                // pointer presses elsewhere — so the widget must
-                // request focus itself. The clicked-block shape used
-                // by button/checkbox/toggle cannot work here: the
-                // thumb uses `Sense::drag()`, which never reports
-                // `clicked()`. For a drag-only widget `dragged()` is
-                // true on the press frame itself (`interaction.rs`:
-                // "just sensitive to drags, so we can mark it as
-                // dragged right away"), so gating on `dragged()`
-                // covers pointerdown AND every drag frame. Disabled
-                // thumbs use `Sense::hover()`, which never reports a
-                // drag, so no focus request can fire for them.
-                response.request_focus();
-                self.set_value_from_fraction(i, pointer_fraction(ui), &mut changed);
+                let arm = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp::<ThumbDragArm>(arm_id))
+                    .unwrap_or(ThumbDragArm::Thumb);
+                match arm {
+                    ThumbDragArm::Thumb => {
+                        // SLD-INT-03: pointerdown focuses the thumb (Radix
+                        // focus model: pointerdown focuses the thumb, and every
+                        // user-driven value change re-focuses the changed
+                        // thumb). egui 0.37's `interact` never grants focus on
+                        // a pointer press — it only surrenders focus when the
+                        // pointer presses elsewhere — so the widget must
+                        // request focus itself. The clicked-block shape used
+                        // by button/checkbox/toggle cannot work here: the
+                        // thumb uses `Sense::drag()`, which never reports
+                        // `clicked()`. For a drag-only widget `dragged()` is
+                        // true on the press frame itself (`interaction.rs`:
+                        // "just sensitive to drags, so we can mark it as
+                        // dragged right away"), so gating on `dragged()`
+                        // covers pointerdown AND every drag frame. Disabled
+                        // thumbs use `Sense::hover()`, which never reports a
+                        // drag, so no focus request can fire for them.
+                        response.request_focus();
+                        self.set_value_from_fraction(i, pointer_fraction(ui), &mut changed);
+                    }
+                    ThumbDragArm::Track => {
+                        // The track branch below runs the W-6a behaviour
+                        // for this drag (nearest thumb, active-thumb
+                        // temp data, INT-03 focus grants, release
+                        // re-focus) — identical to a genuine track drag.
+                        thumb_track_dragging = true;
+                    }
+                    ThumbDragArm::Suppress => {}
+                }
+            }
+            if response.drag_stopped() {
+                if ui.ctx().data_mut(|d| d.get_temp::<ThumbDragArm>(arm_id))
+                    == Some(ThumbDragArm::Track)
+                {
+                    thumb_track_stopped = true;
+                }
+                ui.ctx().data_mut(|d| d.remove_temp::<ThumbDragArm>(arm_id));
             }
             thumb_responses.push(response);
         }
@@ -881,8 +987,14 @@ impl<'a> Slider<'a> {
         // thumb and move it to the pointer; while the drag continues, keep
         // moving that same thumb. The active thumb lives in temp data only
         // for the drag's duration and is cleared on release.
+        //
+        // SLD-INT-06: the `thumb_track_*` flags extend these three
+        // conditions to thumb-won drags classified Track (press inside
+        // the row rect, outside the hit rect). The bodies are unchanged:
+        // a thumb-won track-band drag runs the identical press/drag/
+        // release behaviour as a genuine track drag.
         let active_thumb_id = id.with("active_thumb");
-        if !self.disabled && track_response.drag_started() {
+        if !self.disabled && (track_response.drag_started() || thumb_track_started) {
             let fraction = pointer_fraction(ui);
             let nearest = nearest_thumb_index(&fractions, fraction);
             ui.ctx()
@@ -892,7 +1004,7 @@ impl<'a> Slider<'a> {
             // changed thumb).
             thumb_responses[nearest].request_focus();
             self.set_value_from_fraction(nearest, fraction, &mut changed);
-        } else if !self.disabled && track_response.dragged() {
+        } else if !self.disabled && (track_response.dragged() || thumb_track_dragging) {
             let fraction = pointer_fraction(ui);
             let active = ui.ctx().data_mut(|d| d.get_temp::<usize>(active_thumb_id));
             let nearest = active
@@ -903,7 +1015,7 @@ impl<'a> Slider<'a> {
             thumb_responses[nearest].request_focus();
             self.set_value_from_fraction(nearest, fraction, &mut changed);
         }
-        if track_response.drag_stopped() {
+        if track_response.drag_stopped() || thumb_track_stopped {
             // SLD-INT-03: re-focus the grabbed thumb on release. The
             // press frame moved the thumb under the pointer, but the
             // release frame's hit test uses the pre-jump rect, so
@@ -949,9 +1061,20 @@ impl<'a> Slider<'a> {
             painter.circle_stroke(center, radius - c.thumb_stroke.width / 2.0, c.thumb_stroke);
             // §6: the ring fades in/out over the framework-default timing
             // (interim, OPEN-11); position never animates.
+            // SLD-INT-06: `response.hovered()` over-reports by up to
+            // 5px (egui's hit-test radius arms), so gate the ring on
+            // the pointer being exactly inside the PAINTED hit rect
+            // (recomputed from the painted centre — the value may
+            // have changed this frame). The conjunction preserves
+            // egui's "no hover while dragging elsewhere" semantics:
+            // the rect check alone would ring a thumb the pointer
+            // merely passes over mid-drag.
+            let painted_hit_rect = Rect::from_center_size(center, Vec2::splat(hit_size));
+            let hovered_exact =
+                response.hovered() && pointer_in_hit_rect(pointer_pos, painted_hit_rect);
             let ring_active = thumb_ring_visible(
                 style,
-                response.hovered(),
+                hovered_exact,
                 response.dragged(),
                 response.has_focus(),
                 self.disabled,
@@ -3427,5 +3550,599 @@ mod tests {
         out.textures_delta.clear();
         assert!((rect.height() - vertical_min_height(Style::Nova)).abs() < 0.5);
         assert_eq!(v, 40.0);
+    }
+
+    // -- SLD-INT-06: hover/drag sensing must use the frozen §3.5 hit
+    // rect exactly. egui's hit test expands sensing by
+    // `interact_radius` (5px) through its closest/small-widget arms,
+    // so the ring and the drag routing must be gated on exact
+    // geometry inside `show()`. The pins below are show-driven: they
+    // park/press the pointer at exact offsets and read the painted
+    // ring shapes and the value/focus outcomes. RED before the fix
+    // at every halo/outside cell the arms reach; GREEN after.
+
+    #[test]
+    fn ring_paints_only_inside_frozen_hit_rect_sld_int_06() {
+        // The hover ring must paint exactly inside the frozen hit
+        // rect (nova 28x28, base 16x16) and nowhere outside it. The
+        // pin parks the pointer at exact offsets, settles past the
+        // 150ms ring ease (14 frames at 60fps), and inspects the
+        // painted shapes for the ring circle (radius thumb/2,
+        // stroked — distinct from the fill circle at the same radius
+        // and the border circle at radius - 0.5).
+        use crate::theme::Preset;
+        use egui::Event;
+
+        let ring_present = |out: &egui::FullOutput, style: Style| -> bool {
+            let want = thumb_size(style) / 2.0;
+            out.shapes.iter().any(|clipped| match &clipped.shape {
+                egui::Shape::Circle(cs) => {
+                    (cs.radius - want).abs() < 0.01
+                        && cs.stroke.width > 0.0
+                        && cs.stroke.color.a() > 0
+                }
+                _ => false,
+            })
+        };
+
+        let mut failures = Vec::new();
+        for style in [Style::Nova, Style::Vega] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let mut value = 50.0f32;
+            let run_frame = |ctx: &egui::Context,
+                             value: &mut f32,
+                             time: f64,
+                             events: Vec<Event>|
+             -> (egui::FullOutput, Rect) {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 120.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut rect = Rect::NOTHING;
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int06_ring"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+                    );
+                    ui.add_space(38.0);
+                    rect = Slider::new(value)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int06-ring")
+                        .show(ui)
+                        .rect;
+                });
+                out.textures_delta.clear();
+                (out, rect)
+            };
+
+            // Settle frame: register rects, learn the thumb centre.
+            let (_, rect) = run_frame(&ctx, &mut value, 1.0, vec![]);
+            let centre = rect.center();
+            assert!((centre.x - 100.0).abs() < 0.5, "centre {centre:?}");
+            assert!((centre.y - 50.0).abs() < 0.5, "centre {centre:?}");
+
+            let edge = thumb_hit_size(style) / 2.0;
+            let points: Vec<(f32, f32, bool)> = vec![
+                (0.0, 0.0, true),
+                (edge - 1.0, 0.0, true),
+                (-(edge - 1.0), 0.0, true),
+                (0.0, edge - 1.0, true),
+                (0.0, -(edge - 1.0), true),
+                (edge + 1.0, 0.0, false),
+                (-(edge + 1.0), 0.0, false),
+                (0.0, edge + 1.0, false),
+                (0.0, -(edge + 1.0), false),
+                (edge + 3.0, 0.0, false),
+                (-(edge + 3.0), 0.0, false),
+                (0.0, edge + 3.0, false),
+                (0.0, -(edge + 3.0), false),
+                (0.0, 45.0, false),
+            ];
+            let mut time = 1.1f64;
+            for (dx, dy, want) in points {
+                let pos = centre + Vec2::new(dx, dy);
+                let mut last = None;
+                for _ in 0..14 {
+                    let (o, _) = run_frame(&ctx, &mut value, time, vec![Event::PointerMoved(pos)]);
+                    last = Some(o);
+                    time += 1.0 / 60.0;
+                }
+                let got = ring_present(&last.unwrap(), style);
+                if got != want {
+                    failures.push(format!(
+                        "{style:?} offset ({dx:+.0},{dy:+.0}): ring={got}, want {want}"
+                    ));
+                }
+            }
+            assert_eq!(value, 50.0, "hover must never change the value");
+        }
+        assert!(
+            failures.is_empty(),
+            "ring sensing mismatch:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn drag_routing_follows_exact_geometry_sld_int_06() {
+        // A press starting outside the frozen hit rect must NOT start
+        // a thumb drag; a press inside the row rect but outside the
+        // hit rect is a TRACK press (nearest thumb, W-6a); a press
+        // outside the row rect does nothing. Before the fix, egui's
+        // radius arms route halo presses to the thumb, granting focus
+        // and (for off-axis presses) moving the value. The Nova halo
+        // legs are RED before the fix (focus granted); the Vega halo
+        // legs assert the track-band outcome and pass in both phases
+        // (via the thumb drag before, via the Track arm after) — they
+        // pin the §1e routing, not the suppression. The track-band /
+        // inside / diagonal legs are guards that must pass identically
+        // in both phases.
+        use crate::theme::Preset;
+        use egui::{Event, Modifiers, PointerButton};
+
+        #[derive(Clone, Copy)]
+        enum Step {
+            Move(Pos2),
+            Down(Pos2),
+            Up(Pos2),
+            Idle,
+        }
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        for style in [Style::Nova, Style::Vega] {
+            let edge = thumb_hit_size(style) / 2.0;
+            let centre = Pos2::new(100.0, 50.0);
+            let thumb = egui::Id::unique("slider_int06_drag")
+                .with("int06-drag")
+                .with("thumb")
+                .with(0usize);
+
+            // Fresh ctx per script; returns (final value, focus sampled
+            // immediately after each Down step).
+            let run_script = |script: &[Step]| -> (f32, Vec<Option<egui::Id>>) {
+                let ctx = egui::Context::default();
+                if style == Style::Vega {
+                    Preset::default().with_style(Style::Vega).install(&ctx);
+                } else {
+                    Preset::default().install(&ctx);
+                }
+                let mut value = 50.0f32;
+                let run_frame = |ctx: &egui::Context,
+                                 value: &mut f32,
+                                 time: f64,
+                                 events: Vec<Event>| {
+                    let input = egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 120.0))),
+                        events,
+                        ..Default::default()
+                    };
+                    let mut out = ctx.run_ui(input, |ctx| {
+                        let ui = &mut egui::Ui::new(
+                            ctx.clone(),
+                            egui::Id::unique("slider_int06_drag"),
+                            egui::UiBuilder::new()
+                                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+                        );
+                        ui.add_space(38.0);
+                        Slider::new(value)
+                            .min(0.0)
+                            .max(100.0)
+                            .step(1.0)
+                            .id_salt("int06-drag")
+                            .show(ui);
+                    });
+                    out.textures_delta.clear();
+                };
+                run_frame(&ctx, &mut value, 1.0, vec![]);
+                let mut t = 1.1f64;
+                let mut foci = Vec::new();
+                for step in script {
+                    let events = match step {
+                        Step::Move(p) => vec![Event::PointerMoved(*p)],
+                        Step::Down(p) => vec![Event::PointerMoved(*p), button(*p, true)],
+                        Step::Up(p) => vec![button(*p, false)],
+                        Step::Idle => vec![],
+                    };
+                    let is_down = matches!(step, Step::Down(_));
+                    run_frame(&ctx, &mut value, t, events);
+                    if is_down {
+                        foci.push(ctx.memory(|m| m.focused()));
+                    }
+                    t += 0.1;
+                }
+                (value, foci)
+            };
+
+            // A: halo press outside the row rect (Nova) / track-band
+            // press (Vega). The geometry differs per style: nova's
+            // 28px hit rect extends 2px past the 24px row rect, so a
+            // vertical halo press (dy=16) is outside the row rect and
+            // must be SUPPRESSED (no focus). Vega's 16px hit rect
+            // never extends past the row rect, so a vertical halo
+            // press (dy=10) is inside the row rect: the small-widget
+            // arm routes it to the thumb, and the fix must run TRACK
+            // behaviour (focus + value) — suppressing it would create
+            // a dead zone (§1e). A show-driven Vega Suppress leg is
+            // geometrically unreachable in this harness (the clip
+            // truncates the hit rect at the row end); Vega Suppress
+            // is pinned at the unit level
+            // (`classify_thumb_drag_routing_sld_int_06`).
+            let halo_v = centre + Vec2::new(0.0, edge + 2.0);
+            let (v, f) = run_script(&[
+                Step::Move(halo_v),
+                Step::Down(halo_v),
+                Step::Idle,
+                Step::Up(halo_v),
+            ]);
+            if style == Style::Nova {
+                assert_eq!(v, 50.0, "Nova halo-vertical: value moved to {v}");
+                assert_eq!(f, vec![None], "Nova halo-vertical: focus granted");
+            } else {
+                assert_eq!(v, 50.0, "Vega band-vertical: value moved to {v}");
+                assert_eq!(
+                    f,
+                    vec![Some(thumb)],
+                    "Vega band-vertical: track behaviour missing"
+                );
+            }
+
+            // B: track-band press (inside row rect, outside hit rect).
+            let band = centre + Vec2::new(edge + 2.0, 0.0);
+            let want_b = 50.0 + (edge + 2.0) / 2.0;
+            let (v, f) = run_script(&[
+                Step::Move(band),
+                Step::Down(band),
+                Step::Idle,
+                Step::Up(band),
+            ]);
+            assert!(
+                (v - want_b).abs() < 0.5,
+                "{style:?} track-band: got {v}, want {want_b}"
+            );
+            assert_eq!(f, vec![Some(thumb)], "{style:?} track-band: no focus");
+
+            // C: inside press.
+            let inside = centre + Vec2::new(6.0, 0.0);
+            let (v, f) = run_script(&[
+                Step::Move(inside),
+                Step::Down(inside),
+                Step::Idle,
+                Step::Up(inside),
+            ]);
+            assert!((v - 53.0).abs() < 0.5, "{style:?} inside: got {v}, want 53");
+            assert_eq!(f, vec![Some(thumb)], "{style:?} inside: no focus");
+
+            // D: diagonal drag — press inside, leave the hit rect
+            // vertically mid-drag; the value must keep following x
+            // (the drag stays armed once started inside).
+            let (v, f) = run_script(&[
+                Step::Move(centre),
+                Step::Down(centre),
+                Step::Move(Pos2::new(120.0, 65.0)),
+                Step::Move(Pos2::new(140.0, 80.0)),
+                Step::Idle,
+                Step::Up(Pos2::new(140.0, 80.0)),
+            ]);
+            assert!(
+                (v - 70.0).abs() < 0.5,
+                "{style:?} diagonal: got {v}, want 70"
+            );
+            assert_eq!(f, vec![Some(thumb)], "{style:?} diagonal: no focus");
+
+            // E: halo press, release, halo press again — the arm
+            // disarms on release and re-classifies on the next press,
+            // so both presses get the same outcome as leg A (Nova:
+            // both suppressed; Vega: both track behaviour).
+            let (v, f) = run_script(&[
+                Step::Move(halo_v),
+                Step::Down(halo_v),
+                Step::Idle,
+                Step::Up(halo_v),
+                Step::Idle,
+                Step::Move(halo_v),
+                Step::Down(halo_v),
+                Step::Idle,
+                Step::Up(halo_v),
+            ]);
+            assert_eq!(v, 50.0, "{style:?} re-press: value moved to {v}");
+            if style == Style::Nova {
+                assert_eq!(f, vec![None, None], "Nova re-press: focus granted");
+            } else {
+                assert_eq!(
+                    f,
+                    vec![Some(thumb), Some(thumb)],
+                    "Vega re-press: track behaviour missing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sensing_is_identical_across_modes_sld_int_06() {
+        // SLD-INT-06 §1d: the S6 vega-dark anomaly (sensing shifted up
+        // vs vega-light) cannot be a sensing difference — the hit
+        // rect, track rect, sense and interact_radius take no theme
+        // input. This guard pins it: the same halo press under light
+        // and dark (per style) must produce identical value + focus
+        // outcomes. Passes both before and after the fix; the rendered
+        // before-phase grid adjudicates the S6 anomaly as a
+        // measurement artifact.
+        use crate::theme::{Mode, Preset, ShadcnTheme};
+        use egui::{Event, Modifiers, PointerButton};
+
+        for style in [Style::Nova, Style::Vega] {
+            let mut outcomes = Vec::new();
+            for dark in [false, true] {
+                let ctx = egui::Context::default();
+                if style == Style::Vega {
+                    Preset::default().with_style(Style::Vega).install(&ctx);
+                } else {
+                    Preset::default().install(&ctx);
+                }
+                if dark {
+                    ShadcnTheme::set_mode(&ctx, Mode::Dark);
+                }
+                let mut value = 50.0f32;
+                let edge = thumb_hit_size(style) / 2.0;
+                let pos = Pos2::new(100.0, 50.0 + edge + 2.0);
+                let run_frame = |ctx: &egui::Context,
+                                 value: &mut f32,
+                                 time: f64,
+                                 events: Vec<Event>| {
+                    let input = egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 120.0))),
+                        events,
+                        ..Default::default()
+                    };
+                    let mut out = ctx.run_ui(input, |ctx| {
+                        let ui = &mut egui::Ui::new(
+                            ctx.clone(),
+                            egui::Id::unique("slider_int06_modes"),
+                            egui::UiBuilder::new()
+                                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+                        );
+                        ui.add_space(38.0);
+                        Slider::new(value)
+                            .min(0.0)
+                            .max(100.0)
+                            .step(1.0)
+                            .id_salt("int06-modes")
+                            .show(ui);
+                    });
+                    out.textures_delta.clear();
+                };
+                run_frame(&ctx, &mut value, 1.0, vec![]);
+                run_frame(
+                    &ctx,
+                    &mut value,
+                    1.1,
+                    vec![Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Modifiers::default(),
+                    }],
+                );
+                run_frame(&ctx, &mut value, 1.2, vec![]);
+                outcomes.push((value, ctx.memory(|m| m.focused())));
+            }
+            assert_eq!(
+                outcomes[0], outcomes[1],
+                "{style:?} sensing differs across modes: {outcomes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_drag_routing_follows_exact_geometry_sld_int_06() {
+        // Same routing rule, vertical orientation: the hit rect is
+        // centred on the thumb in both axes, so a cross-axis halo
+        // press must not start a thumb drag, and a vertical drag must
+        // follow the pointer bottom-up.
+        use crate::theme::Preset;
+        use egui::{Event, Modifiers, PointerButton};
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        for style in [Style::Nova, Style::Vega] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let mut value = 50.0f32;
+            let run_frame =
+                |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| -> Rect {
+                    let input = egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(120.0, 220.0))),
+                        events,
+                        ..Default::default()
+                    };
+                    let mut rect = Rect::NOTHING;
+                    let mut out = ctx.run_ui(input, |ctx| {
+                        let ui = &mut egui::Ui::new(
+                            ctx.clone(),
+                            egui::Id::unique("slider_int06_vertical"),
+                            egui::UiBuilder::new()
+                                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 200.0))),
+                        );
+                        rect = Slider::new(value)
+                            .min(0.0)
+                            .max(100.0)
+                            .step(1.0)
+                            .orientation(GroupOrientation::Vertical)
+                            .id_salt("int06-vertical")
+                            .show(ui)
+                            .rect;
+                    });
+                    out.textures_delta.clear();
+                    rect
+                };
+            let rect = run_frame(&ctx, &mut value, 1.0, vec![]);
+            // Value 50 -> fraction 0.5 -> centre of the track.
+            let centre = Pos2::new(rect.center().x, rect.center().y);
+            let edge = thumb_hit_size(style) / 2.0;
+            let thumb = egui::Id::unique("slider_int06_vertical")
+                .with("int06-vertical")
+                .with("thumb")
+                .with(0usize);
+
+            // Halo cross-axis press: style-aware, as in the horizontal
+            // pin — Nova's 28px hit rect extends past the 24px row, so
+            // the cross-axis halo press is outside the row rect and
+            // must be suppressed; Vega's 16px hit rect sits inside
+            // the row, so the same press is a track-band press and
+            // must run track behaviour (focus, value unchanged: the
+            // press is y-aligned with the thumb).
+            let halo = centre + Vec2::new(edge + 2.0, 0.0);
+            run_frame(&ctx, &mut value, 1.1, vec![Event::PointerMoved(halo)]);
+            run_frame(&ctx, &mut value, 1.2, vec![button(halo, true)]);
+            run_frame(&ctx, &mut value, 1.3, vec![]);
+            assert_eq!(value, 50.0, "{style:?} vertical halo: value moved");
+            if style == Style::Nova {
+                assert_eq!(
+                    ctx.memory(|m| m.focused()),
+                    None,
+                    "Nova vertical halo: focus granted"
+                );
+            } else {
+                assert_eq!(
+                    ctx.memory(|m| m.focused()),
+                    Some(thumb),
+                    "Vega vertical halo: track behaviour missing"
+                );
+            }
+            run_frame(&ctx, &mut value, 1.4, vec![button(halo, false)]);
+
+            // Inside press + vertical drag to 70 (bottom-up).
+            run_frame(&ctx, &mut value, 1.5, vec![Event::PointerMoved(centre)]);
+            run_frame(&ctx, &mut value, 1.6, vec![button(centre, true)]);
+            let up = Pos2::new(centre.x, rect.max.y - 0.7 * rect.height());
+            run_frame(&ctx, &mut value, 1.7, vec![Event::PointerMoved(up)]);
+            run_frame(&ctx, &mut value, 1.8, vec![]);
+            assert!(
+                (value - 70.0).abs() < 0.5,
+                "{style:?} vertical drag: got {value}, want 70"
+            );
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb),
+                "{style:?} vertical drag: no focus"
+            );
+            run_frame(&ctx, &mut value, 1.9, vec![button(up, false)]);
+        }
+    }
+
+    #[test]
+    fn pointer_in_hit_rect_boundaries_sld_int_06() {
+        // Closed edges: the frozen rect is inclusive on all sides.
+        let rect = Rect::from_min_max(Pos2::new(86.0, 36.0), Pos2::new(114.0, 64.0));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(100.0, 50.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(86.0, 50.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(114.0, 50.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(100.0, 36.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(100.0, 64.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(86.0, 36.0)), rect));
+        assert!(pointer_in_hit_rect(Some(Pos2::new(114.0, 64.0)), rect));
+        assert!(!pointer_in_hit_rect(Some(Pos2::new(85.0, 50.0)), rect));
+        assert!(!pointer_in_hit_rect(Some(Pos2::new(115.0, 50.0)), rect));
+        assert!(!pointer_in_hit_rect(Some(Pos2::new(100.0, 35.0)), rect));
+        assert!(!pointer_in_hit_rect(Some(Pos2::new(100.0, 65.0)), rect));
+        assert!(!pointer_in_hit_rect(Some(Pos2::new(0.0, 0.0)), rect));
+        assert!(!pointer_in_hit_rect(None, rect));
+    }
+
+    #[test]
+    fn classify_thumb_drag_routing_sld_int_06() {
+        // Horizontal: hit rect 28x28 at (100,50), row rect 200x24.
+        let hit = Rect::from_center_size(Pos2::new(100.0, 50.0), Vec2::splat(28.0));
+        let row = Rect::from_min_max(Pos2::new(0.0, 38.0), Pos2::new(200.0, 62.0));
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(100.0, 50.0)), hit, row),
+            ThumbDragArm::Thumb
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(86.0, 50.0)), hit, row),
+            ThumbDragArm::Thumb
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(114.0, 50.0)), hit, row),
+            ThumbDragArm::Thumb
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(100.0, 36.0)), hit, row),
+            ThumbDragArm::Thumb
+        );
+        // Row band: inside the row, outside the hit rect -> Track.
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(50.0, 50.0)), hit, row),
+            ThumbDragArm::Track
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(150.0, 50.0)), hit, row),
+            ThumbDragArm::Track
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(115.0, 50.0)), hit, row),
+            ThumbDragArm::Track
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(0.0, 50.0)), hit, row),
+            ThumbDragArm::Track
+        );
+        // Outside the row rect -> Suppress.
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(100.0, 30.0)), hit, row),
+            ThumbDragArm::Suppress
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(100.0, 70.0)), hit, row),
+            ThumbDragArm::Suppress
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(250.0, 50.0)), hit, row),
+            ThumbDragArm::Suppress
+        );
+        assert_eq!(classify_thumb_drag(None, hit, row), ThumbDragArm::Suppress);
+        // Vertical: hit rect 28x28 at (12,100), row rect 24x200.
+        let hit_v = Rect::from_center_size(Pos2::new(12.0, 100.0), Vec2::splat(28.0));
+        let row_v = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(24.0, 200.0));
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(12.0, 100.0)), hit_v, row_v),
+            ThumbDragArm::Thumb
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(12.0, 50.0)), hit_v, row_v),
+            ThumbDragArm::Track
+        );
+        assert_eq!(
+            classify_thumb_drag(Some(Pos2::new(30.0, 100.0)), hit_v, row_v),
+            ThumbDragArm::Suppress
+        );
     }
 }
