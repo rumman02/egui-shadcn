@@ -141,6 +141,7 @@
 
 use crate::icons::Icon;
 use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::utils::animation::{transition_alpha, transition_color_to, TransitionSpec};
 use egui::{
     Align2, Color32, CornerRadius, Event, Id, Key, Painter, Pos2, Rect, Response, Sense, Stroke,
     Ui, Vec2,
@@ -1094,6 +1095,37 @@ fn paint_group_slots(ui: &Ui, ctx: &OtpCtx, slots: &[(usize, Rect)]) {
     let caret_opacity = caret_blink_opacity(blink_time);
     let painter = ui.painter();
 
+    // OTP-ANM-01 (gate G3): the slot ring eases over 150ms
+    // (`transition-all`, framework defaults — `TransitionSpec::default()`)
+    // via `utils::animation` (toggle precedent: ring colour +
+    // visibility both ride the ring spec). The transitions are driven
+    // for EVERY slot every frame, so OUT legs advance: a slot that just
+    // went inactive keeps a fading ring until its alpha reaches 0, and
+    // Phase C paints any slot whose alpha is still > 0 — not just the
+    // currently active one (otherwise the OUT leg could never render).
+    let spec = TransitionSpec::default();
+    let mut rings: Vec<(Rect, Color32, f32)> = Vec::new();
+    for &(index, rect) in slots {
+        let active = is_slot_active(index, ctx.sel, ctx.focused, ctx.disabled);
+        let ring_color = transition_color_to(
+            ui.ctx(),
+            ctx.group_id.with("ring").with(index),
+            slot_ring_color(ctx.invalid, dark, p),
+            spec,
+        )
+        .color;
+        let ring_alpha = transition_alpha(
+            ui.ctx(),
+            ctx.group_id.with("ring_alpha").with(index),
+            0.0,
+            1.0,
+            active,
+            spec,
+        )
+        .alpha;
+        rings.push((rect, ring_color, ring_alpha));
+    }
+
     // Phase A: non-active slots.
     for &(index, rect) in slots {
         if !ui.is_rect_visible(rect) {
@@ -1154,18 +1186,20 @@ fn paint_group_slots(ui: &Ui, ctx: &OtpCtx, slots: &[(usize, Rect)]) {
         }
     }
     // Phase C: the active rings (`ring-[3px] ring-ring/50`, invalid
-    // `ring-destructive/20` dark /40).
-    for &(index, rect) in slots {
+    // `ring-destructive/20` dark /40) — eased (ANM-01): a ring paints
+    // while its alpha is > 0, so the OUT leg renders on the slot that
+    // just went inactive instead of snapping off.
+    for &(rect, ring_color, ring_alpha) in &rings {
         if !ui.is_rect_visible(rect) {
             continue;
         }
-        if !is_slot_active(index, ctx.sel, ctx.focused, ctx.disabled) {
+        if ring_alpha <= 0.0 {
             continue;
         }
         crate::utils::focus::paint_ring(
             painter,
             rect.expand2(egui::vec2(1.0, 1.0)),
-            slot_ring_color(ctx.invalid, dark, p),
+            color_alpha(ring_color, ring_alpha),
             3.0,
             radius as f32,
         );
@@ -1220,10 +1254,20 @@ fn paint_slot_chrome(
     }
     // `border-y border-r border-input` (first also gets border-l);
     // invalid beats active; `has-disabled:opacity-50` fades the border.
-    let stroke_color = color_alpha(
+    // OTP-ANM-01 (gate G3): the border colour eases over 150ms via
+    // `transition_color_to` (toggle precedent — endpoint tracking, so
+    // focus / invalid / theme flips animate from the displayed colour).
+    // The disabled fade is applied AFTER animation, so it snaps:
+    // opacity is in neither transition set (same as toggle's group
+    // fade). The settled colour is identical to before.
+    let border_color = transition_color_to(
+        ui.ctx(),
+        ctx.group_id.with("border").with(index),
         slot_border_color(ctx.invalid, active, p),
-        if ctx.disabled { 0.5 } else { 1.0 },
-    );
+        TransitionSpec::default(),
+    )
+    .color;
+    let stroke_color = color_alpha(border_color, if ctx.disabled { 0.5 } else { 1.0 });
     paint_otp_fused_stroke(
         painter,
         rect,
@@ -1696,6 +1740,285 @@ mod tests {
         );
         assert_eq!(stroke.color, Color32::RED);
         assert_eq!(radius, egui::CornerRadius::same(10));
+    }
+
+    /// OTP-ANM-01 (gate G3): the slot ring eases over 150ms.
+    /// One frame at an explicit clock time (the animator follows
+    /// `input.time`); clears `textures_delta` (the existing pattern —
+    /// egui panics on drop with unapplied deltas).
+    fn run_frame_at(
+        ctx: &egui::Context,
+        value: &mut String,
+        time: f64,
+        name: &'static str,
+        salt: &'static str,
+        length: usize,
+        numeric: bool,
+    ) -> egui::FullOutput {
+        let mut input = egui::RawInput::default();
+        input.time = Some(time);
+        let (mut out, _) = run_frame(ctx, value, input, name, salt, length, numeric);
+        out.textures_delta.clear();
+        out
+    }
+
+    /// The ring stroke colours on the slot whose centre `point` lies
+    /// inside the ring rect (the ring is painted on the slot rect
+    /// expanded by 1px, so it contains the slot centre).
+    fn ring_colors_on_slot(out: &egui::FullOutput, point: Pos2) -> Vec<Color32> {
+        ring_strokes(out)
+            .into_iter()
+            .filter(|(r, _, _)| r.contains(point))
+            .map(|(_, s, _)| s.color)
+            .collect()
+    }
+
+    /// OTP-ANM-01 (gate G3): the slot ring eases IN over 150ms.
+    /// At t=0.075 (half of 150ms) the ring is at an intermediate
+    /// alpha — strictly between 0 and settled — and at t=0.2 it is
+    /// exactly the target colour. Pre-fix the ring is at full
+    /// strength in the very first focused frame, so the mid-ease
+    /// assertion fails on the old code.
+    #[test]
+    fn ring_eases_in_otp_anm01() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_anm01_in", "otp");
+        let p = Preset::default().build(Mode::Light).palette;
+        let settled = slot_ring_color(false, false, p).a();
+        // Unfocused frames establish the ring animator at 0 (no ring).
+        let out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_in", "otp", 6, false);
+        assert!(ring_strokes(&out).is_empty(), "no ring while unfocused");
+        // Focus at t=0.0 (the flip frame) — focus-gain puts the caret at (3, 3).
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_in", "otp", 6, false);
+        assert_eq!(test_sel(&ctx, "otp_anm01_in", "otp"), (3, 3));
+        // Mid-ease at t=0.075.
+        let out = run_frame_at(&ctx, &mut value, 0.075, "otp_anm01_in", "otp", 6, false);
+        let rects = test_slot_rects(&ctx, "otp_anm01_in", "otp");
+        let centre = rects[3].1.center();
+        let mid = ring_colors_on_slot(&out, centre);
+        assert_eq!(mid.len(), 1, "one ring on slot 3 mid-ease: {:?}", mid);
+        let a = mid[0].a();
+        assert!(
+            a > 0 && a < settled,
+            "ring alpha mid-ease: got {a}, settled {settled}"
+        );
+        // Settled at t=0.2 (past 150ms).
+        let out = run_frame_at(&ctx, &mut value, 0.2, "otp_anm01_in", "otp", 6, false);
+        let done = ring_colors_on_slot(&out, centre);
+        assert_eq!(done.len(), 1, "one ring on slot 3 settled: {:?}", done);
+        assert_eq!(
+            done[0],
+            slot_ring_color(false, false, p),
+            "ring colour settled: {:?}",
+            done[0]
+        );
+    }
+
+    /// OTP-ANM-01 (gate G3): the slot ring eases OUT over 150ms.
+    /// After blur the old slot's ring is still present at an
+    /// intermediate alpha at t=0.275 (0.075 after the blur), and gone
+    /// at t=0.4. The blur frame itself (t=0.2) still shows the full
+    /// ring — the animator returns the old leg on the flip frame, so
+    /// the fade starts on the next frame. Pre-fix the ring vanishes
+    /// in the very first blurred frame, so the mid-fade assertion
+    /// fails on the old code.
+    #[test]
+    fn ring_eases_out_otp_anm01() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_anm01_out", "otp");
+        let p = Preset::default().build(Mode::Light).palette;
+        let settled = slot_ring_color(false, false, p).a();
+        // Focus + settle (t=0.2): ring at full strength on slot 3.
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_out", "otp", 6, false);
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_out", "otp", 6, false);
+        let out = run_frame_at(&ctx, &mut value, 0.2, "otp_anm01_out", "otp", 6, false);
+        let rects = test_slot_rects(&ctx, "otp_anm01_out", "otp");
+        let centre = rects[3].1.center();
+        let full = ring_colors_on_slot(&out, centre);
+        assert_eq!(full.len(), 1, "one ring on slot 3 settled: {:?}", full);
+        assert_eq!(full[0].a(), settled, "ring settled: {:?}", full[0]);
+        // Blur at t=0.2: the OUT leg starts from the settled alpha.
+        ctx.memory_mut(|mem| mem.surrender_focus(control));
+        let out = run_frame_at(&ctx, &mut value, 0.2, "otp_anm01_out", "otp", 6, false);
+        let flip = ring_colors_on_slot(&out, centre);
+        assert_eq!(
+            flip.len(),
+            1,
+            "ring still full on the blur frame: {:?}",
+            flip
+        );
+        assert_eq!(flip[0].a(), settled, "ring full on the blur frame");
+        // Mid-fade at t=0.275 (0.075 after the blur).
+        let out = run_frame_at(&ctx, &mut value, 0.275, "otp_anm01_out", "otp", 6, false);
+        let mid = ring_colors_on_slot(&out, centre);
+        assert_eq!(mid.len(), 1, "ring still present mid-fade: {:?}", mid);
+        let a = mid[0].a();
+        assert!(
+            a > 0 && a < settled,
+            "ring alpha mid-fade: got {a}, settled {settled}"
+        );
+        // Gone at t=0.4 (past 150ms after the blur).
+        let out = run_frame_at(&ctx, &mut value, 0.4, "otp_anm01_out", "otp", 6, false);
+        assert!(
+            ring_strokes(&out).is_empty(),
+            "no ring once the OUT leg settles: {:?}",
+            ring_strokes(&out)
+        );
+    }
+
+    /// OTP-ANM-01 (gate G3): the slot border colour eases over 150ms
+    /// from `input` to `ring` on focus. At t=0.075 it is a mid-OKLab
+    /// mix — neither endpoint — and at t=0.2 it is exactly `ring`.
+    /// Pre-fix the border is `ring` in the very first focused frame,
+    /// so the mid-mix assertion fails on the old code.
+    #[test]
+    fn border_colour_eases_otp_anm01() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_anm01_border", "otp");
+        let p = Preset::default().build(Mode::Light).palette;
+        // Unfocused frames establish the border animator at `input`.
+        let out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_border", "otp", 6, false);
+        let rects = test_slot_rects(&ctx, "otp_anm01_border", "otp");
+        let slot3 = rects[3].1;
+        let slot3_border = |out: &egui::FullOutput| -> Vec<Color32> {
+            border_strokes(out)
+                .into_iter()
+                .filter(|(_, r, _)| *r == slot3)
+                .map(|(_, _, s)| s.color)
+                .collect()
+        };
+        let rest = slot3_border(&out);
+        assert!(!rest.is_empty(), "slot-3 border strokes at rest");
+        assert!(
+            rest.iter().all(|c| *c == p.input),
+            "rest border is input: {:?}",
+            rest
+        );
+        // Focus at t=0.0; mid-ease at t=0.075.
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_border", "otp", 6, false);
+        let out = run_frame_at(&ctx, &mut value, 0.075, "otp_anm01_border", "otp", 6, false);
+        let mid = slot3_border(&out);
+        assert!(!mid.is_empty(), "slot-3 border strokes mid-ease");
+        assert!(
+            mid.iter().all(|c| *c != p.input && *c != p.ring),
+            "border mid-mix: {:?}",
+            mid
+        );
+        // Settled at t=0.2: exactly `ring`.
+        let out = run_frame_at(&ctx, &mut value, 0.2, "otp_anm01_border", "otp", 6, false);
+        let done = slot3_border(&out);
+        assert!(!done.is_empty(), "slot-3 border strokes settled");
+        assert!(
+            done.iter().all(|c| *c == p.ring),
+            "border settled to ring: {:?}",
+            done
+        );
+    }
+
+    /// OTP-ANM-01 (gate G3): the char + caret are CONTENT, not
+    /// transitioned properties — they snap while the ring eases.
+    /// Typing "4" at t=0.075 (the ring still mid-ease): the char
+    /// appears at FULL foreground strength and the caret is already
+    /// on slot 4 (1x16 rect centred on slot 4) in the same frame,
+    /// while the slot-3 ring is still fading out at an intermediate
+    /// alpha.
+    #[test]
+    fn char_and_caret_snap_while_ring_eases_otp_anm01() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_anm01_content", "otp");
+        let p = Preset::default().build(Mode::Light).palette;
+        // Focus at t=0.0; advance to t=0.075 so the slot-3 ring is mid-ease.
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_content", "otp", 6, false);
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_content", "otp", 6, false);
+        assert_eq!(test_sel(&ctx, "otp_anm01_content", "otp"), (3, 3));
+        // Type "4" at t=0.075.
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.075);
+        input.events.push(Event::Text("4".to_owned()));
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            input,
+            "otp_anm01_content",
+            "otp",
+            6,
+            false,
+        );
+        out.textures_delta.clear();
+        assert_eq!(value, "1234");
+        assert_eq!(test_sel(&ctx, "otp_anm01_content", "otp"), (4, 4));
+        let rects = test_slot_rects(&ctx, "otp_anm01_content", "otp");
+        let slot3 = rects[3].1;
+        let slot4 = rects[4].1;
+        // The "4" char is at FULL foreground strength in the same frame.
+        let text_colors: Vec<Color32> = out
+            .shapes
+            .iter()
+            .filter_map(|clipped| {
+                if let egui::Shape::Text(text_shape) = &clipped.shape {
+                    Some(text_shape.fallback_color)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            text_colors.len(),
+            4,
+            "four chars rendered: {:?}",
+            text_colors
+        );
+        assert!(
+            text_colors.iter().all(|c| *c == p.foreground),
+            "chars at full foreground: {:?}",
+            text_colors
+        );
+        // The caret is already on slot 4: a 1x16 filled rect centred on it.
+        let carets: Vec<Rect> = out
+            .shapes
+            .iter()
+            .filter_map(|clipped| {
+                if let egui::Shape::Rect(rect_shape) = &clipped.shape {
+                    if rect_shape.stroke.is_empty()
+                        && rect_shape.rect.width() == 1.0
+                        && rect_shape.rect.height() == 16.0
+                    {
+                        Some(rect_shape.rect)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(carets.len(), 1, "one caret rect: {:?}", carets);
+        let want_caret =
+            Rect::from_center_size(content_center(slot4, false), egui::vec2(1.0, 16.0));
+        assert_eq!(carets[0], want_caret, "caret on slot 4: {:?}", carets[0]);
+        // While the content snapped, the slot-3 ring is still fading
+        // out at an intermediate alpha (the OUT leg's flip frame
+        // returns the old leg's eased value).
+        let mid = ring_colors_on_slot(&out, slot3.center());
+        assert_eq!(mid.len(), 1, "ring-3 still present mid-fade: {:?}", mid);
+        let settled = slot_ring_color(false, false, p).a();
+        let a = mid[0].a();
+        assert!(
+            a > 0 && a < settled,
+            "ring-3 alpha mid-fade: got {a}, settled {settled}"
+        );
     }
 
     /// OTP-F-03/04 (S4 §9, CLOSED): the caret blink follows the
