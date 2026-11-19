@@ -5645,10 +5645,10 @@ pub fn input_otp_demo(ui: &mut egui::Ui) {
         "light"
     };
     ui.label(format!(
-        "Input OTP — single-hidden-input model, one Tab stop per control (S1, library input-otp 1.4.2). Active recipe: {recipe} (style: {}, mode: {mode}). Slots 36px base / 32px nova; end corners 8px base / 10px nova; fused 1px dividers (N7); active ring 3px ring/50; invalid full destructive (N5 does NOT apply); disabled = whole-control 50% fade; caret 1x16px, 1s blink.",
+        "Input OTP — single-hidden-input model, one Tab stop per control (S1, library input-otp 1.4.2). Active recipe: {recipe} (style: {}, mode: {mode}). Slots 36px base / 32px nova; end corners 8px base / 10px nova; fused 1px dividers (N7); active ring 3px ring/50; invalid full destructive (N5 does NOT apply); disabled = whole-control 50% fade; caret 1x16px, 1.25s keyframe blink.",
         theme.style.name()
     ));
-    ui.label("Frozen: OPEN-6 caret blink duty is a 50% square-wave ASSUMPTION (D4, period frozen at 1s); base separator 24px (F-05 corrected; D5 VOID); light foreground follows themes.ts (OPEN-9 settled). Deviations D1 (no ARIA tree), D2 (focus/active trigger modality), D3 (focus mechanism) PROPOSED. Click a group to focus it — the caret lands in the first empty slot; typing the last digit fires onComplete (§4). Row readouts are scope rects: widths are exact under nova (192 = 6x32, 224 = 96+8+16+8+96) and base §2 is 256 (108+8+24+8+108), heights read 36.0 because the scope adds 4px layout spacing — slots are 32px tall under nova, 36px under base.");
+    ui.label("Frozen: caret blink 1.25s + caret-blink keyframes (OPEN-6 CLOSED, S4 §9; D4 VOID); base separator 24px (F-05 corrected; D5 VOID); ring eases 150ms (ANM-01, S10-verified); blink advances with no interaction via a repaint driver (gate G4); light foreground follows themes.ts (OPEN-9 settled). Deviations D1 (no ARIA tree), D2 (focus/active trigger modality), D3 (focus mechanism) PROPOSED. Click a group to focus it — the caret lands in the first empty slot; typing the last digit fires onComplete (§4). Row readouts are scope rects: widths are exact under nova (192 = 6x32, 224 = 96+8+16+8+96) and base §2 is 256 (108+8+24+8+108), heights read 36.0 because the scope adds 4px layout spacing — slots are 32px tall under nova, 36px under base.");
 
     let simple_store = egui::Id::unique("otp_demo_simple");
     let custom_store = egui::Id::unique("otp_demo_custom");

@@ -130,8 +130,10 @@
 //! crate's fused-stroke precedent). The group paints all chrome
 //! post-closure, in CSS order: the nova group-invalid ring, then
 //! non-active slots, then the active slot(s) (`z-10`), then the active
-//! rings (OTP-F-02: the group ring paints before the slot children, so
-//! the active ring — `z-10` — sits above it).
+//! rings (OTP-F-02, code-ordering-only: the group ring paints before the
+//! slot children, so the active ring — `z-10` — sits above it; verified by
+//! code inspection + a paint-order pin, not by pixels — the two orders are
+//! not render-distinguishable for the demo's configuration, S5 §6).
 //!
 //! # What the port does not surface
 //!
