@@ -92,8 +92,10 @@
 //! right only — each internal divider is the earlier slot's right edge,
 //! painted exactly once (see `paint_otp_fused_stroke`, which mirrors the
 //! crate's fused-stroke precedent). The group paints all chrome
-//! post-closure, in CSS order: non-active slots, then the active slot(s)
-//! (`z-10`), then the active rings, then the nova group-invalid ring.
+//! post-closure, in CSS order: the nova group-invalid ring, then
+//! non-active slots, then the active slot(s) (`z-10`), then the active
+//! rings (OTP-F-02: the group ring paints before the slot children, so
+//! the active ring — `z-10` — sits above it).
 //!
 //! # What the port does not surface
 //!
@@ -1030,10 +1032,13 @@ impl InputOTPGroup {
             d.insert_temp(slot_rects_id(ctx.group_id), all);
         });
 
-        if !slots.is_empty() {
-            paint_group_slots(ui, &ctx, &slots);
-        }
-
+        // OTP-F-02 (gate G1 item 8): the nova group-invalid ring paints
+        // BEFORE the slot children — CSS paint order: the group's ring
+        // paints in the group's own background/border phase, before its
+        // children; the active slot is `z-10`, so its ring paints ABOVE
+        // the group ring. (S4 routing: "paint the group ring BEFORE
+        // `paint_group_slots`" — painting before the call puts it below
+        // every slot phase, which is what CSS requires.)
         // nova `.cn-input-otp-group`: `has-aria-invalid:ring-3
         // ring-destructive/20 dark:ring-destructive/40` around the whole
         // group when any slot is invalid — faded with the container when
@@ -1066,13 +1071,19 @@ impl InputOTPGroup {
             }
         }
 
+        if !slots.is_empty() {
+            paint_group_slots(ui, &ctx, &slots);
+        }
+
         inner
     }
 }
 
 /// Paints one group's slots post-closure, in CSS order: non-active slots,
 /// then the active slot(s) (`z-10`), then the active rings — so an active
-/// ring is never covered by a neighbour's fill.
+/// ring is never covered by a neighbour's fill. (The nova group-invalid
+/// ring paints before this call, in `InputOTPGroup::show` — OTP-F-02 —
+/// so it sits below every slot phase.)
 fn paint_group_slots(ui: &Ui, ctx: &OtpCtx, slots: &[(usize, Rect)]) {
     let theme = ShadcnTheme::of_ui(ui);
     let dark = theme.mode.is_dark();
@@ -1740,6 +1751,129 @@ mod tests {
         );
         assert_eq!(stroke.color, Color32::RED);
         assert_eq!(radius, egui::CornerRadius::same(10));
+    }
+
+    /// OTP-F-02 (gate G1 item 8): the nova group-invalid ring must paint
+    /// BEFORE the slot children (CSS paint order — the group's ring
+    /// paints in the group's own background/border phase, before its
+    /// children; the active slot is `z-10`, so its ring paints ABOVE the
+    /// group ring). The pin asserts the emission order of the two 3px
+    /// ring shapes in `out.shapes`: the group ring (rect == slot box)
+    /// must come before the active ring (rect == active slot rect
+    /// expanded by 1px). Pre-fix the group ring paints AFTER
+    /// `paint_group_slots`, so the order assertion fails on the old
+    /// code. No pixel verdict is claimed (S5 §6: the demo's
+    /// configuration cannot distinguish the orders by pixels — both
+    /// rings are destructive/20 light /40 dark for an invalid slot).
+    fn run_invalid_frame_at(
+        ctx: &egui::Context,
+        value: &mut String,
+        time: f64,
+        name: &'static str,
+        salt: &'static str,
+        length: usize,
+        numeric: bool,
+    ) -> egui::FullOutput {
+        let mut input = egui::RawInput::default();
+        input.time = Some(time);
+        let mut output = OtpOutput {
+            changed: false,
+            focused: false,
+            completed: false,
+        };
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique(name),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            output = InputOTP::new(value)
+                .length(length)
+                .numeric(numeric)
+                .invalid(true)
+                .id_salt(salt)
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        out
+    }
+
+    /// The shape-list index of every 3px ring stroke, in emission order:
+    /// `(index, rect, stroke, corner_radius)`.
+    fn ring_stroke_indices(
+        out: &egui::FullOutput,
+    ) -> Vec<(usize, Rect, Stroke, egui::CornerRadius)> {
+        let mut rings = Vec::new();
+        for (i, clipped) in out.shapes.iter().enumerate() {
+            if let egui::Shape::Rect(rect_shape) = &clipped.shape {
+                if rect_shape.stroke.width == 3.0 && !rect_shape.stroke.is_empty() {
+                    rings.push((
+                        i,
+                        rect_shape.rect,
+                        rect_shape.stroke,
+                        rect_shape.corner_radius,
+                    ));
+                }
+            }
+        }
+        rings
+    }
+
+    #[test]
+    fn group_ring_paints_before_active_ring_otp_f02() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "12".to_owned();
+        let control = test_control_id("otp_f02", "otp");
+        // Unfocused frame: only the group-invalid ring exists — it paints
+        // whenever the group is invalid, focused or not (no active ring).
+        // (This frame also establishes the active-ring animator at 0.)
+        let out = run_invalid_frame_at(&ctx, &mut value, 0.0, "otp_f02", "otp", 3, false);
+        let rings = ring_strokes(&out);
+        assert_eq!(
+            rings.len(),
+            1,
+            "only the group ring while unfocused: {:?}",
+            rings
+        );
+        // Focus at t=0.0 (the flip frame) — focus-gain puts the caret at (2, 2).
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let _out = run_invalid_frame_at(&ctx, &mut value, 0.0, "otp_f02", "otp", 3, false);
+        assert_eq!(test_sel(&ctx, "otp_f02", "otp"), (2, 2));
+        // Mid-ease at t=0.075: the active ring is present at intermediate alpha.
+        let out = run_invalid_frame_at(&ctx, &mut value, 0.075, "otp_f02", "otp", 3, false);
+        let rects = test_slot_rects(&ctx, "otp_f02", "otp");
+        assert_eq!(rects.len(), 3, "slot rects: {:?}", rects);
+        let want_box = slot_box(&rects);
+        let want_active = rects[2].1.expand2(egui::vec2(1.0, 1.0));
+        let rings = ring_stroke_indices(&out);
+        assert_eq!(rings.len(), 2, "3px ring strokes: {:?}", rings);
+        let group_idx = rings
+            .iter()
+            .find(|(_, r, _, _)| *r == want_box)
+            .map(|(i, _, _, _)| *i);
+        let active_idx = rings
+            .iter()
+            .find(|(_, r, _, _)| *r == want_active)
+            .map(|(i, _, _, _)| *i);
+        assert!(
+            group_idx.is_some(),
+            "no group ring at the slot box {:?} in {:?}",
+            want_box,
+            rings
+        );
+        assert!(
+            active_idx.is_some(),
+            "no active ring at {:?} in {:?}",
+            want_active,
+            rings
+        );
+        assert!(
+            group_idx.unwrap() < active_idx.unwrap(),
+            "group ring (shape {}) must paint before the active ring (shape {})",
+            group_idx.unwrap(),
+            active_idx.unwrap()
+        );
     }
 
     /// OTP-ANM-01 (gate G3): the slot ring eases over 150ms.
