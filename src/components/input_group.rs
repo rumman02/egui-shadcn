@@ -126,6 +126,7 @@ use crate::components::button::{
 use crate::components::input;
 use crate::icons::Icon;
 use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
+use crate::utils::animation::{transition_alpha, transition_color_to, Easing, TransitionSpec};
 use egui::{
     Align as EguiAlign, Align2, Color32, CornerRadius, EventFilter, FontId, Frame, Id, Layout,
     Margin, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
@@ -144,6 +145,37 @@ pub(crate) fn container_radius(style: Style, radius: &RadiusTokens) -> u8 {
     match style {
         Style::Nova => radius.lg_u8(),
         _ => radius.md_u8(),
+    }
+}
+
+/// Per-property transition specs for the container chrome (IGP-ANM-01,
+/// S8 gate G2 + ruling 6 narrow reading; the input.rs precedent).
+#[derive(Clone, Copy, Debug)]
+struct ContainerTransitionSpecs {
+    /// Border colour: eases under nova (`transition-colors`), snaps
+    /// under base (`transition-[color,box-shadow]` covers text colour
+    /// + box-shadow only).
+    color: TransitionSpec,
+    /// Ring (a `box-shadow` layer): eases under base, snaps under nova
+    /// (`transition-colors` has no box-shadow).
+    shadow: TransitionSpec,
+}
+
+fn container_transition_specs(style: Style) -> ContainerTransitionSpecs {
+    // A zero-duration spec snaps instantly while keeping the animator
+    // state fresh across style switches (input/checkbox precedent).
+    let snap = TransitionSpec::secs(0.0, Easing::EaseInOut);
+    // 150ms + EaseInOut: the Tailwind v4 framework defaults.
+    let live = TransitionSpec::default();
+    match style {
+        Style::Nova => ContainerTransitionSpecs {
+            color: live,
+            shadow: snap,
+        },
+        _ => ContainerTransitionSpecs {
+            color: snap,
+            shadow: live,
+        },
     }
 }
 
@@ -796,7 +828,7 @@ impl InputGroup {
             // OPEN-2: invalid wins BOTH border and ring colour when
             // focused+invalid (radio-group G3 + native-select OPEN-2
             // precedent: the invalid state must remain visible).
-            let stroke_color = if invalid {
+            let stroke_target = if invalid {
                 p.destructive
             } else if record.focus {
                 // `has-[control:focus-visible]:border-ring`
@@ -804,6 +836,24 @@ impl InputGroup {
             } else {
                 p.input
             };
+            // IGP-ANM-01: the border colour rides the COLOR spec (S8
+            // gate G2 + ruling 6 narrow reading): it eases 150ms under
+            // nova (`transition-colors`) and snaps under base
+            // (`transition-[color,box-shadow]` covers text colour +
+            // box-shadow only). Endpoint tracking (input.rs precedent):
+            // the first call returns the target settled, and a target
+            // change eases from the displayed colour. The slot never
+            // crosses the transparent boundary, so
+            // `transition_color_to`'s caveat does not apply. Disabled
+            // fade after animation (INP-VIS-01 shape).
+            let specs = container_transition_specs(style);
+            let stroke_animated = transition_color_to(
+                ui.ctx(),
+                group_id.with("border"),
+                stroke_target,
+                specs.color,
+            )
+            .color;
             // `has-disabled:opacity-50` fades the border too (nova only;
             // `fade` is 1.0 under base). IGP-VIS-03: the border
             // precomposites the group fade OPAQUE instead of halving its
@@ -811,9 +861,13 @@ impl InputGroup {
             // fill read (230) nova-light where group fade requires (242)
             // (input.rs `disabled_group_fade` shape, INP-VIS-01).
             let stroke_color = if fade < 1.0 {
-                container_group_fade(stroke_color, container_fill_pre_fade(p, dark), p.background)
+                container_group_fade(
+                    stroke_animated,
+                    container_fill_pre_fade(p, dark),
+                    p.background,
+                )
             } else {
-                stroke_color
+                stroke_animated
             };
             let stroke = Stroke::new(1.0, stroke_color);
             paint_fused_stroke(painter, draw_rect, corner, stroke, orientation, position);
@@ -827,19 +881,36 @@ impl InputGroup {
             // focus ring is suppressed when disabled (a disabled input
             // cannot take focus); the nova invalid rest ring paints under
             // the container fade (§9, disabled+invalid).
-            let ring = if record.focus && !self.disabled {
-                Some(if invalid {
-                    color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
-                } else {
-                    color_alpha(p.ring, 0.5)
-                })
-            } else if invalid && style == Style::Nova {
-                Some(color_alpha(p.destructive, if dark { 0.4 } else { 0.2 }))
+            //
+            // IGP-ANM-01: the ring is a `box-shadow` layer, so its
+            // colour AND visibility ride the SHADOW spec (input.rs
+            // precedent): they ease 150ms under base
+            // (`transition-[color,box-shadow]`) and snap under nova
+            // (`transition-colors` has no box-shadow). The colour
+            // target is resolved in every state (mirroring input.rs
+            // `c.ring`); visibility is a separate alpha leg, so a focus
+            // flip eases the ring in/out while a colour-only change (an
+            // invalid flip while focused) eases the colour.
+            let ring_target = if invalid {
+                color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
             } else {
-                None
+                color_alpha(p.ring, 0.5)
             };
-            if let Some(ring) = ring {
-                let ring = color_alpha(ring, fade);
+            let ring_shown = (record.focus && !self.disabled) || (invalid && style == Style::Nova);
+            let ring_color =
+                transition_color_to(ui.ctx(), group_id.with("ring"), ring_target, specs.shadow)
+                    .color;
+            let ring_alpha = transition_alpha(
+                ui.ctx(),
+                group_id.with("ring_alpha"),
+                0.0,
+                1.0,
+                ring_shown,
+                specs.shadow,
+            )
+            .alpha;
+            if ring_alpha > 0.0 {
+                let ring = color_alpha(color_alpha(ring_color, ring_alpha), fade);
                 let stroke = Stroke::new(3.0, ring);
                 if grp.is_some() {
                     // FG-3: queue the ring so it paints above the
@@ -4207,6 +4278,180 @@ mod tests {
         assert!(
             (offset - 10.0).abs() < 0.5,
             "direct input must trigger the N15 reduction: block offset must be 10px, got {offset}"
+        );
+    }
+
+    // ---- IGP-ANM-01 per-property transition wiring (S9 run 6) ----
+
+    /// The single 3px container-ring stroke colour in `out` (the §1
+    /// composition paints exactly one ring; the border is 1px).
+    fn ring_stroke_color(out: &egui::FullOutput) -> Option<Color32> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rs) if rs.stroke.width == 3.0 => Some(rs.stroke.color),
+            _ => None,
+        })
+    }
+
+    /// Drives the §1 composition (group + input) through a focus leg
+    /// at controlled times and returns the painted (border, ring)
+    /// colours at the flip frame (t=0.0), mid-flight (t=0.075) and
+    /// settled (t=0.30). Frame A (t=0) is unfocused; `request_focus`
+    /// then frame B is the flip frame. The animator follows
+    /// `input.time` (egui 0.37 `animate_value_with_time`).
+    fn focus_leg_colors(
+        style: Style,
+    ) -> (
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+    ) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let input_id = Cell::new(Id::unique("ig_anm01_placeholder"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("anm01").show(ui, |ui| {
+                let r = InputGroupInput::new(&mut text).show(ui);
+                input_id.set(r.id);
+            });
+        };
+        let at = |t: f64| egui::RawInput {
+            time: Some(t),
+            ..Default::default()
+        };
+        // Frame A (t=0): unfocused; capture the input id.
+        run_ui(&ctx, at(0.0), &mut render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            None,
+            "unfocused at rest {style:?}"
+        );
+        // Focus the input; frame B (t=0) is the flip frame.
+        ctx.memory_mut(|m| m.request_focus(input_id.get()));
+        let out_b = run_ui_capture(&ctx, at(0.0), &mut render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(input_id.get()),
+            "focused after request {style:?}"
+        );
+        // Frame C (t=0.075): mid-flight. Frame D (t=0.30): settled.
+        let out_c = run_ui_capture(&ctx, at(0.075), &mut render);
+        let out_d = run_ui_capture(&ctx, at(0.30), &mut render);
+        (
+            border_stroke_color(&out_b),
+            ring_stroke_color(&out_b),
+            border_stroke_color(&out_c),
+            ring_stroke_color(&out_c),
+            border_stroke_color(&out_d),
+            ring_stroke_color(&out_d),
+        )
+    }
+
+    #[test]
+    fn container_transition_specs_follow_ruling_6_igp_anm01() {
+        // IGP-ANM-01 spec table (S8 gate G2 + ruling 6 narrow reading;
+        // input.rs precedent): the border colour rides the COLOR spec
+        // and the ring rides the SHADOW spec. Base
+        // `transition-[color,box-shadow]`: ring eases, border snaps.
+        // Nova `transition-colors`: border-colour eases, ring snaps.
+        let base = container_transition_specs(Style::Vega);
+        assert_eq!(base.color.duration_secs, 0.0);
+        assert_eq!(base.color.easing, Easing::EaseInOut);
+        assert_eq!(base.shadow.duration_secs, 0.15);
+        assert_eq!(base.shadow.easing, Easing::EaseInOut);
+        let nova = container_transition_specs(Style::Nova);
+        assert_eq!(nova.color.duration_secs, 0.15);
+        assert_eq!(nova.color.easing, Easing::EaseInOut);
+        assert_eq!(nova.shadow.duration_secs, 0.0);
+        assert_eq!(nova.shadow.easing, Easing::EaseInOut);
+    }
+
+    #[test]
+    fn base_ring_eases_150ms_igp_anm01() {
+        // IGP-ANM-01 (a): under base the ring is a `box-shadow` layer,
+        // so it eases 150ms on focus. Mid-flight (t=0.075) its alpha
+        // is strictly between 0 and settled (`ring/50`, alpha 128);
+        // settled (t=0.30) it is exactly `ring/50`. RED before the
+        // fix: the ring snaps — mid-flight alpha already equals
+        // settled.
+        let (_bb, _rb, _bc, ring_c, _bd, ring_d) = focus_leg_colors(Style::Vega);
+        let settled = ring_d.expect("base ring settled once focused");
+        assert_eq!(settled.a(), 128, "settled base ring is ring/50");
+        let mid = ring_c.expect("base ring present mid-flight");
+        assert!(
+            mid.a() > 0 && mid.a() < settled.a(),
+            "base ring must ease, not snap: mid alpha {} vs settled {}",
+            mid.a(),
+            settled.a()
+        );
+    }
+
+    #[test]
+    fn nova_border_colour_eases_150ms_igp_anm01() {
+        // IGP-ANM-01 (b): under nova the border colour rides
+        // `transition-colors`, so it eases 150ms on focus. Mid-flight
+        // (t=0.075) it is a mid-OKLab mix — neither the rest colour
+        // (`input`) nor the focus colour (`ring`); settled (t=0.30)
+        // it is exactly `ring`. RED before the fix: the border snaps
+        // — mid-flight it already equals `ring`.
+        let p = palette(Mode::Light);
+        let (_bb, _rb, border_c, _rc, border_d, _rd) = focus_leg_colors(Style::Nova);
+        let mid = border_c.expect("border present mid-flight");
+        assert_ne!(
+            mid, p.input,
+            "nova border must move off the rest colour mid-flight"
+        );
+        assert_ne!(
+            mid, p.ring,
+            "nova border must not snap to the focus colour mid-flight"
+        );
+        assert_eq!(
+            border_d,
+            Some(p.ring),
+            "nova border settles on the focus colour"
+        );
+    }
+
+    #[test]
+    fn nova_ring_snaps_igp_anm01() {
+        // IGP-ANM-01 (c) guard: under nova the ring is a `box-shadow`
+        // layer, which `transition-colors` does NOT cover — it snaps.
+        // The ring is fully shown on the flip frame already (the
+        // zero-duration shadow spec returns the target immediately).
+        // Passes before and after the fix.
+        let (_bb, ring_b, _bc, _rc, _bd, ring_d) = focus_leg_colors(Style::Nova);
+        let settled = ring_d.expect("nova ring settled once focused");
+        assert_eq!(
+            ring_b,
+            Some(settled),
+            "nova ring must snap: flip-frame ring == settled ring"
+        );
+    }
+
+    #[test]
+    fn base_border_snaps_igp_anm01() {
+        // IGP-ANM-01 (c) guard: under base the border colour is NOT in
+        // `transition-[color,box-shadow]` (narrow reading, ruling 6) —
+        // it snaps to the focus colour on the flip frame already.
+        // Passes before and after the fix.
+        let p = palette(Mode::Light);
+        let (border_b, _rb, _bc, _rc, border_d, _rd) = focus_leg_colors(Style::Vega);
+        assert_eq!(
+            border_b,
+            Some(p.ring),
+            "base border must snap to the focus colour on the flip frame"
+        );
+        assert_eq!(
+            border_d,
+            Some(p.ring),
+            "base border settles on the focus colour"
         );
     }
 }
