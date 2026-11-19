@@ -1109,33 +1109,45 @@ impl<'a> Slider<'a> {
                 if !response.has_focus() {
                     continue;
                 }
-                // Claim both arrow axes for the focused thumb
-                // (SLD-INT-04). egui 0.37 `Focus::begin_pass` sets a
-                // cardinal `focus_direction` on every unmodified arrow
-                // press whose target widget's `EventFilter` does not
-                // claim the arrow, and `Focus::end_pass` then moves
-                // focus to the spatially nearest widget in that
-                // direction — AFTER the UI pass already stepped the
-                // value. So the first arrow stepped the right thumb,
-                // the ring faded (focus moved), and later arrows acted
-                // on whatever focus landed on (misroute) or on a
-                // track/gap id with no key handling (silent drop).
-                // Home/End/PageUp/Shift+arrows never set a focus
-                // direction, which is why they kept the ring. The
-                // filter latches only after two consecutive focused
-                // frames (`Memory::set_focus_lock_filter`), so this
-                // runs every frame the thumb has focus — the stock
+                // Claim both arrow axes AND Escape for the focused
+                // thumb (SLD-INT-04 + SLD-INT-07). egui 0.37
+                // `Focus::begin_pass` sets a cardinal `focus_direction`
+                // on every unmodified arrow press whose target widget's
+                // `EventFilter` does not claim the arrow, and
+                // `Focus::end_pass` then moves focus to the spatially
+                // nearest widget in that direction — AFTER the UI pass
+                // already stepped the value. So the first arrow stepped
+                // the right thumb, the ring faded (focus moved), and
+                // later arrows acted on whatever focus landed on
+                // (misroute) or on a track/gap id with no key handling
+                // (silent drop). Home/End/PageUp/Shift+arrows never set
+                // a focus direction, which is why they kept the ring.
+                // `begin_pass` ALSO clears focus entirely on an
+                // unmodified Escape keydown unless the filter claims
+                // Escape (`EventFilter::matches`: Escape matches iff
+                // `escape` is true) — spec §8.1 requires Escape to be
+                // a no-op, so it is claimed here too. The filter
+                // latches only after two consecutive focused frames
+                // (`Memory::set_focus_lock_filter`), so this runs every
+                // frame the thumb has focus — the stock
                 // `slider_core::keyboard_steps` pattern. Both axes are
                 // claimed for both orientations: all four arrows step
                 // in both orientations (spec §8.1, W-3). `tab` stays
-                // unclaimed (Tab navigation, W-9) and `escape` stays
-                // unclaimed (Escape clearing focus is SLD-INT-07's).
+                // unclaimed (Tab navigation, W-9). The one-pass latch
+                // window (an Escape in the very first pass after a
+                // focus grant still clears focus, because
+                // `request_focus` resets the filter to default) is
+                // structural to egui's API and is pinned as
+                // documentation by
+                // `escape_in_first_pass_after_grant_clears_focus_sld_int_07`,
+                // never "fixed" by weakening the gate.
                 ui.memory_mut(|mem| {
                     mem.set_focus_lock_filter(
                         response.id,
                         EventFilter {
                             horizontal_arrows: true,
                             vertical_arrows: true,
+                            escape: true,
                             ..Default::default()
                         },
                     );
@@ -4144,5 +4156,591 @@ mod tests {
             classify_thumb_drag(Some(Pos2::new(30.0, 100.0)), hit_v, row_v),
             ThumbDragArm::Suppress
         );
+    }
+
+    #[test]
+    fn escape_retains_focus_on_single_thumb_sld_int_07() {
+        // SLD-INT-07 (single thumb): Escape on a focused thumb must be
+        // a no-op (spec §8.1: "All other keys | No effect"; Radix has
+        // no Escape handler). Mechanism (egui 0.37 `Focus::begin_pass`,
+        // `memory/mod.rs`): an unmodified Escape keydown clears
+        // `focused_widget` ENTIRELY unless the focused widget's
+        // `EventFilter.escape` is true. The INT-04 filter claims both
+        // arrow axes only, so Escape cleared focus. The fix extends
+        // that same filter with `escape: true` at the same install
+        // site. RED before the fix: the first Escape keydown clears
+        // focus, so the following Right does nothing.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int07_single"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int07-single")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int07_single")
+            .with("int07-single")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        // Two settle frames: the focus-lock filter latches only after
+        // two consecutive focused frames.
+        run_frame(&ctx, &mut value, 1.1, vec![]);
+        run_frame(&ctx, &mut value, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        // Escape keydown, keyup, and a second Escape: focus AND value
+        // must be untouched throughout.
+        run_frame(&ctx, &mut value, 1.4, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "Escape keydown must not clear focus"
+        );
+        assert_eq!(value, 50.0, "Escape must not change the value");
+        run_frame(&ctx, &mut value, 1.5, vec![key_event(Key::Escape, false)]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        assert_eq!(value, 50.0);
+        run_frame(&ctx, &mut value, 1.6, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "second Escape must not clear focus either"
+        );
+        run_frame(&ctx, &mut value, 1.7, vec![key_event(Key::Escape, false)]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        // The arrow after Escape still steps the value (the defect's
+        // rendered consequence: arrows went inert until Tab re-focus).
+        run_frame(
+            &ctx,
+            &mut value,
+            1.8,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 51.0, "Right after Escape must step the thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        run_frame(
+            &ctx,
+            &mut value,
+            1.9,
+            vec![key_event(Key::ArrowRight, false)],
+        );
+    }
+
+    #[test]
+    fn escape_retains_focus_on_range_thumbs_sld_int_07() {
+        // SLD-INT-07 (range, both thumbs): the same Escape no-op on
+        // each thumb of a range slider. Focus hi, Escape, Left steps
+        // hi; focus lo, Escape, Right steps lo. RED before the fix:
+        // Escape clears focus, so the following arrow does nothing.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut pair = (30.0f32, 70.0f32);
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, pair: &mut (f32, f32), time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int07_range"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::range(pair)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int07-range")
+                        .show(ui);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut pair, 1.0, vec![]);
+        let thumb_hi = egui::Id::unique("slider_int07_range")
+            .with("int07-range")
+            .with("thumb")
+            .with(1usize);
+        let thumb_lo = egui::Id::unique("slider_int07_range")
+            .with("int07-range")
+            .with("thumb")
+            .with(0usize);
+
+        // Hi thumb.
+        ctx.memory_mut(|m| m.request_focus(thumb_hi));
+        run_frame(&ctx, &mut pair, 1.1, vec![]);
+        run_frame(&ctx, &mut pair, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_hi));
+        run_frame(&ctx, &mut pair, 1.4, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_hi),
+            "Escape must not clear focus on the hi thumb"
+        );
+        assert_eq!(pair, (30.0, 70.0));
+        run_frame(&ctx, &mut pair, 1.5, vec![key_event(Key::Escape, false)]);
+        run_frame(&ctx, &mut pair, 1.6, vec![key_event(Key::ArrowLeft, true)]);
+        assert_eq!(pair, (30.0, 69.0), "Left after Escape must step hi");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_hi));
+        run_frame(&ctx, &mut pair, 1.7, vec![key_event(Key::ArrowLeft, false)]);
+
+        // Lo thumb.
+        ctx.memory_mut(|m| m.request_focus(thumb_lo));
+        run_frame(&ctx, &mut pair, 1.8, vec![]);
+        run_frame(&ctx, &mut pair, 1.9, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_lo));
+        run_frame(&ctx, &mut pair, 2.0, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_lo),
+            "Escape must not clear focus on the lo thumb"
+        );
+        assert_eq!(pair, (30.0, 69.0));
+        run_frame(&ctx, &mut pair, 2.1, vec![key_event(Key::Escape, false)]);
+        run_frame(&ctx, &mut pair, 2.2, vec![key_event(Key::ArrowRight, true)]);
+        assert_eq!(pair, (31.0, 69.0), "Right after Escape must step lo");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_lo));
+    }
+
+    #[test]
+    fn escape_then_tab_continues_order_sld_int_07() {
+        // SLD-INT-07 (Tab order): after a settled Escape, Tab must
+        // continue to the NEXT stop (the filter claims Escape ONLY —
+        // Tab stays unclaimed), not restart at the first stop. RED
+        // before the fix: Escape cleared focus, so Tab re-entered at
+        // the first slider (the S6 filing's recovery shape). The
+        // filter must NOT claim Tab to pass this pin.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut a = 50.0f32;
+        let mut b = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame =
+            |ctx: &egui::Context, a: &mut f32, b: &mut f32, time: f64, events: Vec<Event>| {
+                let input = egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui_a = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int07_tab_a"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                    );
+                    Slider::new(a)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int07-tab-a")
+                        .show(ui_a);
+                    let ui_b = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("slider_int07_tab_b"),
+                        egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                            Pos2::new(300.0, 0.0),
+                            Vec2::new(200.0, 24.0),
+                        )),
+                    );
+                    Slider::new(b)
+                        .min(0.0)
+                        .max(100.0)
+                        .step(1.0)
+                        .id_salt("int07-tab-b")
+                        .show(ui_b);
+                });
+                out.textures_delta.clear();
+            };
+
+        run_frame(&ctx, &mut a, &mut b, 1.0, vec![]);
+        let thumb_a = egui::Id::unique("slider_int07_tab_a")
+            .with("int07-tab-a")
+            .with("thumb")
+            .with(0usize);
+        let thumb_b = egui::Id::unique("slider_int07_tab_b")
+            .with("int07-tab-b")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb_a));
+        run_frame(&ctx, &mut a, &mut b, 1.1, vec![]);
+        run_frame(&ctx, &mut a, &mut b, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb_a));
+        run_frame(
+            &ctx,
+            &mut a,
+            &mut b,
+            1.4,
+            vec![key_event(Key::Escape, true)],
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_a),
+            "Escape must not clear focus before the Tab"
+        );
+        run_frame(
+            &ctx,
+            &mut a,
+            &mut b,
+            1.5,
+            vec![key_event(Key::Escape, false)],
+        );
+        run_frame(&ctx, &mut a, &mut b, 1.6, vec![key_event(Key::Tab, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb_b),
+            "Tab after Escape must continue to the next stop, not restart"
+        );
+        assert_eq!(a, 50.0);
+        assert_eq!(b, 50.0);
+    }
+
+    #[test]
+    fn escape_after_click_focus_retains_focus_sld_int_07() {
+        // SLD-INT-07 (click-granted focus): the filter is installed on
+        // every focused frame regardless of how focus was granted, so
+        // Escape must also be a no-op after a CLICK granted focus
+        // (INT-03's click-focus path). RED before the fix: Escape
+        // clears the click-granted focus and the following Right does
+        // nothing. The press uses the INT-03 shape (hover, press,
+        // release, two settle frames for the filter latch).
+        use egui::{Event, Key, Modifiers, PointerButton};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int07_click"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int07-click")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        // Frame 1: register. Thumb centre at value 50 is (100, 12):
+        // the track spans the full 200px rect width.
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int07_click")
+            .with("int07-click")
+            .with("thumb")
+            .with(0usize);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.1,
+            vec![Event::PointerMoved(Pos2::new(100.0, 12.0))],
+        );
+        run_frame(
+            &ctx,
+            &mut value,
+            1.2,
+            vec![button(Pos2::new(100.0, 12.0), true)],
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "press on the thumb must focus it (INT-03)"
+        );
+        run_frame(
+            &ctx,
+            &mut value,
+            1.3,
+            vec![button(Pos2::new(100.0, 12.0), false)],
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+        assert_eq!(value, 50.0);
+        run_frame(&ctx, &mut value, 1.4, vec![]);
+        run_frame(&ctx, &mut value, 1.5, vec![]);
+
+        run_frame(&ctx, &mut value, 1.6, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(thumb),
+            "Escape must not clear click-granted focus"
+        );
+        assert_eq!(value, 50.0);
+        run_frame(&ctx, &mut value, 1.7, vec![key_event(Key::Escape, false)]);
+        run_frame(
+            &ctx,
+            &mut value,
+            1.8,
+            vec![key_event(Key::ArrowRight, true)],
+        );
+        assert_eq!(value, 51.0, "Right after Escape must step the thumb");
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+    }
+
+    #[test]
+    fn escape_in_first_pass_after_grant_clears_focus_sld_int_07() {
+        // SLD-INT-07 documentation pin (passes BEFORE and AFTER the
+        // fix, by design): the one-pass latch window is structural to
+        // egui's API. `request_focus` resets the filter to default and
+        // `set_focus_lock_filter` installs only after two consecutive
+        // focused frames, so an Escape arriving in the very first pass
+        // after a grant still clears focus. This pin asserts that
+        // limitation honestly — it must never be "fixed" by weakening
+        // the filter gate. Rendered fast-Escape probing is
+        // non-discriminating by mechanism (NSL-INT-02 Bf class) and is
+        // not attempted; all rendered Escape legs are settled-Escape.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int07_latch"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int07-latch")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int07_latch")
+            .with("int07-latch")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        // NO settle frames: the Escape arrives in the first pass after
+        // the grant, before the filter could latch.
+        run_frame(&ctx, &mut value, 1.1, vec![key_event(Key::Escape, true)]);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            None,
+            "Escape in the first pass after a grant still clears focus (latch window)"
+        );
+        assert_eq!(value, 50.0);
+    }
+
+    #[test]
+    fn return_and_space_leave_focus_and_value_untouched_sld_int_07() {
+        // SLD-INT-07 guard (passes before AND after the fix): Return
+        // and Space are also "other keys" under spec §8.1 and must
+        // leave focus AND value untouched (S6 proved this rendered;
+        // this pin guards it at unit level so the Escape fix cannot
+        // regress it by over-claiming).
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int07_retspace"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int07-retspace")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        let thumb = egui::Id::unique("slider_int07_retspace")
+            .with("int07-retspace")
+            .with("thumb")
+            .with(0usize);
+        ctx.memory_mut(|m| m.request_focus(thumb));
+        run_frame(&ctx, &mut value, 1.1, vec![]);
+        run_frame(&ctx, &mut value, 1.2, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+
+        for (key, label) in [(Key::Enter, "Return"), (Key::Space, "Space")] {
+            run_frame(&ctx, &mut value, 1.4, vec![key_event(key, true)]);
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(thumb),
+                "{label} keydown must not clear focus"
+            );
+            assert_eq!(value, 50.0, "{label} must not change the value");
+            run_frame(&ctx, &mut value, 1.5, vec![key_event(key, false)]);
+            assert_eq!(ctx.memory(|m| m.focused()), Some(thumb));
+            assert_eq!(value, 50.0);
+        }
+    }
+
+    #[test]
+    fn escape_with_no_focus_is_noop_sld_int_07() {
+        // SLD-INT-07 guard (passes before AND after the fix): Escape
+        // with no focus anywhere changes nothing. The filter installs
+        // only on focused frames, so the unfocused path cannot be
+        // affected by this change.
+        use egui::{Event, Key, Modifiers};
+
+        let ctx = egui::Context::default();
+        crate::theme::Preset::default().install(&ctx);
+        let mut value = 50.0f32;
+
+        let key_event = |key: Key, pressed: bool| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+
+        let run_frame = |ctx: &egui::Context, value: &mut f32, time: f64, events: Vec<Event>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("slider_int07_nofocus"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 24.0))),
+                );
+                Slider::new(value)
+                    .min(0.0)
+                    .max(100.0)
+                    .step(1.0)
+                    .id_salt("int07-nofocus")
+                    .show(ui);
+            });
+            out.textures_delta.clear();
+        };
+
+        run_frame(&ctx, &mut value, 1.0, vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        run_frame(&ctx, &mut value, 1.1, vec![key_event(Key::Escape, true)]);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        assert_eq!(value, 50.0);
+        run_frame(&ctx, &mut value, 1.2, vec![key_event(Key::Escape, false)]);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        assert_eq!(value, 50.0);
     }
 }
