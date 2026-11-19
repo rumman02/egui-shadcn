@@ -5635,79 +5635,189 @@ pub fn toggle_group_demo(ui: &mut egui::Ui) {
 }
 
 pub fn input_otp_demo(ui: &mut egui::Ui) {
+    // Header: recipe position, stated honestly (spec §§0, 2.3, 3, 4, 6, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Input OTP — single-hidden-input model, one Tab stop per control (S1, library input-otp 1.4.2). Active recipe: {recipe} (style: {}, mode: {mode}). Slots 36px base / 32px nova; end corners 8px base / 10px nova; fused 1px dividers (N7); active ring 3px ring/50; invalid full destructive (N5 does NOT apply); disabled = whole-control 50% fade; caret 1x16px, 1.25s keyframe blink.",
+        theme.style.name()
+    ));
+    ui.label("Frozen: caret blink 1.25s + caret-blink keyframes (OPEN-6 CLOSED, S4 §9; D4 VOID); base separator 24px (F-05 corrected; D5 VOID); ring eases 150ms (ANM-01, S10-verified); blink advances with no interaction via a repaint driver (gate G4); light foreground follows themes.ts (OPEN-9 settled). Deviations D1 (no ARIA tree), D2 (focus/active trigger modality), D3 (focus mechanism) PROPOSED. Click a group to focus it — the caret lands in the first empty slot; typing the last digit fires onComplete (§4). Row readouts are scope rects: widths are exact under nova (192 = 6x32, 224 = 96+8+16+8+96) and base §2 is 256 (108+8+24+8+108), heights read 36.0 because the scope adds 4px layout spacing — slots are 32px tall under nova, 36px under base.");
+
     let simple_store = egui::Id::unique("otp_demo_simple");
     let custom_store = egui::Id::unique("otp_demo_custom");
     let disabled_store = egui::Id::unique("otp_demo_disabled");
-    let mut code: String = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(simple_store).unwrap_or_default());
+    let complete_store = egui::Id::unique("otp_demo_complete");
+    let complete_seen_store = egui::Id::unique("otp_demo_complete_seen");
+    // Pre-filled values are deterministic: §1 shows filled slots + the
+    // caret landing (slot 3) on focus; §3 shows faded/invalid chars;
+    // §4 sits one digit short of full so S5/S6 can fire onComplete.
+    let mut code: String = ui.ctx().data_mut(|d| {
+        d.get_temp(simple_store)
+            .unwrap_or_else(|| "123".to_string())
+    });
     let mut custom: String = ui
         .ctx()
         .data_mut(|d| d.get_temp(custom_store).unwrap_or_default());
-    let mut frozen: String = ui
+    let mut frozen: String = ui.ctx().data_mut(|d| {
+        d.get_temp(disabled_store)
+            .unwrap_or_else(|| "12".to_string())
+    });
+    let mut complete_code: String = ui.ctx().data_mut(|d| {
+        d.get_temp(complete_store)
+            .unwrap_or_else(|| "12345".to_string())
+    });
+    let mut complete_seen: bool = ui
         .ctx()
-        .data_mut(|d| d.get_temp(disabled_store).unwrap_or_default());
+        .data_mut(|d| d.get_temp(complete_seen_store).unwrap_or(false));
 
-    ui.label("Default (single group, numeric)");
-    ui.add_space(4.0);
-    let out = InputOTP::new(&mut code)
-        .length(6)
-        .numeric(true)
-        .id_salt("otp_demo_simple")
-        .show(ui);
-    if out.changed {
-        ui.ctx().request_repaint();
-    }
-    ui.small(format!("code: {:?}", code));
-
+    // §1. Single 6-slot group — the primary composition.
     ui.add_space(12.0);
-    ui.label("Pattern with separator (3+3)");
+    ui.label("1. Single 6-slot group — fused 1px dividers (N7), active ring + caret on the focused slot (spec §3.1, §4.2); click to focus, caret lands in the first empty slot (slot 3)");
     ui.add_space(4.0);
-    InputOTP::new(&mut custom)
-        .length(6)
-        .numeric(true)
-        .id_salt("otp_demo_custom")
-        .show_with(ui, |ui| {
-            InputOTPGroup::new().show(ui, |ui| {
-                InputOTPSlot::new(0).show(ui);
-                InputOTPSlot::new(1).show(ui);
-                InputOTPSlot::new(2).show(ui);
-            });
-            InputOTPSeparator::new().show(ui);
-            InputOTPGroup::new().show(ui, |ui| {
-                InputOTPSlot::new(3).show(ui);
-                InputOTPSlot::new(4).show(ui);
-                InputOTPSlot::new(5).show(ui);
-            });
-        });
+    let resp1 = ui.vertical(|ui| {
+        let out = InputOTP::new(&mut code)
+            .length(6)
+            .numeric(true)
+            .id_salt("otp_demo_simple")
+            .show(ui);
+        if out.changed {
+            ui.ctx().request_repaint();
+        }
+        out
+    });
+    let r1 = resp1.response.rect;
+    let out1 = resp1.inner;
+    ui.label(format!(
+        "§1: {:.1} x {:.1} px; code: {:?}; focused: {}",
+        r1.width(),
+        r1.height(),
+        code,
+        out1.focused
+    ));
 
+    // §2. 3+3 with separator.
     ui.add_space(12.0);
-    ui.label("Disabled and invalid");
+    ui.label(
+        "2. Pattern with separator (3+3) — group boundaries + 24px base / 16px nova separator (spec §2.5; D5 VOID, F-05 corrected)",
+    );
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    let resp2 = ui.vertical(|ui| {
+        let out = InputOTP::new(&mut custom)
+            .length(6)
+            .numeric(true)
+            .id_salt("otp_demo_custom")
+            .show_with(ui, |ui| {
+                InputOTPGroup::new().show(ui, |ui| {
+                    InputOTPSlot::new(0).show(ui);
+                    InputOTPSlot::new(1).show(ui);
+                    InputOTPSlot::new(2).show(ui);
+                });
+                InputOTPSeparator::new().show(ui);
+                InputOTPGroup::new().show(ui, |ui| {
+                    InputOTPSlot::new(3).show(ui);
+                    InputOTPSlot::new(4).show(ui);
+                    InputOTPSlot::new(5).show(ui);
+                });
+            });
+        if out.changed {
+            ui.ctx().request_repaint();
+        }
+        out
+    });
+    let r2 = resp2.response.rect;
+    let out2 = resp2.inner;
+    ui.label(format!(
+        "§2: {:.1} x {:.1} px; code: {:?}; focused: {}",
+        r2.width(),
+        r2.height(),
+        custom,
+        out2.focused
+    ));
+
+    // §3. Disabled + invalid row (both bound to the same `frozen` string
+    // with different salts, per the S1 report — the two instances sync).
+    ui.add_space(12.0);
+    ui.label("3. Disabled and invalid — disabled fades the whole control 50% incl. chars, separator and shadow (spec §4.4); invalid slots carry full destructive borders (spec §4.3); click the invalid group to focus it for the active+invalid slot (border stays destructive, ring destructive 20%/40%)");
+    ui.add_space(4.0);
+    let resp3 = ui.horizontal(|ui| {
         InputOTP::new(&mut frozen)
             .length(4)
             .numeric(true)
             .disabled(true)
             .id_salt("otp_demo_disabled")
             .show(ui);
-        InputOTP::new(&mut frozen)
+        let out_inv = InputOTP::new(&mut frozen)
             .length(4)
             .numeric(true)
             .invalid(true)
             .id_salt("otp_demo_invalid")
             .show(ui);
+        if out_inv.changed {
+            ui.ctx().request_repaint();
+        }
+        out_inv
     });
+    let r3 = resp3.response.rect;
+    let out3 = resp3.inner;
+    ui.label(format!(
+        "§3: {:.1} x {:.1} px; shared value: {:?}; invalid group focused: {}",
+        r3.width(),
+        r3.height(),
+        frozen,
+        out3.focused
+    ));
+
+    // §4. Completed row — one digit short of full.
+    ui.add_space(12.0);
+    ui.label("4. Completed — type the 6th digit to fire onComplete; the latch below stays set until the value drops below full (OtpOutput.completed is true only on the transition frame)");
+    ui.add_space(4.0);
+    let resp4 = ui.vertical(|ui| {
+        let out = InputOTP::new(&mut complete_code)
+            .length(6)
+            .numeric(true)
+            .id_salt("otp_demo_complete")
+            .show(ui);
+        if out.changed {
+            ui.ctx().request_repaint();
+        }
+        out
+    });
+    let r4 = resp4.response.rect;
+    let out4 = resp4.inner;
+    if out4.completed {
+        complete_seen = true;
+    }
+    if complete_code.chars().count() < 6 {
+        complete_seen = false;
+    }
+    ui.label(format!(
+        "§4: {:.1} x {:.1} px; code: {:?}; completed (latched): {}; completed this frame: {}; focused: {}",
+        r4.width(),
+        r4.height(),
+        complete_code,
+        complete_seen,
+        out4.completed,
+        out4.focused
+    ));
 
     ui.add_space(12.0);
     ui.label(
-        "Keyboard: digits fill the focused slot, Backspace clears, Arrow keys move, paste spreads.",
+        "Keyboard: digits fill the focused slot, Backspace clears, Delete forward-deletes, Arrow keys move, paste is atomic under .numeric() (one bad char rejects the whole paste).",
     );
 
     ui.ctx().data_mut(|d| {
         d.insert_temp(simple_store, code);
         d.insert_temp(custom_store, custom);
         d.insert_temp(disabled_store, frozen);
+        d.insert_temp(complete_store, complete_code);
+        d.insert_temp(complete_seen_store, complete_seen);
     });
 }
 
