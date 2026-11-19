@@ -686,7 +686,25 @@ impl InputGroup {
         let mut record = read_record(ui, group_id);
         // Measure the actual content for the next frame's reservation.
         let content_rect = rect.union(child.min_rect());
-        record.height = content_rect.height();
+        // Only a frame laid out in the direction the NEXT frame will
+        // use gives a usable height. The first frame lays out as a row
+        // (no snapshot yet) while the block addons it discovers switch
+        // the next frame to a column — and in that row the textarea is
+        // squeezed behind the full-width block row to ~0 width, so its
+        // placeholder wraps into ~20 lines (~407px in the probe, 391px
+        // in the gallery). That measurement must NOT be recorded: the
+        // `rect.union(...)` above would sustain it forever, because the
+        // container keeps allocating the poisoned height and the union
+        // can never shrink below it (VIS-02: the §3 box stuck at 391px
+        // in the gallery while the content itself is ~147px nova /
+        // ~171px vega). The recorded height is therefore the CHILD
+        // content height, taken only when this frame's direction
+        // matches the next frame's (`column == record.block`); a
+        // textarea-only group stays a row in both frames, so its
+        // measurement is still recorded.
+        if column == record.block {
+            record.height = child.min_rect().height();
+        }
         write_snapshot(ui, group_id, record);
 
         if ui.is_rect_visible(content_rect) {
@@ -815,7 +833,12 @@ impl<'a> InputGroupInput<'a> {
 
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
-        record.has_input = true;
+        // CSS `group-has-[>input]` tests DIRECT children only: an input
+        // rendered inside an addon is not a direct child of the group.
+        // Same stack approach as `has_button` (IGP-F-03).
+        if current_addon_id(ui).is_none() {
+            record.has_input = true;
+        }
         if self.invalid {
             record.invalid = true;
         }
@@ -2988,5 +3011,223 @@ mod tests {
         assert_eq!((m.left, m.right, m.top, m.bottom), (10, 10, 12, 12));
         let m = control_margins(Style::Vega, false, false, true, true);
         assert_eq!((m.left, m.right, m.top, m.bottom), (12, 12, 12, 12));
+    }
+
+    // ---- S9 run 2 pins (VIS-02 + F-03) ----
+
+    /// Renders the §3 demo composition (BlockStart + textarea rows(3) +
+    /// BlockEnd) for 5 frames and returns the settled rects:
+    /// (outer Ui height — the space the group actually occupies in its
+    /// parent — textarea rect, block-start rect, block-end rect, group
+    /// response rect).
+    fn s3_column_rects(style: Style) -> (f32, Rect, Rect, Rect, Rect) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut bio = String::new();
+        let outer_h = Cell::new(0.0f32);
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let bs_rect = Cell::new(Rect::NOTHING);
+        let be_rect = Cell::new(Rect::NOTHING);
+        let group_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("s3col").show(ui, |ui| {
+                bs_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                ta_rect.set(
+                    InputGroupTextarea::new(&mut bio)
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui)
+                        .rect,
+                );
+                be_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockEnd)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Markdown supported").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+            });
+            group_rect.set(r.response.rect);
+            outer_h.set(ui.min_rect().height());
+        };
+        for _ in 0..5 {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        (
+            outer_h.get(),
+            ta_rect.get(),
+            bs_rect.get(),
+            be_rect.get(),
+            group_rect.get(),
+        )
+    }
+
+    #[test]
+    fn column_group_box_height_matches_content_igp_vis02() {
+        // VIS-02: the §3 box must be the sum of its parts (BlockStart
+        // row + textarea + BlockEnd row + pads), not the ~391px the
+        // feedback loop produced (the first-frame row-layout measurement
+        // was poisoned by the textarea wrapping to ~407px, and the
+        // `rect.union(...)` recording sustained it forever).
+        // Nova: 8 + 32 + 66.8 + 32 + 8 = 146.8; Vega: 12 + 36 + 74.8 +
+        // 36 + 12 = 170.8 (block rows are the `interact_size`-pinned
+        // container height; the textarea is 3 rows + py).
+        for (style, expected_h, expected_ta_h, pad) in [
+            (Style::Nova, 146.8, 66.8, 8.0),
+            (Style::Vega, 170.8, 74.8, 12.0),
+        ] {
+            let (outer_h, ta, bs, be, group) = s3_column_rects(style);
+            assert!(
+                (outer_h - expected_h).abs() < 1.5,
+                "{style:?} §3 box height must be ~{expected_h}, got {outer_h}"
+            );
+            assert!(
+                outer_h < 200.0,
+                "{style:?} §3 box must not carry the ~391px feedback-loop height, got {outer_h}"
+            );
+            assert!(
+                (ta.height() - expected_ta_h).abs() < 1.5,
+                "{style:?} textarea height must be ~{expected_ta_h}, got {}",
+                ta.height()
+            );
+            // No gap between the textarea and the BlockEnd row...
+            assert!(
+                (ta.max.y - be.min.y).abs() < 1.0,
+                "{style:?} textarea must abut the BlockEnd row, gap {}",
+                be.min.y - ta.max.y
+            );
+            // ...and no empty fill below the last row: the box ends one
+            // pad below the BlockEnd row.
+            assert!(
+                (group.max.y - be.max.y - pad).abs() < 1.0,
+                "{style:?} box must end {pad}px below the BlockEnd row, got {}",
+                group.max.y - be.max.y
+            );
+            // The box top is the BlockStart pad.
+            assert!(
+                (bs.min.y - group.min.y - pad).abs() < 1.0,
+                "{style:?} BlockStart row must sit {pad}px below the box top, got {}",
+                bs.min.y - group.min.y
+            );
+        }
+    }
+
+    #[test]
+    fn s3_lower_area_click_focuses_textarea_igp_vis02() {
+        // S6 corollary: the §3 lower area is the textarea itself (not
+        // ~280px of empty container fill), so a click in the textarea's
+        // lower area focuses it. Guard pin: the textarea was focusable
+        // from its own rect before the fix too — what the fix changes is
+        // that the box no longer extends ~280px past it.
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let bio = RefCell::new(String::new());
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let ta_id = Cell::new(Id::unique("ig_s3click_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("s3click").show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                    InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                });
+                let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                    .rows(3)
+                    .placeholder("Tell us about yourself…")
+                    .show(ui);
+                ta_rect.set(r.rect);
+                ta_id.set(r.id);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        let at = Pos2::new(ta_rect.get().center().x, ta_rect.get().max.y - 5.0);
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(ta_id.get()),
+            "click in the textarea's lower area must focus it"
+        );
+    }
+
+    /// Renders BlockStart + a direct-child control and returns the
+    /// BlockStart row's top offset (== the block padding) after 4
+    /// frames. `nested_input`: when true the only input is nested
+    /// INSIDE the BlockStart addon (not a direct child); when false
+    /// the input is a direct child of the group.
+    fn block_start_offset(nested_input: bool, style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let mut bio = String::new();
+        let bs_rect = Cell::new(Rect::NOTHING);
+        let group_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("f03").show(ui, |ui| {
+                bs_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockStart)
+                        .show(ui, |ui| {
+                            if nested_input {
+                                InputGroupInput::new(&mut text).show(ui);
+                            } else {
+                                InputGroupText::new("Bio").show(ui);
+                            }
+                        })
+                        .response
+                        .rect,
+                );
+                if nested_input {
+                    InputGroupTextarea::new(&mut bio).rows(3).show(ui);
+                } else {
+                    InputGroupInput::new(&mut text).show(ui);
+                }
+            });
+            group_rect.set(r.response.rect);
+        };
+        for _ in 0..4 {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        bs_rect.get().min.y - group_rect.get().min.y
+    }
+
+    #[test]
+    fn has_input_ignores_input_inside_addon_igp_f03() {
+        // IGP-F-03 (base only — nova's block padding is uniformly 8px):
+        // CSS `group-has-[>input]` tests DIRECT children. An input
+        // nested inside a BlockStart addon must NOT set `has_input`, so
+        // the N15 conditional keeps the 12px base padding.
+        let offset = block_start_offset(true, Style::Vega);
+        assert!(
+            (offset - 12.0).abs() < 0.5,
+            "nested input must not trigger the N15 reduction: block offset must be 12px, got {offset}"
+        );
+    }
+
+    #[test]
+    fn has_input_counts_direct_input_igp_f03() {
+        // Guard: a direct-child input still sets `has_input` (N15 10px
+        // base padding). Passes before and after.
+        let offset = block_start_offset(false, Style::Vega);
+        assert!(
+            (offset - 10.0).abs() < 0.5,
+            "direct input must trigger the N15 reduction: block offset must be 10px, got {offset}"
+        );
     }
 }
