@@ -85,6 +85,42 @@
 //!   while the caret is live, so the blink advances with no
 //!   interaction (gate G4).
 //!
+//! # `.length()` vs the rendered slot count (OTP-F-08, spec §8.2)
+//!
+//! `.length()` is the value capacity (`maxLength`), NOT the number of
+//! slots on screen. `show()` renders exactly `length` slots in one
+//! group, so the two agree by construction; `show_with()` renders
+//! whatever the caller composes, and the two can disagree. The
+//! original has no equivalent of a mismatch (it derives the slot
+//! count from its rendered children), so the port specifies the
+//! behaviour here, as §8.2 requires:
+//!
+//! * The value is always truncated to `length` characters — when it is
+//!   synced from the bound string, on typing, and on paste — and
+//!   `completed` fires when the value reaches `length` characters.
+//!   That holds regardless of how many slots are rendered.
+//! * Fewer slots than `length`: the value can still hold `length`
+//!   characters. Characters past the last rendered slot have no box
+//!   and are invisible, and the caret can sit at an unrendered index
+//!   (no visible ring or caret) — typing still inserts there. A click
+//!   can only place the caret on a rendered slot (the click target is
+//!   the nearest recorded slot rect).
+//! * More slots than `length`: slots at index `>= length` never show a
+//!   character (the value never reaches them). A click on such a slot
+//!   still places the caret — the selection is clamped to the value
+//!   length at the top of every event frame, before paint, so the
+//!   caret lands at index `== value length` (the first empty slot,
+//!   or the first beyond-`length` slot when the value is full) in the
+//!   same frame. In that parked state typing inserts past the end and
+//!   is truncated away — a no-op until the caret moves.
+//! * Duplicate indices (spec E8): the group keeps the first slot with
+//!   a given index and drops later duplicates — a duplicate slot
+//!   allocates layout space but is never painted (no border, no char,
+//!   no ring), and the first/last corners follow the min/max index,
+//!   not render order. A slot whose index is beyond the value length
+//!   shows no character; whether it is active depends on the
+//!   selection like any other slot.
+//!
 //! # Borders (N7)
 //!
 //! `border-y border-r border-input` + `first:border-l`: the first slot of
@@ -696,7 +732,11 @@ impl<'a> InputOTP<'a> {
         }
     }
 
-    /// Sets the number of slots (`maxLength`; default 6).
+    /// Sets the value capacity (`maxLength`; default 6) — the number of
+    /// characters the value can hold. `show()` renders exactly this many
+    /// slots; `show_with()` renders whatever the caller composes, and
+    /// the mismatch behaviour is specified in the module docs
+    /// (OTP-F-08, spec §8.2).
     pub fn length(mut self, length: usize) -> Self {
         self.length = length.max(1);
         self
@@ -4158,5 +4198,270 @@ mod tests {
             (1, 1),
             "Shift+Tab re-focus must re-apply focus-gain for the new value"
         );
+    }
+
+    /// Renders one frame of a custom layout — `slot_count` slots in one
+    /// group, bound to `.length(length)` — and returns the frame output
+    /// plus the control's output. The mismatch pins (OTP-F-08) use it:
+    /// `show()` always renders exactly `length` slots, so only
+    /// `show_with()` can disagree with `.length()`.
+    fn run_custom_frame(
+        ctx: &egui::Context,
+        value: &mut String,
+        input: egui::RawInput,
+        name: &'static str,
+        salt: &'static str,
+        length: usize,
+        slot_count: usize,
+    ) -> (egui::FullOutput, OtpOutput) {
+        let mut output = OtpOutput {
+            changed: false,
+            focused: false,
+            completed: false,
+        };
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique(name),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            output = InputOTP::new(value)
+                .length(length)
+                .id_salt(salt)
+                .show_with(ui, |ui| {
+                    InputOTPGroup::new().show(ui, |ui| {
+                        for i in 0..slot_count {
+                            InputOTPSlot::new(i).show(ui);
+                        }
+                    });
+                });
+        });
+        // Frame-driving pins must clear `textures_delta` after each frame
+        // (the F-03/04 pin-harness rule) — else egui panics on drop
+        // (`epaint textures.rs`, "panic in a destructor during cleanup").
+        out.textures_delta.clear();
+        (out, output)
+    }
+
+    /// The positions of the rendered char glyphs in a frame (one `Text`
+    /// shape per slot char, anchored at the slot's content centre).
+    fn text_shape_positions(out: &egui::FullOutput) -> Vec<Pos2> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| {
+                if let egui::Shape::Text(text_shape) = &clipped.shape {
+                    Some(text_shape.pos)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// OTP-F-08 (spec §8.2): `.length()` is the value capacity, not the
+    /// rendered slot count. With `.length(3)` and 6 slots rendered, the
+    /// value still caps at 3 characters — typing the 3rd completes the
+    /// control, typing when full replaces the last char — and slots 3–5
+    /// never show a character (exactly 3 text shapes, all inside slots
+    /// 0–2). Pre-fix (if `length` were clamped to the rendered count)
+    /// the value would hold 6 chars and `completed` would never fire
+    /// at 3.
+    #[test]
+    fn more_slots_than_length_value_capped_at_length_otp_f08() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "12".to_owned();
+        let control = test_control_id("otp_f08_more", "otp");
+        let _out = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_more",
+            "otp",
+            3,
+            6,
+        );
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let (_out, _) = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_more",
+            "otp",
+            3,
+            6,
+        );
+        assert_eq!(test_sel(&ctx, "otp_f08_more", "otp"), (2, 2));
+        // Type "3" → value "123", completed fires at `length` (3).
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Text("3".to_owned()));
+        let (_out, out) = run_custom_frame(&ctx, &mut value, input, "otp_f08_more", "otp", 3, 6);
+        assert_eq!(value, "123");
+        assert!(out.completed, "completed must fire at length 3: {:?}", out);
+        // Type "4" when full → replaces the last char.
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Text("4".to_owned()));
+        let (mut out, _) = run_custom_frame(&ctx, &mut value, input, "otp_f08_more", "otp", 3, 6);
+        out.textures_delta.clear();
+        assert_eq!(value, "124");
+        // Six slots are recorded, but only three chars are painted.
+        let rects = test_slot_rects(&ctx, "otp_f08_more", "otp");
+        assert_eq!(rects.len(), 6, "slot rects: {:?}", rects);
+        let texts = text_shape_positions(&out);
+        assert_eq!(texts.len(), 3, "three chars rendered: {:?}", texts);
+        for (i, pos) in texts.iter().enumerate() {
+            assert!(
+                rects[i].1.contains(*pos),
+                "char {i} inside slot {i}: {:?} vs {:?}",
+                pos,
+                rects[i].1
+            );
+        }
+        for (i, (_, rect)) in rects.iter().enumerate().skip(3) {
+            assert!(
+                !texts.iter().any(|pos| rect.contains(*pos)),
+                "slot {i} (index >= length) must show no char: {:?}",
+                rect
+            );
+        }
+    }
+
+    /// OTP-F-08 (spec §8.2): fewer slots than `length` — the value can
+    /// still hold `length` characters. With `.length(6)` and 3 slots
+    /// rendered, focus-gain puts the caret at (3, 3) — an unrendered
+    /// index, so no ring shows on any rendered slot — and typing
+    /// "456" still fills the value to 6 characters and fires
+    /// `completed`. Pre-fix (if the value were capped at the rendered
+    /// count) the value would stop at 3 characters.
+    #[test]
+    fn fewer_slots_than_length_value_still_fills_otp_f08() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_f08_fewer", "otp");
+        let _out = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_fewer",
+            "otp",
+            6,
+            3,
+        );
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let (mut out, _) = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_fewer",
+            "otp",
+            6,
+            3,
+        );
+        out.textures_delta.clear();
+        assert_eq!(test_sel(&ctx, "otp_f08_fewer", "otp"), (3, 3));
+        assert!(
+            ring_strokes(&out).is_empty(),
+            "no ring: the caret sits at unrendered index 3"
+        );
+        // Type "456" → the value fills to length 6, completed fires.
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Text("456".to_owned()));
+        let (mut out, out2) =
+            run_custom_frame(&ctx, &mut value, input, "otp_f08_fewer", "otp", 6, 3);
+        out.textures_delta.clear();
+        assert_eq!(value, "123456");
+        assert!(
+            out2.completed,
+            "completed must fire at length 6: {:?}",
+            out2
+        );
+        let rects = test_slot_rects(&ctx, "otp_f08_fewer", "otp");
+        assert_eq!(rects.len(), 3, "slot rects: {:?}", rects);
+        assert!(
+            ring_strokes(&out).is_empty(),
+            "still no ring: the caret sits at unrendered index 5"
+        );
+    }
+
+    /// OTP-F-08 (spec E8): duplicate indices paint once. With slots
+    /// [0, 1, 1] rendered, the group keeps the first slot with index 1
+    /// and drops the duplicate — two slot rects are recorded, and the
+    /// two value chars paint exactly once each.
+    #[test]
+    fn duplicate_slot_indices_paint_once_otp_f08() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "12".to_owned();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("otp_f08_dup"),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            InputOTP::new(&mut value)
+                .length(6)
+                .id_salt("otp")
+                .show_with(ui, |ui| {
+                    InputOTPGroup::new().show(ui, |ui| {
+                        InputOTPSlot::new(0).show(ui);
+                        InputOTPSlot::new(1).show(ui);
+                        InputOTPSlot::new(1).show(ui);
+                    });
+                });
+        });
+        out.textures_delta.clear();
+        let rects = test_slot_rects(&ctx, "otp_f08_dup", "otp");
+        assert_eq!(rects.len(), 2, "duplicate index dropped: {:?}", rects);
+        assert_eq!(
+            rects.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 1],
+            "kept indices: {:?}",
+            rects
+        );
+        let texts = text_shape_positions(&out);
+        assert_eq!(texts.len(), 2, "two chars rendered once each: {:?}", texts);
+    }
+
+    /// OTP-F-08 (spec §8.2): a caret parked past the end is a typing
+    /// no-op. With `.length(3)`, a full value and the selection at
+    /// (3, 3) — the state a click on a beyond-`length` slot leaves
+    /// (the selection is clamped to the value length, so the caret
+    /// lands at index `== value length`) — typing inserts past the
+    /// end and is truncated away until the caret moves.
+    #[test]
+    fn caret_parked_past_end_typing_is_noop_otp_f08() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_f08_parked", "otp");
+        let _out = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_parked",
+            "otp",
+            3,
+            6,
+        );
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let (_out, _) = run_custom_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f08_parked",
+            "otp",
+            3,
+            6,
+        );
+        assert_eq!(test_sel(&ctx, "otp_f08_parked", "otp"), (2, 3));
+        // Park the caret past the end, as a beyond-length click would.
+        let group_id = Id::unique("otp_f08_parked").with("otp");
+        ctx.data_mut(|d| d.insert_temp(sel_id(group_id), (3usize, 3usize)));
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Text("4".to_owned()));
+        let (_out, _) = run_custom_frame(&ctx, &mut value, input, "otp_f08_parked", "otp", 3, 6);
+        assert_eq!(value, "123", "typing past the end is truncated away");
+        assert_eq!(test_sel(&ctx, "otp_f08_parked", "otp"), (3, 3));
     }
 }
