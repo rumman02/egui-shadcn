@@ -217,6 +217,7 @@
 //! ```
 
 use crate::components::attachment::mix;
+use crate::components::field::field_horizontal_content_present;
 use crate::components::label::consume_pending_click;
 use crate::icons::Icon;
 use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
@@ -714,6 +715,19 @@ impl<'a> Checkbox<'a> {
         // Reserve space without an auto-id widget so egui's built-in
         // spatial arrow navigation only sees the explicit widget id.
         let (_, rect) = ui.allocate_space(Vec2::splat(CHECKBOX_SIZE));
+        // `mt-px` (spec §2.4, OPEN-6; ruling 12): a direct child of a
+        // horizontal Field with a content child shifts down 1px.
+        // Translating the allocated rect moves paint AND hit-testing
+        // together — every use below (`interact`, shadow, fill,
+        // stroke, icon, ring) reads this rect — while the flow
+        // reservation stays 16px; the field row's height is set by
+        // the content, so the visual effect is exactly the CSS
+        // `margin-top: 1px`.
+        let rect = if field_horizontal_content_present(ui) {
+            rect.translate(Vec2::new(0.0, 1.0))
+        } else {
+            rect
+        };
         // A bound label's click recorded on a previous pass is
         // forwarded here, before `interact` (spec §7.3; CHK-INT-04).
         // The label pushes the synthetic Space pair at the top of
@@ -2344,5 +2358,163 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    // ------------------------------------------------------------------
+    // mt-px integration (ruling 12): consumption of the field
+    // `horizontal_content_present` context flag.
+    // ------------------------------------------------------------------
+
+    /// `mt-px` (spec §2.4, OPEN-6; ruling 12): a direct child of a
+    /// horizontal Field with a content child shifts down exactly 1px.
+    /// The shift is measured from the control's allocated rect
+    /// (`Response.rect`, the rect `interact` and paint both use), not
+    /// from the flag read alone. Negative cases: horizontal without a
+    /// content child, vertical with a content child declared, and no
+    /// enclosing field — all unshifted.
+    #[test]
+    fn mt_px_shifts_checkbox_in_horizontal_content_field() {
+        use crate::components::field::{Field, FieldContent, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+
+        // Case A (positive): horizontal + content, checkbox first,
+        // FieldContent second (taller than the checkbox, mirroring
+        // field_demo §6a). Reference: the field's own response rect.
+        let a_field = Cell::new(Rect::NOTHING);
+        let a_cb = Cell::new(Rect::NOTHING);
+        let a_content = Cell::new(Rect::NOTHING);
+        // Case B (negative): horizontal, NO content child, sole child.
+        let b_field = Cell::new(Rect::NOTHING);
+        let b_cb = Cell::new(Rect::NOTHING);
+        // Case C (negative): vertical + content child declared, sole child.
+        let c_field = Cell::new(Rect::NOTHING);
+        let c_cb = Cell::new(Rect::NOTHING);
+        // Case D (negative): no enclosing field; vertical block reference.
+        let d_block = Cell::new(Rect::NOTHING);
+        let d_cb = Cell::new(Rect::NOTHING);
+
+        let mut ca = false;
+        let mut cb = false;
+        let mut cc = false;
+        let mut cd = false;
+        let _ = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let r = Checkbox::new(&mut ca).show(ui).rect;
+                    let content = FieldContent::new()
+                        .show(ui, |ui| {
+                            ui.label("Title line");
+                            ui.label("Description line so the content column is taller.");
+                        })
+                        .response
+                        .rect;
+                    (r, content)
+                });
+            a_field.set(frame.response.rect);
+            a_cb.set(frame.inner.0);
+            a_content.set(frame.inner.1);
+
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| Checkbox::new(&mut cb).show(ui).rect);
+            b_field.set(frame.response.rect);
+            b_cb.set(frame.inner);
+
+            let frame = Field::new()
+                .has_content_child(true)
+                .show(ui, |ui| Checkbox::new(&mut cc).show(ui).rect);
+            c_field.set(frame.response.rect);
+            c_cb.set(frame.inner);
+
+            let block = ui.vertical(|ui| Checkbox::new(&mut cd).show(ui).rect);
+            d_block.set(block.response.rect);
+            d_cb.set(block.inner);
+        });
+
+        // A: shifted exactly 1px below the row top (and 1px below the
+        // content top, mirroring the demo's own readout).
+        assert!(
+            (a_cb.get().min.y - a_field.get().min.y - 1.0).abs() < 0.01,
+            "case A checkbox top vs field top: {} (field top {})",
+            a_cb.get().min.y,
+            a_field.get().min.y
+        );
+        assert!(
+            (a_content.get().min.y - a_cb.get().min.y + 1.0).abs() < 0.01,
+            "case A content top minus checkbox top: {}",
+            a_content.get().min.y - a_cb.get().min.y
+        );
+        // B/C/D: unshifted. Case B's invariant is CENTRE alignment,
+        // not top alignment: `ui.horizontal` (items-center) seeds a
+        // 20px `interact_size.y` frame, inflating the row to 36px
+        // tall, so the sole child's top sits 10px below the row top
+        // while its centre coincides with the row centre (the
+        // radio-group `show` comment records the same seed).
+        assert!(
+            (b_cb.get().center().y - b_field.get().center().y).abs() < 0.01,
+            "case B checkbox centre vs field centre: {} vs {}",
+            b_cb.get().center().y,
+            b_field.get().center().y
+        );
+        assert!(
+            (c_cb.get().min.y - c_field.get().min.y).abs() < 0.01,
+            "case C checkbox top vs field top: {}",
+            c_cb.get().min.y - c_field.get().min.y
+        );
+        assert!(
+            (d_cb.get().min.y - d_block.get().min.y).abs() < 0.01,
+            "case D checkbox top vs block top: {}",
+            d_cb.get().min.y - d_block.get().min.y
+        );
+    }
+
+    /// `mt-px` non-leak (ruling 12 §2 + field.rs flag pin): a nested
+    /// Field resets the flag for its own children, and the flag is
+    /// restored for the outer field's later direct children (the ctx
+    /// stack pops on `Field::show` exit).
+    #[test]
+    fn mt_px_does_not_leak_into_nested_field_checkbox() {
+        use crate::components::field::{Field, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+
+        let nested_field = Cell::new(Rect::NOTHING);
+        let nested_cb = Cell::new(Rect::NOTHING);
+        let outer_cb = Cell::new(Rect::NOTHING);
+
+        let mut cn = false;
+        let mut co = false;
+        let _ = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let frame = Field::new().show(ui, |ui| Checkbox::new(&mut cn).show(ui).rect);
+                    nested_field.set(frame.response.rect);
+                    nested_cb.set(frame.inner);
+                    outer_cb.set(Checkbox::new(&mut co).show(ui).rect);
+                });
+        });
+
+        // Nested checkbox: unshifted (its own field resets the flag).
+        assert!(
+            (nested_cb.get().min.y - nested_field.get().min.y).abs() < 0.01,
+            "nested checkbox top vs nested field top: {}",
+            nested_cb.get().min.y - nested_field.get().min.y
+        );
+        // Outer direct child after the nested field: shifted 1px
+        // (reference: the nested field's top == the row top).
+        assert!(
+            (outer_cb.get().min.y - nested_field.get().min.y - 1.0).abs() < 0.01,
+            "outer checkbox top vs row top: {}",
+            outer_cb.get().min.y - nested_field.get().min.y
+        );
     }
 }

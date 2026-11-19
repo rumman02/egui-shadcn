@@ -268,14 +268,13 @@ fn current_ctx(ui: &Ui) -> FieldCtx {
 /// direct-child-only; [`Field`] cannot apply the shift itself
 /// (children are caller closures).
 ///
-/// The readers land on the checkbox and radio-group lines, which is
-/// why this accessor carries `#[allow(dead_code)]` until they do:
-/// the `mt-px` context contract is RATIFIED (gate G1 item 5) and the
-/// field side is complete here; consumption is a TRACKED DEFERRAL to
-/// the post-field-merge integration run (ruling-12 amendment), and
-/// the `#[allow(dead_code)]` drops when the consumers land. S10
+/// The readers are the checkbox and radio-group lines (ruling 12):
+/// `Checkbox::show`, `RadioGroupItem::show`, and `RadioGroup`'s
+/// `render_items` each shift down 1px when this reads true. The
+/// `mt-px` context contract is RATIFIED (gate G1 item 5); consumption
+/// landed in the post-field-merge integration run (ruling 12), which
+/// is why this accessor carries no `#[allow(dead_code)]`. S10
 /// neither filed nor judged `mt-px`.
-#[allow(dead_code)]
 pub(crate) fn field_horizontal_content_present(ui: &Ui) -> bool {
     current_ctx(ui).horizontal_content_present
 }

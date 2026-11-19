@@ -163,6 +163,7 @@
 
 use crate::components::attachment::mix;
 use crate::components::button::GroupOrientation;
+use crate::components::field::field_horizontal_content_present;
 use crate::components::label::{label_font, Label};
 use crate::theme::tokens::type_scale;
 use crate::theme::{blend, color_alpha, Palette, ShadcnTheme, Style};
@@ -637,6 +638,18 @@ impl<'a> RadioGroupItem<'a> {
         // Reserve space without an auto-id widget so egui's built-in
         // spatial arrow navigation only sees the explicit item ids.
         let (_, rect) = ui.allocate_space(Vec2::splat(RADIO_SIZE));
+        // `mt-px` (spec §2.4, OPEN-6; ruling 12): a direct child of a
+        // horizontal Field with a content child shifts down 1px.
+        // Translating the allocated rect moves paint AND hit-testing
+        // together — `interact` and `paint_radio` both read this
+        // rect — while the flow reservation stays 16px; the field
+        // row's height is set by the content, so the visual effect
+        // is exactly the CSS `margin-top: 1px`.
+        let rect = if field_horizontal_content_present(ui) {
+            rect.translate(Vec2::new(0.0, 1.0))
+        } else {
+            rect
+        };
         // Space activates on keyup, once per press (RAD-INT-05,
         // settled OPEN-3): hide the keydown from `interact` and
         // re-create it on the release pass.
@@ -1012,6 +1025,12 @@ fn render_items(
     // can see it. The label-forwarding synthetic Space pair is pushed
     // mid-pass, during the item loop below, so it is unaffected.
     space_keyup_fire(ui.ctx(), group_id);
+    // `mt-px` (spec §2.4, OPEN-6; ruling 12): when the group is a
+    // direct child of a horizontal Field with a content child, every
+    // item row shifts down 1px. Read once per group — the context
+    // stack cannot change mid-group (items render no nested Field;
+    // any push/pop inside an item is balanced).
+    let mt_px = field_horizontal_content_present(ui);
     let ItemStyle {
         p,
         dark,
@@ -1069,6 +1088,16 @@ fn render_items(
                 0.0
             };
         let (_, row_rect) = ui.allocate_space(Vec2::new(row_width, RADIO_SIZE));
+        // `mt-px` (spec §2.4, OPEN-6; ruling 12): the circle, the
+        // label rect, and the item `interact` all derive from this
+        // row rect, so translating it shifts the whole row down 1px
+        // — paint and hit-testing together — mirroring the
+        // standalone-item path above.
+        let row_rect = if mt_px {
+            row_rect.translate(Vec2::new(0.0, 1.0))
+        } else {
+            row_rect
+        };
         let circle_rect = Rect::from_min_size(row_rect.min, Vec2::splat(RADIO_SIZE));
 
         // The label runs BEFORE the circle interact (label-then-control
@@ -1446,6 +1475,53 @@ mod tests {
         // No renderer consumes the texture uploads in a headless test;
         // dropping an unapplied delta panics, so clear it explicitly.
         output.textures_delta.clear();
+    }
+
+    /// One headless pass returning the full output (paint shapes),
+    /// mirroring the field S1 `run_ui_capture` harness. The Ui id is
+    /// fixed so widget ids are stable across passes in one context.
+    /// (mt-px integration, ruling 12: the group returns no per-item
+    /// rects, so the paint output is the allocated/painted rect's
+    /// witness.)
+    fn run_ui_capture(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        mut f: impl FnMut(&mut Ui),
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, |ctx| {
+            let mut ui = Ui::new(
+                ctx.clone(),
+                Id::unique("radio_s1_test"),
+                UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+            );
+            f(&mut ui);
+        });
+        // No renderer consumes the texture uploads in a headless test;
+        // dropping an unapplied delta panics, so clear it explicitly.
+        output.textures_delta.clear();
+        output
+    }
+
+    /// Border-circle centers (`Shape::Circle`, radius 7.0) painted in
+    /// a frame, sorted by y then x. The radio border is the only
+    /// radius-7.0 circle the group paints (the dot is 4.0, the ring
+    /// paints only when focused, the shadow is mesh).
+    fn border_circle_centers(output: &egui::FullOutput) -> Vec<Pos2> {
+        let mut centers: Vec<Pos2> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) if (c.radius - 7.0).abs() < 0.01 => Some(c.center),
+                _ => None,
+            })
+            .collect();
+        centers.sort_by(|a, b| {
+            a.y.partial_cmp(&b.y)
+                .unwrap()
+                .then(a.x.partial_cmp(&b.x).unwrap())
+        });
+        centers
     }
 
     fn click_event(pos: Pos2, pressed: bool) -> egui::RawInput {
@@ -4256,6 +4332,369 @@ mod tests {
             ctx.memory(|m| m.focused()),
             None,
             "Escape must not grant focus"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // mt-px integration (ruling 12): consumption of the field
+    // `horizontal_content_present` context flag.
+    // ------------------------------------------------------------------
+
+    /// `mt-px` (spec §2.4, OPEN-6; ruling 12) for the standalone
+    /// radio role: a direct child of a horizontal Field with a content
+    /// child shifts down exactly 1px, measured from the item's
+    /// allocated rect (`Response.rect`). Negative cases: horizontal
+    /// without a content child, vertical with a content child
+    /// declared, and no enclosing field — all unshifted.
+    #[test]
+    fn mt_px_shifts_standalone_radio_item_in_horizontal_content_field() {
+        use crate::components::field::{Field, FieldContent, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = test_ctx();
+
+        let a_field = Cell::new(Rect::NOTHING);
+        let a_item = Cell::new(Rect::NOTHING);
+        let a_content = Cell::new(Rect::NOTHING);
+        let b_field = Cell::new(Rect::NOTHING);
+        let b_item = Cell::new(Rect::NOTHING);
+        let c_field = Cell::new(Rect::NOTHING);
+        let c_item = Cell::new(Rect::NOTHING);
+        let d_block = Cell::new(Rect::NOTHING);
+        let d_item = Cell::new(Rect::NOTHING);
+
+        let mut ca = false;
+        let mut cb = false;
+        let mut cc = false;
+        let mut cd = false;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let r = RadioGroupItem::new(&mut ca).show(ui).rect;
+                    let content = FieldContent::new()
+                        .show(ui, |ui| {
+                            ui.label("Title line");
+                            ui.label("Description line so the content column is taller.");
+                        })
+                        .response
+                        .rect;
+                    (r, content)
+                });
+            a_field.set(frame.response.rect);
+            a_item.set(frame.inner.0);
+            a_content.set(frame.inner.1);
+
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| RadioGroupItem::new(&mut cb).show(ui).rect);
+            b_field.set(frame.response.rect);
+            b_item.set(frame.inner);
+
+            let frame = Field::new()
+                .has_content_child(true)
+                .show(ui, |ui| RadioGroupItem::new(&mut cc).show(ui).rect);
+            c_field.set(frame.response.rect);
+            c_item.set(frame.inner);
+
+            let block = ui.vertical(|ui| RadioGroupItem::new(&mut cd).show(ui).rect);
+            d_block.set(block.response.rect);
+            d_item.set(block.inner);
+        });
+
+        assert!(
+            (a_item.get().min.y - a_field.get().min.y - 1.0).abs() < 0.01,
+            "case A item top vs field top: {} (field top {})",
+            a_item.get().min.y,
+            a_field.get().min.y
+        );
+        assert!(
+            (a_content.get().min.y - a_item.get().min.y + 1.0).abs() < 0.01,
+            "case A content top minus item top: {}",
+            a_content.get().min.y - a_item.get().min.y
+        );
+        // B/C/D: unshifted. Case B's invariant is CENTRE alignment,
+        // not top alignment: `ui.horizontal` (items-center) seeds a
+        // 20px `interact_size.y` frame, inflating the row to 36px
+        // tall, so the sole child's top sits 10px below the row top
+        // while its centre coincides with the row centre (the
+        // `RadioGroup::show` comment records the same seed).
+        assert!(
+            (b_item.get().center().y - b_field.get().center().y).abs() < 0.01,
+            "case B item centre vs field centre: {} vs {}",
+            b_item.get().center().y,
+            b_field.get().center().y
+        );
+        assert!(
+            (c_item.get().min.y - c_field.get().min.y).abs() < 0.01,
+            "case C item top vs field top: {}",
+            c_item.get().min.y - c_field.get().min.y
+        );
+        assert!(
+            (d_item.get().min.y - d_block.get().min.y).abs() < 0.01,
+            "case D item top vs block top: {}",
+            d_item.get().min.y - d_block.get().min.y
+        );
+    }
+
+    /// `mt-px` non-leak for the standalone radio role: a nested Field
+    /// resets the flag for its own children; the flag is restored for
+    /// the outer field's later direct children.
+    #[test]
+    fn mt_px_does_not_leak_into_nested_field_radio_item() {
+        use crate::components::field::{Field, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = test_ctx();
+
+        let nested_field = Cell::new(Rect::NOTHING);
+        let nested_item = Cell::new(Rect::NOTHING);
+        let outer_item = Cell::new(Rect::NOTHING);
+
+        let mut cn = false;
+        let mut co = false;
+        run_ui(&ctx, egui::RawInput::default(), |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let frame =
+                        Field::new().show(ui, |ui| RadioGroupItem::new(&mut cn).show(ui).rect);
+                    nested_field.set(frame.response.rect);
+                    nested_item.set(frame.inner);
+                    outer_item.set(RadioGroupItem::new(&mut co).show(ui).rect);
+                });
+        });
+
+        assert!(
+            (nested_item.get().min.y - nested_field.get().min.y).abs() < 0.01,
+            "nested item top vs nested field top: {}",
+            nested_item.get().min.y - nested_field.get().min.y
+        );
+        assert!(
+            (outer_item.get().min.y - nested_field.get().min.y - 1.0).abs() < 0.01,
+            "outer item top vs row top: {}",
+            outer_item.get().min.y - nested_field.get().min.y
+        );
+    }
+
+    /// `mt-px` (spec §2.4, OPEN-6; ruling 12) for the group: every
+    /// item row shifts down exactly 1px when the group is a direct
+    /// child of a horizontal Field with a content child. Measured from
+    /// the PAINTED border circles (`Shape::Circle`, radius 7.0) — the
+    /// group returns no per-item rects, so the paint output is the
+    /// allocated/painted rect's witness. Negative cases B–D are
+    /// unshifted; case A is asserted both field-relative and as a
+    /// cross-frame difference against the standalone frame D.
+    #[test]
+    fn mt_px_shifts_group_items_in_horizontal_content_field() {
+        use crate::components::field::{Field, FieldContent, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = test_ctx();
+
+        // Case A (positive): group + taller FieldContent in a
+        // horizontal + content field.
+        let a_field = Cell::new(Rect::NOTHING);
+        let mut sel_a: Option<usize> = None;
+        let out_a = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    RadioGroup::new(&mut sel_a)
+                        .id_salt("mtpx-ga")
+                        .option("A")
+                        .option("B")
+                        .show(ui);
+                    FieldContent::new().show(ui, |ui| {
+                        ui.label("Title line");
+                        ui.label("Description line so the content column is taller.");
+                    });
+                });
+            a_field.set(frame.response.rect);
+        });
+        let centers_a = border_circle_centers(&out_a);
+        assert_eq!(
+            centers_a.len(),
+            2,
+            "case A must paint exactly 2 border circles"
+        );
+
+        // Case B (negative): horizontal, NO content child, sole child.
+        let b_field = Cell::new(Rect::NOTHING);
+        let mut sel_b: Option<usize> = None;
+        let out_b = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let frame = Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .show(ui, |ui| {
+                    RadioGroup::new(&mut sel_b)
+                        .id_salt("mtpx-gb")
+                        .option("A")
+                        .option("B")
+                        .show(ui);
+                });
+            b_field.set(frame.response.rect);
+        });
+        let centers_b = border_circle_centers(&out_b);
+        assert_eq!(
+            centers_b.len(),
+            2,
+            "case B must paint exactly 2 border circles"
+        );
+
+        // Case C (negative): vertical + content child declared, sole child.
+        let c_field = Cell::new(Rect::NOTHING);
+        let mut sel_c: Option<usize> = None;
+        let out_c = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let frame = Field::new().has_content_child(true).show(ui, |ui| {
+                RadioGroup::new(&mut sel_c)
+                    .id_salt("mtpx-gc")
+                    .option("A")
+                    .option("B")
+                    .show(ui);
+            });
+            c_field.set(frame.response.rect);
+        });
+        let centers_c = border_circle_centers(&out_c);
+        assert_eq!(
+            centers_c.len(),
+            2,
+            "case C must paint exactly 2 border circles"
+        );
+
+        // Case D (negative): no enclosing field; vertical block reference.
+        let d_block = Cell::new(Rect::NOTHING);
+        let mut sel_d: Option<usize> = None;
+        let out_d = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let block = ui.vertical(|ui| {
+                RadioGroup::new(&mut sel_d)
+                    .id_salt("mtpx-gd")
+                    .option("A")
+                    .option("B")
+                    .show(ui);
+            });
+            d_block.set(block.response.rect);
+        });
+        let centers_d = border_circle_centers(&out_d);
+        assert_eq!(
+            centers_d.len(),
+            2,
+            "case D must paint exactly 2 border circles"
+        );
+
+        // A: first circle centre 9px below the field top (8px radius
+        // centre + 1px shift); both circles shift 1px vs frame D.
+        assert!(
+            (centers_a[0].y - a_field.get().min.y - 9.0).abs() < 0.01,
+            "case A first circle centre vs field top: {} (field top {})",
+            centers_a[0].y,
+            a_field.get().min.y
+        );
+        assert!(
+            (centers_a[0].y - centers_d[0].y - 1.0).abs() < 0.01,
+            "case A vs D first circle: {} vs {}",
+            centers_a[0].y,
+            centers_d[0].y
+        );
+        assert!(
+            (centers_a[1].y - centers_d[1].y - 1.0).abs() < 0.01,
+            "case A vs D second circle: {} vs {}",
+            centers_a[1].y,
+            centers_d[1].y
+        );
+        // B/C/D: first circle centre 8px below the row/block top.
+        assert!(
+            (centers_b[0].y - b_field.get().min.y - 8.0).abs() < 0.01,
+            "case B first circle centre vs field top: {}",
+            centers_b[0].y - b_field.get().min.y
+        );
+        assert!(
+            (centers_c[0].y - c_field.get().min.y - 8.0).abs() < 0.01,
+            "case C first circle centre vs field top: {}",
+            centers_c[0].y - c_field.get().min.y
+        );
+        assert!(
+            (centers_d[0].y - d_block.get().min.y - 8.0).abs() < 0.01,
+            "case D first circle centre vs block top: {}",
+            centers_d[0].y - d_block.get().min.y
+        );
+    }
+
+    /// `mt-px` non-leak for the group: a group nested inside a nested
+    /// Field is unshifted; a group directly in the outer field after
+    /// the nested field is shifted 1px. Two frames (one group each)
+    /// keep the circle attribution unambiguous.
+    #[test]
+    fn mt_px_does_not_leak_into_nested_field_group() {
+        use crate::components::field::{Field, FieldOrientation};
+        use std::cell::Cell;
+
+        let ctx = test_ctx();
+
+        // Frame E1: group nested inside a nested vertical Field.
+        let nested_field = Cell::new(Rect::NOTHING);
+        let mut sel_e1: Option<usize> = None;
+        let out_e1 = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let frame = Field::new().show(ui, |ui| {
+                        RadioGroup::new(&mut sel_e1)
+                            .id_salt("mtpx-ge1")
+                            .option("A")
+                            .option("B")
+                            .show(ui);
+                    });
+                    nested_field.set(frame.response.rect);
+                });
+        });
+        let centers_e1 = border_circle_centers(&out_e1);
+        assert_eq!(
+            centers_e1.len(),
+            2,
+            "frame E1 must paint exactly 2 border circles"
+        );
+
+        // Frame E2: group directly in the outer field, after a nested
+        // field holding a plain label (reference: the nested field's
+        // top == the row top).
+        let nested_field2 = Cell::new(Rect::NOTHING);
+        let mut sel_e2: Option<usize> = None;
+        let out_e2 = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            Field::new()
+                .orientation(FieldOrientation::Horizontal)
+                .has_content_child(true)
+                .show(ui, |ui| {
+                    let frame = Field::new().show(ui, |ui| {
+                        ui.label("nested");
+                    });
+                    nested_field2.set(frame.response.rect);
+                    RadioGroup::new(&mut sel_e2)
+                        .id_salt("mtpx-ge2")
+                        .option("A")
+                        .option("B")
+                        .show(ui);
+                });
+        });
+        let centers_e2 = border_circle_centers(&out_e2);
+        assert_eq!(
+            centers_e2.len(),
+            2,
+            "frame E2 must paint exactly 2 border circles"
+        );
+
+        assert!(
+            (centers_e1[0].y - nested_field.get().min.y - 8.0).abs() < 0.01,
+            "nested group first circle vs nested field top: {}",
+            centers_e1[0].y - nested_field.get().min.y
+        );
+        assert!(
+            (centers_e2[0].y - nested_field2.get().min.y - 9.0).abs() < 0.01,
+            "outer group first circle vs row top: {}",
+            centers_e2[0].y - nested_field2.get().min.y
         );
     }
 }
