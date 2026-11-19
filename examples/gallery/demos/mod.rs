@@ -6337,7 +6337,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 
     // 2e. FieldSet with a direct RadioGroup child: 12px in both styles.
-    ui.label("2e. FieldSet .has_group_child(true) with a direct RadioGroup child (expected: 12px both styles; the old RadioGroup on this branch renders circles only — labels are stored, never painted)");
+    ui.label("2e. FieldSet .has_group_child(true) with a direct RadioGroup child (expected: 12px both styles; the rebuilt RadioGroup paints circles + labels)");
     ui.add_space(4.0);
     let (r1, rg, r2) = FieldSet::new()
         .has_group_child(true)
@@ -6842,7 +6842,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
 
     // 6a. Content child present: top-aligned; the mt-px flag is SET
     // for the direct-child checkbox (unobservable from the field side).
-    ui.label("6a. .has_content_child(true) — top-aligned row; mt-px flag SET for the direct-child checkbox (the 1px offset is unobservable until a control line consumes the flag — ruling 12 §2)");
+    ui.label("6a. .has_content_child(true) — top-aligned row; mt-px flag SET for the direct-child checkbox (the 1px offset is consumed — checkbox sits 1px below the content top, ruling 12 §2)");
     ui.add_space(4.0);
     let page_right = ui.max_rect().max.x;
     let field_frame = Field::new()
@@ -6870,7 +6870,7 @@ pub fn field_demo(ui: &mut egui::Ui) {
     let field_rect = field_frame.response.rect;
     let (cb_rect, content_rect) = field_frame.inner;
     ui.label(format!(
-        "measured: content-top minus checkbox-top {:.1} px (expected: ~0, items-start); content right {:.1}, row right {:.1} (expected: equal, flex-1 fills the row)",
+        "measured: content-top minus checkbox-top {:.1} px (expected: -1.0, items-start); content right {:.1}, row right {:.1} (expected: equal, flex-1 fills the row)",
         content_rect.min.y - cb_rect.min.y,
         content_rect.max.x,
         page_right
