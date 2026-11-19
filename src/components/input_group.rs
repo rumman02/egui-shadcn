@@ -116,12 +116,13 @@
 //! });
 //! ```
 
+use crate::components::attachment::mix;
 use crate::components::button::{
     fuse_radius, group, Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition,
 };
 use crate::components::input;
 use crate::icons::Icon;
-use crate::theme::{color_alpha, RadiusTokens, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{
     Align as EguiAlign, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, Painter,
     Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
@@ -293,6 +294,36 @@ fn addon_fade(disabled_group: bool) -> f32 {
     } else {
         1.0
     }
+}
+
+/// Pre-fade container fill rule value (mechanism (a), §4.4): the fill
+/// `bg-input/50` (light) / `bg-input/80` (dark) BEFORE the container
+/// opacity is applied. The [`container_group_fade`] precomposite needs
+/// the pre-fade fill (the fill as it appears in the container's own
+/// buffer, before the container's 50% opacity).
+fn container_fill_pre_fade(p: Palette, dark: bool) -> Color32 {
+    color_alpha(p.input, if dark { 0.8 } else { 0.5 })
+}
+
+/// Whole-element group fade for one interior slot under mechanism (a)
+/// (`has-disabled:opacity-50`, nova only; IGP-VIS-03): the slot paints
+/// OPAQUE with `0.5 * (slot over fill over backdrop) + 0.5 * backdrop`,
+/// where `fill` is the container's pre-fade fill and `backdrop` is
+/// `p.background`. Same shape as the `disabled_group_fade` in `input.rs`
+/// (INP-VIS-01) and `checkbox.rs` (CHK-VIS-01): per-slot alpha halving
+/// double-fades the overlap pixels — a halved border stroke over the
+/// halved fill read (230) nova-light where group fade requires (242),
+/// halved glyphs over the faded fill read (172) where group fade
+/// requires (185), and the placeholder did not fade at all (the hint is
+/// painted from the theme's `weak_text_color`, which the builder's
+/// `.text_color()` never reaches). The fill itself keeps halving (it
+/// paints over the backdrop alone, where halving IS the group fade);
+/// the ring and shadow keep halving for the same reason (they sit
+/// outside the rect). The backdrop approximation (exact on the gallery
+/// page, where the panel fill is `p.background`) is the same recorded
+/// limitation as the input/checkbox precedents.
+fn container_group_fade(slot: Color32, fill: Color32, backdrop: Color32) -> Color32 {
+    mix(backdrop, blend(blend(backdrop, fill), slot), 0.5)
 }
 
 /// Flags recorded by the container's children while they render. The
@@ -730,8 +761,16 @@ impl InputGroup {
                 p.input
             };
             // `has-disabled:opacity-50` fades the border too (nova only;
-            // `fade` is 1.0 under base).
-            let stroke_color = color_alpha(stroke_color, fade);
+            // `fade` is 1.0 under base). IGP-VIS-03: the border
+            // precomposites the group fade OPAQUE instead of halving its
+            // alpha over the faded fill — a halved stroke over the halved
+            // fill read (230) nova-light where group fade requires (242)
+            // (input.rs `disabled_group_fade` shape, INP-VIS-01).
+            let stroke_color = if fade < 1.0 {
+                container_group_fade(stroke_color, container_fill_pre_fade(p, dark), p.background)
+            } else {
+                stroke_color
+            };
             let stroke = Stroke::new(1.0, stroke_color);
             paint_fused_stroke(painter, draw_rect, corner, stroke, orientation, position);
 
@@ -859,7 +898,13 @@ impl<'a> InputGroupInput<'a> {
         let is_empty = self.text.is_empty();
         // Text alpha: the control's own disabled rule (50%) times the
         // container fade (mechanism (a), nova only). Mechanism (b) does
-        // not touch the control (addons only).
+        // not touch the control (addons only). IGP-VIS-03: under the
+        // container fade the text precomposites the group fade OPAQUE
+        // (input.rs `disabled_group_fade` shape, INP-VIS-01) — the slot
+        // carries the control's own fade, the mix carries the
+        // container's. Halving the alpha over the faded fill
+        // double-faded the glyph cores ((175) nova-light where group
+        // fade requires (190) with both flags).
         let fade = container_fade(
             record.disabled_container || snapshot.control_disabled,
             style,
@@ -869,7 +914,15 @@ impl<'a> InputGroupInput<'a> {
         } else {
             1.0
         };
-        let text_color = color_alpha(p.foreground, own_alpha * fade);
+        let text_color = if fade < 1.0 {
+            container_group_fade(
+                color_alpha(p.foreground, own_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
+        } else {
+            color_alpha(p.foreground, own_alpha)
+        };
 
         // `[&>input]:pl-2` when an inline-start addon precedes the control
         // (nova `pl-1.5`); `[&>input]:pr-2` when an inline-end addon follows
@@ -926,9 +979,28 @@ impl<'a> InputGroupInput<'a> {
         };
 
         // The scoped spacing keeps the theme's `interact_size` floor (36pt)
-        // from overriding the nova `h-8` (32pt) row.
+        // from overriding the nova `h-8` (32pt) row. IGP-VIS-03: the hint
+        // is painted by egui's TextEdit from the theme's `weak_text_color`
+        // (`p.muted_foreground`), which the builder's `.text_color()`
+        // never reaches — the placeholder did not fade at all under
+        // mechanism (a). Precomposite it at the group fade (input.rs:694,
+        // INP-VIS-01) when the container fades; otherwise the theme hint
+        // applies unchanged (base has no container fade — S5: the vega
+        // placeholder stays unfaded).
+        let hint_color = if fade < 1.0 {
+            Some(container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            ))
+        } else {
+            None
+        };
         let out = ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = input::input_height(style);
+            if let Some(hint) = hint_color {
+                ui.visuals_mut().weak_text_color = Some(hint);
+            }
             edit.show(ui)
         });
         let response = out.inner.response.response;
@@ -1033,7 +1105,10 @@ impl<'a> InputGroupTextarea<'a> {
         // Text alpha: the control's own disabled rule (50%) times the
         // container fade (mechanism (a), nova only). The textarea never
         // records `input_id`: addon clicks focus `<input>` elements
-        // only, never a textarea (§7.2 rule 3).
+        // only, never a textarea (§7.2 rule 3). IGP-VIS-03: same
+        // precomposite as the input (see `InputGroupInput::show`) — the
+        // slot carries the control's own fade, the mix carries the
+        // container's.
         let snapshot = group_id.map(|id| read_snapshot(ui, id)).unwrap_or_default();
         let fade = container_fade(
             record.disabled_container || snapshot.control_disabled,
@@ -1041,7 +1116,15 @@ impl<'a> InputGroupTextarea<'a> {
         );
         let disabled = self.disabled || self.disabled_in(ui);
         let own_alpha = if disabled { 0.5 } else { 1.0 };
-        let text_color = color_alpha(p.foreground, own_alpha * fade);
+        let text_color = if fade < 1.0 {
+            container_group_fade(
+                color_alpha(p.foreground, own_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
+        } else {
+            color_alpha(p.foreground, own_alpha)
+        };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         // `px-3 py-3` base recipe; nova `.cn-input-group-textarea` `px-2.5 py-2`.
         let (pad_x, pad_y) = match style {
@@ -1078,8 +1161,22 @@ impl<'a> InputGroupTextarea<'a> {
         };
 
         // Scoped spacing: same `interact_size` floor guard as the input.
+        // IGP-VIS-03: the textarea hint precomposites the group fade
+        // like the input's (see `InputGroupInput::show`).
+        let hint_color = if fade < 1.0 {
+            Some(container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            ))
+        } else {
+            None
+        };
         let out = ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = input::input_height(style);
+            if let Some(hint) = hint_color {
+                ui.visuals_mut().weak_text_color = Some(hint);
+            }
             edit.show(ui)
         });
         let response = out.inner.response.response;
@@ -1403,15 +1500,30 @@ impl InputGroupText {
         // Text alpha: the text's own disabled rule (50%) times the
         // container fade (mechanism (a), nova only) times the addon fade
         // (mechanism (b), both styles) — multiplicative (`0.5^n`, §4.4).
+        // IGP-VIS-03: under the container fade the text precomposites
+        // the group fade OPAQUE (input.rs `disabled_group_fade` shape,
+        // INP-VIS-01) — the slot carries the text's own + addon fades,
+        // the mix carries the container's. Without the container fade
+        // (§8) the halving stands: the text paints over the UNfaded
+        // fill, where halving IS the addon fade.
         let group_id = current_id(ui);
         let record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
         let snapshot = group_id.map(|id| read_snapshot(ui, id)).unwrap_or_default();
-        let fade = container_fade(
+        let container = container_fade(
             record.disabled_container || snapshot.control_disabled,
             theme.style,
-        ) * addon_fade(record.disabled_group);
-        let own_alpha = if self.disabled { 0.5 } else { 1.0 };
-        let color = color_alpha(p.muted_foreground, own_alpha * fade);
+        );
+        let slot_alpha =
+            (if self.disabled { 0.5 } else { 1.0 }) * addon_fade(record.disabled_group);
+        let color = if container < 1.0 {
+            container_group_fade(
+                color_alpha(p.muted_foreground, slot_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
+        } else {
+            color_alpha(p.muted_foreground, slot_alpha)
+        };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let icon_size = crate::theme::tokens::spacing::LG;
         // Laid out once with the paint color: the same galley sizes the
@@ -2021,6 +2133,12 @@ mod tests {
     fn open3_nova_disabled_fill_and_border_fade() {
         // Nova light, container disabled: fill `bg-input/50` times the
         // container opacity (effective 25%), border at 50%.
+        //
+        // IGP-VIS-03: the border precomposites the group fade OPAQUE
+        // (input.rs `disabled_group_fade` shape, INP-VIS-01) instead of
+        // halving its alpha over the faded fill — a halved stroke over
+        // the halved fill read (230) where group fade requires (242).
+        // The fill keeps halving (it paints over the backdrop alone).
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let p = palette(Mode::Light);
@@ -2042,12 +2160,13 @@ mod tests {
             "nova disabled fill must be bg-input/50 at 50% opacity \
              (effective 25%), got {fills:?}"
         );
+        let want_stroke =
+            container_group_fade(p.input, container_fill_pre_fade(p, false), p.background);
         let strokes = stroked_rects_at(&out, want);
         assert!(
-            strokes
-                .iter()
-                .any(|(_, _, s)| s.color == color_alpha(p.input, 0.5)),
-            "nova disabled border must be at 50% alpha, got {strokes:?}"
+            strokes.iter().any(|(_, _, s)| s.color == want_stroke),
+            "nova disabled border must precomposite the 50% group fade \
+             (opaque {want_stroke:?}), got {strokes:?}"
         );
     }
 
@@ -2116,6 +2235,13 @@ mod tests {
     fn open3_double_fade_is_multiplicative() {
         // Both mechanisms under nova: the addon renders at 25%
         // (`0.5 x 0.5` — both rules match), not 50%.
+        //
+        // IGP-VIS-03: the 25% is the EFFECTIVE fade, rendered by the
+        // precomposite (input.rs `disabled_group_fade` shape, INP-VIS-01)
+        // — the slot carries mechanism (b)'s 50%, the mix carries
+        // mechanism (a)'s 50%. A halved 0.25-alpha shape over the faded
+        // fill double-fades (it read (201) nova-light where the 25%
+        // group fade requires (217)).
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let p = palette(Mode::Light);
@@ -2132,12 +2258,340 @@ mod tests {
                     InputGroupInput::new(&mut text).show(ui);
                 });
         });
+        let want = container_group_fade(
+            color_alpha(p.muted_foreground, 0.5),
+            container_fill_pre_fade(p, false),
+            p.background,
+        );
         assert_eq!(
             text_color(&out, "https://"),
-            Some(color_alpha(p.muted_foreground, 0.25)),
+            Some(want),
             "both disabled mechanisms under nova must render the addon \
              at 25% (0.5 x 0.5)"
         );
+    }
+
+    // ---- IGP-VIS-03 mechanism-(a) precomposite (S9 run 3) ----
+
+    /// The single 1px container-border stroke colour in `out` (the §5
+    /// composition paints exactly one: the input is frameless and the
+    /// ring is suppressed when disabled).
+    fn border_stroke_color(out: &egui::FullOutput) -> Option<Color32> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rs) if rs.stroke.width == 1.0 => Some(rs.stroke.color),
+            _ => None,
+        })
+    }
+
+    /// Renders the §5 composition (group disabled + input disabled +
+    /// "https://" addon + "Disabled" placeholder, two frames so the
+    /// last-frame snapshot is settled) under `mode` and returns the
+    /// settled output plus the palette.
+    fn render_s5(mode: Mode) -> (egui::FullOutput, Palette) {
+        let ctx = egui::Context::default();
+        Preset::default().build(mode).install(&ctx);
+        let p = palette(mode);
+        let mut text = String::new();
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new()
+                .id_salt("vis03s5")
+                .disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text)
+                        .disabled(true)
+                        .placeholder("Disabled")
+                        .show(ui);
+                });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        (out, p)
+    }
+
+    #[test]
+    fn vis03_nova_disabled_border_precomposite() {
+        // Mechanism (a), nova light + dark: the border stroke
+        // precomposites the 50% group fade OPAQUE (INP-VIS-01 shape) —
+        // light (242), dark (41). RED before the fix: the halved stroke
+        // read (230) light / (19,a19) dark.
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want =
+                container_group_fade(p.input, container_fill_pre_fade(p, dark), p.background);
+            assert_eq!(
+                border_stroke_color(&out),
+                Some(want),
+                "nova {:?} disabled border must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_placeholder_precomposite() {
+        // Mechanism (a), nova light + dark: the "Disabled" hint
+        // precomposites the 50% group fade OPAQUE — light (185), dark
+        // (86). RED before the fix: the hint was entirely unfaded
+        // ((115)/(161) — the theme `weak_text_color`).
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want = container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "Disabled"),
+                Some(want),
+                "nova {:?} disabled placeholder must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_addon_text_precomposite() {
+        // Mechanism (a), nova light + dark: the "https://" addon text
+        // precomposites the 50% group fade OPAQUE — light (185), dark
+        // (86). RED before the fix: the halved text read (172) light.
+        // (S1 §1.3: the container/group opacity applies to addon TEXT.)
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want = container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "https://"),
+                Some(want),
+                "nova {:?} disabled addon text must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_input_text_precomposite() {
+        // Mechanism (a) + the control's own fade, nova light + dark:
+        // typed text with BOTH flags precomposites the two 50% fades
+        // OPAQUE — light (190), dark (77). RED before the fix: the
+        // 0.25-alpha shape read (175) light.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut text = String::from("example.com");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03typed")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupInput::new(&mut text)
+                            .disabled(true)
+                            .placeholder("Disabled")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let want = container_group_fade(
+                color_alpha(p.foreground, 0.5),
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(want),
+                "nova {:?} disabled typed text must precomposite both 50% fades",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_container_fade_only_input_text() {
+        // Mechanism (a) alone, nova light + dark: a disabled button
+        // triggers the container fade while the input stays enabled, so
+        // the typed text carries ONLY the container's 50% — light (132),
+        // dark (130). Two frames: the button records `control_disabled`
+        // on frame 1, the input reads it from the snapshot on frame 2.
+        // RED before the fix: the halved text read (129) light.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut text = String::from("example.com");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("vis03conly").show(ui, |ui| {
+                    InputGroupInput::new(&mut text).show(ui);
+                    InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                        InputGroupButton::icon(Icon::Copy).disabled(true).show(ui);
+                    });
+                });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let want =
+                container_group_fade(p.foreground, container_fill_pre_fade(p, dark), p.background);
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(want),
+                "nova {:?} container-fade-only typed text must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_textarea_precomposite() {
+        // Mechanism (a) on the textarea, nova light + dark: the typed
+        // text and the placeholder precomposite the 50% group fade
+        // OPAQUE (same shape as the input — S1 §1.3 covers
+        // "input/textarea text"). RED before the fix: the text was the
+        // 0.25-alpha shape and the hint entirely unfaded.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut bio = String::from("Bio line one");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03ta")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupTextarea::new(&mut bio)
+                            .rows(3)
+                            .disabled(true)
+                            .placeholder("Tell us about yourself…")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let fill_pre = container_fill_pre_fade(p, dark);
+            let want_text =
+                container_group_fade(color_alpha(p.foreground, 0.5), fill_pre, p.background);
+            assert_eq!(
+                text_color(&out, "Bio line one"),
+                Some(want_text),
+                "nova {:?} disabled textarea text must precomposite both 50% fades",
+                mode
+            );
+            // The placeholder only paints while the textarea is empty;
+            // render it in a second composition.
+            let mut empty = String::new();
+            let mut render_empty = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03taempty")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupTextarea::new(&mut empty)
+                            .rows(3)
+                            .disabled(true)
+                            .placeholder("Tell us about yourself…")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render_empty);
+            let out_empty = run_ui_capture(&ctx, egui::RawInput::default(), &mut render_empty);
+            let want_hint = container_group_fade(p.muted_foreground, fill_pre, p.background);
+            assert_eq!(
+                text_color(&out_empty, "Tell us about yourself…"),
+                Some(want_hint),
+                "nova {:?} disabled textarea placeholder must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_both_flags_addon_text_multiplicative_dark() {
+        // Both mechanisms under nova DARK: the addon renders at 25%
+        // (`0.5 x 0.5`) via the precomposite — the slot carries
+        // mechanism (b)'s 50%, the mix carries mechanism (a)'s 50%.
+        // Companion to the (light) `open3_double_fade_is_multiplicative`.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Dark).install(&ctx);
+        let p = palette(Mode::Dark);
+        let mut text = String::new();
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("vis03bothdark")
+                .disabled(true)
+                .group_disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text).show(ui);
+                });
+        });
+        let want = container_group_fade(
+            color_alpha(p.muted_foreground, 0.5),
+            container_fill_pre_fade(p, true),
+            p.background,
+        );
+        assert_eq!(
+            text_color(&out, "https://"),
+            Some(want),
+            "both disabled mechanisms under nova dark must render the addon at 25% (0.5 x 0.5)"
+        );
+    }
+
+    #[test]
+    fn vis03_group_disabled_addon_only() {
+        // Mechanism (b), nova light + dark: ONLY the addon fades — the
+        // border stays full alpha, the input text stays full alpha, and
+        // the placeholder stays unfaded. (§8; S5: mechanism (b) correct.)
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let mut text = String::new();
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03b")
+                    .group_disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new("https://").show(ui);
+                        });
+                        InputGroupInput::new(&mut text)
+                            .placeholder("example.com")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            assert_eq!(
+                text_color(&out, "https://"),
+                Some(color_alpha(p.muted_foreground, 0.5)),
+                "nova {:?} group-disabled addon text must fade to 50%",
+                mode
+            );
+            assert_eq!(
+                border_stroke_color(&out),
+                Some(p.input),
+                "nova {:?} group-disabled border must stay full alpha (mechanism (b) is addon-only)",
+                mode
+            );
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(p.muted_foreground),
+                "nova {:?} group-disabled placeholder must stay unfaded (mechanism (b) is addon-only)",
+                mode
+            );
+        }
     }
 
     fn test_ctx() -> egui::Context {
