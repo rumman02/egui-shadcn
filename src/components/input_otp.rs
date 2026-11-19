@@ -1256,15 +1256,21 @@ impl InputOTPSeparator {
 
     /// Renders the separator.
     pub fn show(self, ui: &mut Ui) -> Response {
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::splat(crate::theme::tokens::spacing::LG),
-            Sense::hover(),
-        );
+        let theme = ShadcnTheme::of_ui(ui);
+        // OTP-F-05 (S4 §9, CLOSED): the separator is the lucide minus icon
+        // at its definitional 24px default in the base style; nova shrinks
+        // it to 16px. S1 allocated 16px in both styles (8px too narrow in
+        // base — the base 3+3 composition measured 248px, not 256px).
+        let size = if theme.style == Style::Nova {
+            crate::theme::tokens::spacing::LG // 16.0
+        } else {
+            crate::theme::tokens::spacing::XL // 24.0
+        };
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
         if ui.is_rect_visible(rect) {
             // The source separator has no color class, so the icon inherits
             // the foreground color — faded with the container when disabled
             // (`has-disabled:opacity-50`).
-            let theme = ShadcnTheme::of_ui(ui);
             let alpha = match current_ctx(ui) {
                 Some(ctx) if ctx.disabled => 0.5,
                 _ => 1.0,
@@ -1273,7 +1279,7 @@ impl InputOTPSeparator {
                 ui.painter(),
                 rect,
                 color_alpha(theme.palette.foreground, alpha),
-                2.0 * crate::theme::tokens::spacing::LG / 24.0,
+                2.0 * size / 24.0,
             );
         }
         response
@@ -1385,6 +1391,94 @@ mod tests {
         assert_eq!(slot_size(Style::Vega), 36.0);
         assert_eq!(slot_size(Style::Nova), 32.0); // nova size-8
         assert_eq!(OTP_CARET_HEIGHT, 16.0); // h-4
+    }
+
+    /// F-05 (S4 §9, CLOSED): the separator is the lucide minus icon at its
+    /// definitional 24px default in the base style; nova shrinks it to 16px.
+    /// Renders one separator frame under the given style and returns its rect.
+    fn separator_rect(style: Style) -> Rect {
+        let ctx = egui::Context::default();
+        Preset::default().with_style(style).install(&ctx);
+        let mut rect = Rect::NOTHING;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("otp_f05_sep_test"),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            rect = InputOTPSeparator::new().show(ui).rect;
+        });
+        out.textures_delta.clear();
+        rect
+    }
+
+    #[test]
+    fn separator_allocates_24px_in_base_otp_f05() {
+        let rect = separator_rect(Style::Vega);
+        assert_eq!(rect.width(), 24.0, "base separator width: {:?}", rect);
+        assert_eq!(rect.height(), 24.0, "base separator height: {:?}", rect);
+    }
+
+    #[test]
+    fn separator_stays_16px_in_nova_otp_f05() {
+        let rect = separator_rect(Style::Nova);
+        assert_eq!(rect.width(), 16.0, "nova separator width: {:?}", rect);
+        assert_eq!(rect.height(), 16.0, "nova separator height: {:?}", rect);
+    }
+
+    /// Renders one frame of a 3+3 custom layout (two groups of three slots
+    /// with a separator between them — the S3 §2 composition) and returns
+    /// the slot rects, sorted by index.
+    fn run_3plus3(ctx: &egui::Context, name: &'static str) -> Vec<(usize, Rect)> {
+        let mut value = String::new();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique(name),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            InputOTP::new(&mut value)
+                .length(6)
+                .numeric(true)
+                .id_salt("otp_f05")
+                .show_with(ui, |ui| {
+                    InputOTPGroup::new().show(ui, |ui| {
+                        InputOTPSlot::new(0).show(ui);
+                        InputOTPSlot::new(1).show(ui);
+                        InputOTPSlot::new(2).show(ui);
+                    });
+                    InputOTPSeparator::new().show(ui);
+                    InputOTPGroup::new().show(ui, |ui| {
+                        InputOTPSlot::new(3).show(ui);
+                        InputOTPSlot::new(4).show(ui);
+                        InputOTPSlot::new(5).show(ui);
+                    });
+                });
+        });
+        out.textures_delta.clear();
+        test_slot_rects(ctx, name, "otp_f05")
+    }
+
+    #[test]
+    fn three_plus_three_width_is_256px_in_base_otp_f05() {
+        let ctx = egui::Context::default();
+        Preset::default().with_style(Style::Vega).install(&ctx);
+        let rects = run_3plus3(&ctx, "otp_f05_base_test");
+        assert_eq!(rects.len(), 6, "slot rects: {:?}", rects);
+        let width = rects[5].1.max.x - rects[0].1.min.x;
+        // 3×36 (group) + 8 (gap) + 24 (separator) + 8 (gap) + 3×36 (group).
+        assert_eq!(width, 256.0, "base 3+3 width: {:?}", rects);
+    }
+
+    #[test]
+    fn three_plus_three_width_is_224px_in_nova_otp_f05() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let rects = run_3plus3(&ctx, "otp_f05_nova_test");
+        assert_eq!(rects.len(), 6, "slot rects: {:?}", rects);
+        let width = rects[5].1.max.x - rects[0].1.min.x;
+        // 3×32 (group) + 8 (gap) + 16 (separator) + 8 (gap) + 3×32 (group).
+        assert_eq!(width, 224.0, "nova 3+3 width: {:?}", rects);
     }
 
     #[test]
