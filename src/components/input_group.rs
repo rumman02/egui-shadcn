@@ -127,8 +127,8 @@ use crate::components::input;
 use crate::icons::Icon;
 use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
 use egui::{
-    Align as EguiAlign, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, Painter,
-    Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
+    Align as EguiAlign, Align2, Color32, CornerRadius, EventFilter, FontId, Frame, Id, Layout,
+    Margin, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
 };
 
 /// Container height (`h-9` base recipe; nova `.cn-input-group` `h-8`).
@@ -1182,6 +1182,24 @@ impl<'a> InputGroupTextarea<'a> {
             .desired_width(width)
             .desired_rows(self.rows)
             .min_size(Vec2::new(width, input::input_height(style)))
+            // IGP-INT-01: spec §7 requires Escape to be a no-op for a
+            // focused textarea. egui's `Focus::begin_pass` clears focus
+            // on unmodified Escape unless the focused widget's event
+            // filter matches the event, so claim Escape in the filter —
+            // the same shape the textarea line uses (`textarea.rs:555`,
+            // TXT-INT-01). The multiline defaults are restated in full
+            // (arrows captured, Tab NOT captured: Tab is focus
+            // traversal, never `\t`, spec §7). The TextEdit event loop
+            // has no Escape action, so the key becomes a true no-op:
+            // focus, caret, and text unchanged. (The §1 input keeps the
+            // stock filter — its Escape-clear is OBSERVED-G4, not a
+            // defect.)
+            .event_filter(EventFilter {
+                tab: false,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+            })
             // Frameless, as above: `Frame::NONE` removes the
             // theme-default 1px frame stroke (fill-only
             // transparency would leave the stroke behind). With an
@@ -3927,6 +3945,201 @@ mod tests {
             Some(ta_id.get()),
             "click in the textarea's lower area must focus it"
         );
+    }
+
+    fn key_event(key: egui::Key, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn escape_is_noop_for_group_textarea_igp_int01() {
+        // IGP-INT-01 regression pin: spec §7 requires Escape to be a
+        // no-op for a focused textarea — focus, caret, AND text
+        // unchanged. The group's textarea is a raw TextEdit; before the
+        // fix it carried the stock filter (`escape: false`), so egui's
+        // `Focus::begin_pass` cleared focus on unmodified Escape. The
+        // fix mirrors the textarea line's filter (`textarea.rs:555`,
+        // TXT-INT-01). Frame sequence mirrors the TXT-INT-01 pin: the
+        // filter installs on the frame after focus is granted, so
+        // Escape is judged on the frame after that.
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let bio = RefCell::new(String::from("hello"));
+            let ta_id = Cell::new(Id::unique("ig_int01_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01").show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                        InputGroupText::new("Bio").show(ui);
+                    });
+                    let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui);
+                    ta_id.set(r.id);
+                });
+                let _ = ui.button("tab-target");
+            };
+            // Frame A: unfocused. Capture the textarea id.
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                None,
+                "unfocused at rest {style:?}"
+            );
+            // Focus the textarea; frame B installs the filter.
+            ctx.memory_mut(|m| m.request_focus(ta_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "focused after request {style:?}"
+            );
+            let caret_before =
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range());
+            assert!(
+                caret_before.is_some(),
+                "caret state exists once focused {style:?}"
+            );
+            // Frame C: unmodified Escape press. Focus, caret, text unchanged.
+            run_ui(&ctx, key_event(egui::Key::Escape, true), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "Escape must not clear focus {style:?}"
+            );
+            assert_eq!(
+                *bio.borrow(),
+                "hello",
+                "Escape must not change text {style:?}"
+            );
+            assert_eq!(
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range()),
+                caret_before,
+                "Escape must not move the caret {style:?}"
+            );
+            // Frame D: the Escape release changes nothing either.
+            run_ui(&ctx, key_event(egui::Key::Escape, false), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "Escape release must not clear focus {style:?}"
+            );
+            assert_eq!(
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range()),
+                caret_before,
+                "Escape release must not move the caret {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_group_textarea_igp_int01() {
+        // IGP-INT-01 guard: the filter claims Escape but NOT Tab
+        // (`tab: false`) — Tab is focus traversal, never `\t`
+        // (spec §7). Focus moves at end-of-pass, so the move is
+        // observed in the following frame (same shape as the
+        // TXT-INT-01 pin).
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let bio = RefCell::new(String::from("hello"));
+            let ta_id = Cell::new(Id::unique("ig_int01_tab_placeholder"));
+            let target_id = Cell::new(Id::unique("ig_int01_tab_target_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01tab").show(ui, |ui| {
+                    let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                        .rows(3)
+                        .show(ui);
+                    ta_id.set(r.id);
+                });
+                target_id.set(ui.button("tab-target").id);
+            };
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            ctx.memory_mut(|m| m.request_focus(ta_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "focused after request {style:?}"
+            );
+            // Frame C: Tab press. Frame D: observe the move.
+            run_ui(&ctx, key_event(egui::Key::Tab, true), &render);
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(target_id.get()),
+                "Tab must move focus to the next stop {style:?} (filter keeps tab: false)"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_clears_focus_for_group_input_igp_int01() {
+        // IGP-INT-01 guard (OBSERVED-G4, NOT a defect): the §1 input
+        // keeps the stock filter, so unmodified Escape still clears
+        // its focus — the fix must not touch it (input gate G4:
+        // Escape/Enter focus-clearing stays OBSERVATION, not defect).
+        // This pin passes before AND after the fix; it fails if a
+        // future change claims Escape for the input.
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let text = RefCell::new(String::from("hello"));
+            let input_id = Cell::new(Id::unique("ig_int01_input_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01input").show(ui, |ui| {
+                    let r = InputGroupInput::new(&mut text.borrow_mut()).show(ui);
+                    input_id.set(r.id);
+                });
+                let _ = ui.button("tab-target");
+            };
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            ctx.memory_mut(|m| m.request_focus(input_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(input_id.get()),
+                "focused after request {style:?}"
+            );
+            // Escape press, then an empty frame: focus must be gone.
+            run_ui(&ctx, key_event(egui::Key::Escape, true), &render);
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                None,
+                "Escape still clears focus for the §1 input {style:?} (OBSERVED-G4)"
+            );
+            assert_eq!(
+                *text.borrow(),
+                "hello",
+                "Escape must not change text {style:?}"
+            );
+        }
     }
 
     /// Renders BlockStart + a direct-child control and returns the
