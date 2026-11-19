@@ -61,12 +61,37 @@
 //! Track's rounded ends. Vertical sliders stretch to the offered height
 //! (`h-full`) with a 176px/160px floor (spec §3.2).
 //!
+//! Hit geometry is frozen (spec §3.5) and S10-verified (SLD-INT-06):
+//! the sensing rect is the thumb box under base (16×16px) and the
+//! 28×28px `after:-inset-2` rect under nova, CLOSED edges, true centre
+//! (478.5, 265.0) on the demo's first thumb. The ring paints exactly
+//! inside that rect; the ring gate is a conjunction — `hovered()` AND
+//! the pointer inside the PAINTED hit rect (recomputed from the painted
+//! centre, which is one pass ahead of the registered rect after a value
+//! change). Track-band presses are TRACK behaviour (W-6a: nearest thumb,
+//! no dead zone); presses outside the row rect do nothing. The track's
+//! 5px `interact_radius` halo is NOT a defect (F-HIT-RADIUS). Vega
+//! Suppress is pin-only: geometrically unreachable (any press within 5px
+//! of the vega hit rect is inside the row rect, so it is Track), proven
+//! at unit level and rendered under nova. Vega-dark sensing is NOT
+//! special: S6's vega-dark anomaly was a measurement artifact (stale
+//! presentations), re-measured identical in both modes.
+//!
 //! # States (spec §4)
 //!
 //! Resting / hover / focus-visible / active rings per the state matrix; the
 //! active ring exists ONLY under nova. Disabled renders the WHOLE control at
 //! exactly 50% opacity, uniformly — the thumb is never faded twice (spec
 //! §4.4, N8). No invalid state exists for slider (spec §4.6).
+//!
+//! Ring band (SLD-VIS-01, S10-verified with recalibrated detectors):
+//! \[6,9\] nova / \[8,12\] base, adjacent to the box edge ±0.5px feather,
+//! colour `ring/50`; vega-dark judged from row profiles. Disabled
+//! (SLD-VIS-02, S10-verified): the whole control composites as a group
+//! fade — Range 139 light / 120 dark exact, thumb fill uniform
+//! (max_dev 0), muted Track unchanged, no ring on any disabled thumb.
+//! The S5 regression is confined to rows 6–7 (the disabled rows);
+//! rows 0–5 and 8–9 are byte-identical to S5.
 //!
 //! # Animation (spec §6, interim per OPEN-11)
 //!
@@ -77,25 +102,104 @@
 //! `cubic-bezier(0.4, 0, 0.2, 1)`); thumb position and Range extent snap.
 //! The 150ms/easing values are framework defaults, NOT snapshot evidence.
 //!
-//! # Keyboard and pointer (spec §8 — working assumptions, OPEN items)
+//! Motion (SLD-ANM-01, S10-verified): track, Range and border SNAP on
+//! restyle — pin-proven (the stroke equals the endpoint on the flip
+//! frame in harness) and corroborated by video (3 resolved D→L theme
+//! snaps at S10, 0 genuine intermediates in 9 theme videos). The
+//! analyzer's mechanical border-"ease" labels are a measurement
+//! artifact: the border row samples an AA-fringe pixel carrying a ~4%
+//! backdrop blend, and the backdrop lags the widget flip by ≥1
+//! presentation (two-phase install) — per-pixel fractional progress
+//! differs (87/69/68/70/78%), impossible for a single easing stroke,
+//! and one vega intermediate (45) lies OUTSIDE the \[57,220\] endpoint
+//! interval, impossible for an ease. Border legs must sample a
+//! pure-stroke pixel or judge trajectory shape. The ring EASES
+//! (endpoints confirmed appearing/disappearing in all 4 configs).
+//! Timing legs remain UNRESOLVED (environment-limited, load-bound):
+//! no resolved L→D theme leg, no analyzer-resolved vega border leg, no
+//! resolved ring-ease leg — never claim SNAP from under-sampled video.
+//! S6 finding-4 (refresh-path flicker) is CLOSED as not reproduced
+//! (F4-SPOT at S10: ring False at t0 and t1, band mean unchanged).
+//!
+//! # Keyboard and pointer (spec §8 — S10-verified, gate G11)
 //!
 //! Arrow keys step by the absolute step (Right/Up +, Left/Down −, both
 //! orientations, W-3); Shift+Arrow moves 10 × step, exactly like
 //! PageUp/PageDown (Radix `isSkipKey`, SLD-INT-01 — S6 Work B correction
-//! of W-3; other modifiers do not change the step size); Home/End act
-//! on the FIRST/LAST value index (not the focused thumb) through
-//! snap-then-clamp: Home → `min`, End → snapped `max` (W-4 CORRECTED
-//! by S6 Work B, OPEN-4 CLOSED, gate G7); PageUp/PageDown move 10 × step (W-2, one named
-//! place); thumbs clamp to their neighbours
-//! without pushing or swapping (W-5); track presses move the nearest thumb
-//! and begin a drag (W-6a/W-6b); every thumb is a Tab stop in value order
-//! (W-9). The track itself is not a Tab stop (SLD-INT-05): it paints no
-//! ring and handles no keys, so only thumb ids are focusable. Pointerdown on a thumb focuses it, and every user-driven value
-//! change re-focuses the changed thumb (Radix focus model, SLD-INT-03),
-//! so arrow keys act on the thumb just clicked or dragged. Default step
-//! is 1 absolute (W-1 CORRECTED by S6 Work B, OPEN-1 CLOSED, one named
-//! constant).
-//! S6 Work B confirms or corrects each assumption from Radix source.
+//! of W-3; the Key event's own `modifiers` are read, never frame-end
+//! `InputState::modifiers`, which misses coalesced synthetic bursts).
+//! Ctrl/Alt/Meta+Arrow step 1 × (Radix checks only `shiftKey`; S10
+//! §2.3/§2.7). Home/End act on the FIRST/LAST value index (not the
+//! focused thumb) through snap-then-clamp: Home → `min`, End → snapped
+//! `max` (S9-C2, gate G7; off-grid End is pin-only — no demo target
+//! discriminates it). Thumbs clamp to their neighbours without pushing
+//! or swapping (W-5, gate G3 F5b; the Radix-default sort/swap behaviour
+//! is a deviation for the Expert Reviewer). Track presses move the
+//! nearest thumb and begin a drag (W-6a/W-6b; ties go to the lowest
+//! index, OPEN-6 CLOSED, gate G11); every thumb is a Tab stop in value
+//! order (W-9, OPEN-9 CLOSED). The track itself is not a Tab stop
+//! (SLD-INT-05): it paints no ring and handles no keys, so only thumb
+//! ids are focusable. Pointerdown on a thumb focuses it, and every
+//! user-driven value change re-focuses the changed thumb (Radix focus
+//! model, SLD-INT-03), so arrow keys act on the thumb just clicked or
+//! dragged. Default step is 1 absolute (OPEN-1 CLOSED, gate G5, one
+//! named constant `DEFAULT_STEP`).
+//!
+//! Focus (SLD-INT-04 + SLD-INT-07, S10-verified): the focus-lock filter
+//! claims both arrow axes AND Escape, re-installed every focused frame,
+//! latching only after two consecutive focused frames. Tab stays
+//! unclaimed (Tab navigation, W-9). Escape is a no-op on a focused
+//! thumb: the ring stays, the next Right steps the value (S10: 34/34
+//! rows × 4 configs). The one-pass latch window is structural to egui's
+//! API — an Escape in the very first pass after a focus grant still
+//! clears focus, because `request_focus` resets the filter — and is
+//! pinned as documentation, never "fixed" by weakening the gate; no
+//! rendered fast-Escape leg is claimed (non-discriminating by
+//! mechanism). Consecutive arrow presses (≥5, no re-acquire) keep the
+//! ring and step every press (N1, gate G2). Right/middle-click have no
+//! effect (gate G4).
+//!
+//! Stop map (SLD-INT-05, S10 re-derived identically in all 4 configs):
+//! s1-single 76, range-lo 77, range-hi 78, stepped 79, f2 80, f3 81,
+//! f4 82, v-single 83, vrange-lo 84, vrange-hi 85, kb 86, ptr-lo 87,
+//! ptr-hi 88; cycle 88; wrap at 164. True demo defaults: single 30,
+//! range (0,100). At a stacked state the ring paints identically for
+//! either thumb id, so stacked legs are judged BY VALUES; a focus claim
+//! at a stacked state needs a focus-level witness (harness pin or value
+//! signature), never a ring check alone (SLD-INT-02, closed as
+//! already-fixed-by-INT-04).
+//!
+//! # S10 verification + OPEN dispositions (gate G11/G12)
+//!
+//! S10 (report `reports/slider-s10-report.md`) verified all 10 defects
+//! and both corrections FIXED/CLOSED on line HEAD `88a0542` in all 4
+//! configs with fresh rendered evidence: 917/917 tests, 36/36 `sld_`
+//! pins, 5/5 `s9_c1` pins, fmt + clippy `--lib` clean. No defect
+//! reopened, no new defect filed.
+//!
+//! OPEN dispositions (gate G11): OPEN-1 CLOSED (W-1 corrected → G5,
+//! default step 1 absolute); OPEN-2 CLOSED (W-2 confirmed, PageUp/
+//! PageDown 10×); OPEN-3 CLOSED with correction (Shift+Arrow 10× →
+//! SLD-INT-01); OPEN-4 CLOSED with corrections (first/last-index +
+//! snap → G7); OPEN-5 CLOSED with tension (clamp vs sort/swap → G3);
+//! OPEN-6 CLOSED with correction (no button filter → G4;
+//! nearest-thumb/tie-first/capture/no-wheel confirmed); OPEN-7 CLOSED
+//! (snap formula confirmed; off-grid arrow rule recorded as an
+//! observation only — no demo slider exposes an off-grid value);
+//! OPEN-8 CLOSED as mechanism + tension (→ G6, §3.3 overhang
+//! frozen-spec-wins); OPEN-9 CLOSED (W-9 confirmed: every thumb a Tab
+//! stop, no roving); OPEN-10 CLOSED (W-10 confirmed); OPEN-13 CLOSED
+//! (ARIA documents D1); OPEN-14 CLOSED (no guards; frozen no-panic
+//! rules govern). OPEN-11 (transition timing values) and OPEN-12
+//! (`::after`/orientation attributes) stay OPEN as frozen.
+//!
+//! Deviations/limits: D1 no ARIA tree, D2 `:focus-visible` modality
+//! (ring on any focus), D3 `data-slot` attributes dropped — all
+//! proposed, reviewer-decided. The off-grid Shift+Arrow page-key path
+//! (target ±10×step, then §7.3 snap) is a documented decision, pinned;
+//! the Radix-exact alternative (adjacent grid point) is a follow-up
+//! for the Expert Reviewer, not a reopen. The one-pass Escape latch
+//! window is pin-only (see above).
 //!
 //! # Platform limits (spec §11, proposed deviations)
 //!
@@ -457,8 +561,8 @@ fn is_on_grid(value: f32, min: f32, step: f32) -> bool {
 }
 
 /// Index of the thumb whose centre fraction is nearest `fraction`
-/// (W-6a/W-6c, OPEN-6). Ties go to the lowest index (documented reading;
-/// S6 confirms or corrects the tie-break). Empty input returns 0.
+/// (W-6a/W-6c, OPEN-6 CLOSED, gate G11: tie-first confirmed).
+/// Ties go to the lowest index. Empty input returns 0.
 fn nearest_thumb_index(fractions: &[f32], fraction: f32) -> usize {
     let mut best = 0;
     let mut best_dist = f32::INFINITY;
@@ -1023,10 +1127,12 @@ impl<'a> Slider<'a> {
             // "click elsewhere" during the thumb interacts above.
             // Re-requesting here — after the interacts, before paint
             // — restores it, so the ring stays after the pointer
-            // leaves. Guarded on an actual pointer release so an
-            // Escape-aborted drag (SLD-INT-07's territory) does not
-            // re-focus: Escape clears focus in `begin_pass`, before
-            // this pass runs.
+            // leaves. Guarded on an actual pointer release: the
+            // release is the sole re-focus trigger, so a drag that
+            // ends without one does not re-focus the thumb. (The old
+            // Escape rationale no longer applies: since SLD-INT-07
+            // the focus-lock filter claims Escape, so Escape no
+            // longer clears the focused thumb's focus in `begin_pass`.)
             if !self.disabled && ui.input(|i| i.pointer.any_released()) {
                 let active = ui.ctx().data_mut(|d| d.get_temp::<usize>(active_thumb_id));
                 if let Some(index) = active.filter(|index| *index < n) {

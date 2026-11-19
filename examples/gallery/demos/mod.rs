@@ -3327,7 +3327,7 @@ pub fn slider_demo(ui: &mut egui::Ui) {
         theme.style.name()
     ));
     ui.label("Geometry (§2.3): base track 6px / thumb 16px / ring 4px / hit = thumb box; nova track 4px / thumb 12px / ring 3px / hit 28px. Vertical min-height 176px base / 160px nova (§3.2). Thumb fill is white in both modes (§4.5). No invalid state exists (§4.6).");
-    ui.label("OPEN-11: transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the interim Tailwind framework default, not snapshot-verified (§6). Keyboard/pointer behaviour is working assumptions W-1…W-10 (OPEN-1…OPEN-10); S6 Work B confirms from Radix source. Readouts print ABSOLUTE values only (§7.1).");
+    ui.label("OPEN-11: transition timing 150ms + cubic-bezier(0.4, 0, 0.2, 1) is the interim Tailwind framework default, not snapshot-verified (§6). Keyboard/pointer behaviour: OPEN-1…OPEN-10 CLOSED (gate G11) and S10-verified. Readouts print ABSOLUTE values only (§7.1).");
 
     // Thumb-centre readout helpers: the thumb CENTRE travels the full Track
     // length (spec §3.3), and the Track spans the full allocated rect, so
@@ -3589,10 +3589,10 @@ pub fn slider_demo(ui: &mut egui::Ui) {
     ui.add_space(16.0);
 
     // 7. Hit-area note (spec §3.5).
-    ui.label("7. Hit areas (spec §3.5): nova 28×28px — thumb box + 8px on all sides (after:-inset-2); base 16×16px thumb box. Hover/focus/drag sensing uses the hit rect; paint stays the thumb box. S6 verifies with pointer probes. Overlapping thumbs: nearest centre wins (W-6c); exact ties OPEN-6.");
+    ui.label("7. Hit areas (spec §3.5): nova 28×28px — thumb box + 8px on all sides (after:-inset-2); base 16×16px thumb box. Hover/focus/drag sensing uses the hit rect; paint stays the thumb box. S6 verifies with pointer probes. Overlapping thumbs: nearest centre wins (W-6c); exact ties go to the lowest index (tie-first, OPEN-6 CLOSED, G11).");
 
     ui.add_space(12.0);
-    ui.label("Keyboard: Tab moves between thumbs (W-9); which keys activate is OPEN-3/OPEN-4 (S6 Work B). The ring shows on any focus (deviation D2, PROPOSED).");
+    ui.label("Keyboard: Tab moves between thumbs (W-9, INT-05: every thumb a Tab stop, no roving); arrows step 1×, Shift+Arrow 10× (OPEN-3 CLOSED, INT-01), Home/End target first/last index (OPEN-4 CLOSED, G7), Escape is a no-op on a focused thumb (INT-07). The ring shows on any focus (deviation D2, PROPOSED).");
 
     ui.ctx().data_mut(|d| d.insert_temp(store, state));
 }
