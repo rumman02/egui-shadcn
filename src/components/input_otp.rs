@@ -696,6 +696,50 @@ impl<'a> InputOTP<'a> {
         let new_len = self.value.chars().count();
         let completed = prev_len < length && new_len == length;
         let focused_now = ui.ctx().memory(|m| m.has_focus(control));
+
+        // OTP-INT-01: plain arrow keys must move the caret, not focus.
+        // egui's `Focus::begin_pass` treats an unclaimed plain arrow
+        // as spatial focus navigation and clears focus entirely on an
+        // unmodified Escape keydown
+        // (`egui-0.37.0/src/memory/mod.rs:569-614`, gated on
+        // `EventFilter::matches`), so without a filter the arrows
+        // steal focus to the nearest widget (S6 caught the engine
+        // moving the caret for exactly one presented frame before
+        // `end_pass` moved focus away) and Escape blurs the control.
+        // Claim all three non-Tab keys: the library has no behaviour
+        // for any of them (module docs: "Up/Down, Enter and Escape
+        // are no-ops"), so the closest match is to keep focus AND
+        // the caret put — horizontal arrows move the caret (the
+        // `apply_otp_events` arms), vertical arrows and Escape do
+        // nothing. `tab` stays `false` so Tab still exits the
+        // control's single Tab stop (S6 agreement; pinned by
+        // `tab_still_exits_otp_int_01`). Enter needs no claim:
+        // `matches` returns `true` for every other key, so it already
+        // reaches the engine, which ignores it. The filter latches
+        // only after 2 consecutive focused frames
+        // (`set_focus_lock_filter` requires `had_focus_last_frame &&
+        // has_focus`) and every focus grant resets it to default, so
+        // it is re-installed on every focused frame; the one-pass
+        // window after a grant is structural (see the
+        // `arrow_in_first_pass_after_grant_moves_focus_otp_int_01`
+        // documentation pin). Disabled controls never hold focus
+        // (`Sense::hover`, no `request_focus`), so the gate is
+        // belt-and-braces. RAD-INT-07 / SLD-INT-04 / SLD-INT-07 /
+        // TOG-C2 precedent.
+        if focused_now && !self.disabled {
+            ui.ctx().memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    control,
+                    egui::EventFilter {
+                        tab: false,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
+        }
+
         ui.ctx().data_mut(|d| {
             d.insert_temp(was_focused_id(group_id), focused_now);
             d.insert_temp(container_rect_id(group_id), Some(inner.response.rect));
@@ -2098,5 +2142,457 @@ mod tests {
         assert_eq!(slot_fill_alpha(false), 0.3);
         assert_eq!(slot_fill_alpha(true), 0.15); // disabled: halved by the container fade
         assert_ne!(light.input, dark.input);
+    }
+
+    /// Renders one frame with TWO OTP controls (for focus-navigation
+    /// pins), returning the frame output and the scope id the controls
+    /// were shown in. `vertical` stacks them top-to-bottom; otherwise
+    /// they sit side by side. The scope id is returned (not assumed)
+    /// because `ui.horizontal`/`ui.vertical` wrap the controls in a
+    /// child Ui whose scope differs from the top Ui's id — focusing
+    /// an id built from the top id alone targets nothing, and the
+    /// dead-man's switch clears it on the next frame.
+    fn run_two_frame(
+        ctx: &egui::Context,
+        value_a: &mut String,
+        value_b: &mut String,
+        input: egui::RawInput,
+        name: &'static str,
+        vertical: bool,
+    ) -> (egui::FullOutput, Id) {
+        let scope = std::cell::Cell::new(Id::NULL);
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique(name),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            let mut render = |ui: &mut Ui| {
+                scope.set(ui.scope_id());
+                InputOTP::new(value_a).length(4).id_salt("otp-a").show(ui);
+                InputOTP::new(value_b).length(4).id_salt("otp-b").show(ui);
+            };
+            if vertical {
+                ui.vertical(|ui| render(ui));
+            } else {
+                ui.horizontal(|ui| render(ui));
+            }
+        });
+        out.textures_delta.clear();
+        (out, scope.get())
+    }
+
+    /// The control id for a two-control pin, from the scope id the
+    /// controls were actually shown in.
+    fn two_control_id(scope: Id, salt: &'static str) -> Id {
+        scope.with(salt).with("control")
+    }
+
+    /// The selection stored in temp data for a two-control pin.
+    fn two_test_sel(ctx: &egui::Context, scope: Id, salt: &'static str) -> (usize, usize) {
+        let group_id = scope.with(salt);
+        ctx.data_mut(|d| d.get_temp(sel_id(group_id)).unwrap_or((0, 0)))
+    }
+
+    /// A single key press/release event for the focus pins.
+    fn key_event(key: Key, pressed: bool) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn arrow_right_moves_caret_and_retains_focus_otp_int_01() {
+        // OTP-INT-01: ArrowRight on a focused control must move the
+        // caret AND keep focus (the library moves the caret; egui's
+        // default filter treats an unclaimed plain arrow as spatial
+        // focus navigation). RED before the fix: focus moves to the
+        // right control, so the focus assertion fails. The caret still
+        // moves in that frame (the engine reads the event before
+        // `end_pass` moves focus) — the defect is the focus theft,
+        // not the engine.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = String::new();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        // Two settle frames: the focus-lock filter latches only after
+        // two consecutive focused frames (`set_focus_lock_filter` gate).
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+        // Focus-gain put the caret at the first empty slot (2, 2).
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (2, 2));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowRight, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_a),
+            "ArrowRight must not move focus off the control"
+        );
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 3));
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowRight, false));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+    }
+
+    #[test]
+    fn arrow_left_moves_caret_and_retains_focus_otp_int_01() {
+        // OTP-INT-01, mirror of the Right pin: ArrowLeft on the right
+        // control must move the caret left AND keep focus. RED before
+        // the fix: focus moves to the left control.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = String::new();
+        let mut value_b = "12".to_owned();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_b));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_b));
+        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (2, 2));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowLeft, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_b),
+            "ArrowLeft must not move focus off the control"
+        );
+        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (1, 1));
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowLeft, false));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_arrows",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_b));
+    }
+
+    #[test]
+    fn escape_retains_focus_otp_int_01() {
+        // OTP-INT-01: Escape on a focused control must be a no-op
+        // (module docs: "Up/Down, Enter and Escape are no-ops"; the
+        // library has no Escape handler). Mechanism (egui 0.37
+        // `Focus::begin_pass`): an unmodified Escape keydown clears
+        // `focused_widget` ENTIRELY unless the focused widget's
+        // `EventFilter.escape` is true. RED before the fix: the first
+        // Escape keydown clears focus.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value = "12".to_owned();
+        let control = test_control_id("otp_int01_escape", "otp");
+
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_int01_escape",
+            "otp",
+            4,
+            false,
+        );
+        out.textures_delta.clear();
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        // Two settle frames: the focus-lock filter latches only after
+        // two consecutive focused frames.
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_int01_escape",
+            "otp",
+            4,
+            false,
+        );
+        out.textures_delta.clear();
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_int01_escape",
+            "otp",
+            4,
+            false,
+        );
+        out.textures_delta.clear();
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control));
+        assert_eq!(test_sel(&ctx, "otp_int01_escape", "otp"), (2, 2));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::Escape, true));
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_int01_escape", "otp", 4, false);
+        out.textures_delta.clear();
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control),
+            "Escape keydown must not clear focus"
+        );
+        assert_eq!(value, "12", "Escape must not change the value");
+        assert_eq!(test_sel(&ctx, "otp_int01_escape", "otp"), (2, 2));
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::Escape, false));
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_int01_escape", "otp", 4, false);
+        out.textures_delta.clear();
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control));
+    }
+
+    #[test]
+    fn vertical_arrows_retain_focus_otp_int_01() {
+        // OTP-INT-01: Up/Down on a focused control must be no-ops
+        // (module docs: "Up/Down, Enter and Escape are no-ops"). An
+        // unclaimed plain Down is egui spatial navigation, so before
+        // the fix focus moves to the control below. RED before the
+        // fix: focus moves to the bottom control.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = String::new();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_vertical",
+            true,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_vertical",
+            true,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_vertical",
+            true,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (2, 2));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowDown, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_vertical",
+            true,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_a),
+            "ArrowDown must not move focus off the control"
+        );
+        assert_eq!(
+            two_test_sel(&ctx, scope, "otp-a"),
+            (2, 2),
+            "ArrowDown must not move the caret"
+        );
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowDown, false));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_vertical",
+            true,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+    }
+
+    #[test]
+    fn tab_still_exits_otp_int_01() {
+        // Guard (passes before AND after the fix): the filter must not
+        // claim Tab — Tab still moves from one control's stop to the
+        // next (single Tab stop per control, S6 agreement).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = String::new();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_tab",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_tab",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_tab",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::Tab, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_tab",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_b),
+            "Tab must exit control A to control B"
+        );
+    }
+
+    #[test]
+    fn arrow_in_first_pass_after_grant_moves_focus_otp_int_01() {
+        // OTP-INT-01 documentation pin (passes BEFORE and AFTER the
+        // fix, by design): the one-pass latch window is structural to
+        // egui's API. `request_focus` resets the filter to default and
+        // `set_focus_lock_filter` installs only after two consecutive
+        // focused frames, so an ArrowRight arriving in the very first
+        // pass after a grant still moves focus (here: to the right
+        // control). This pin asserts that limitation honestly — it
+        // must never be "fixed" by weakening the filter gate. The
+        // engine still moves the caret in that frame (the key reaches
+        // the engine before `end_pass` moves focus), so the caret
+        // lands at (3, 3) either way.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = String::new();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int01_latch",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        // NO settle frames: the ArrowRight arrives in the first pass
+        // after the grant, before the filter could latch.
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::ArrowRight, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int01_latch",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_b),
+            "ArrowRight in the first pass after a grant still moves focus (latch window)"
+        );
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 3));
     }
 }
