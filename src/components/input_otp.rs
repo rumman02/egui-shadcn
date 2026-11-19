@@ -78,9 +78,12 @@
 //! * A slot is active when focused and the selection covers it (a
 //!   collapsed caret at the slot, or a range covering it); the caret
 //!   renders only on an active EMPTY slot (`hasFakeCaret`), so a char and
-//!   a caret never co-render. The caret blinks with a 1s period and a 50%
-//!   square-wave duty — a documented assumption (OPEN-6: the duty is
-//!   unestablished; the period is frozen at 1s by `duration-1000`).
+//!   a caret never co-render. The caret blinks with a 1.25s period
+//!   following the `caret-blink` keyframes (fade out 0–250ms, hidden
+//!   250–625ms, fade in 625–875ms, visible 875–1250ms — S4 §9, CLOSED),
+//!   and the widget requests a repaint at the next blink phase step
+//!   while the caret is live, so the blink advances with no
+//!   interaction (gate G4).
 //!
 //! # Borders (N7)
 //!
@@ -148,6 +151,62 @@ use egui::{
 pub const OTP_SLOT_SIZE: f32 = 36.0;
 /// `h-4` — the caret height.
 pub const OTP_CARET_HEIGHT: f32 = 16.0;
+
+/// `animate-caret-blink` — one blink cycle, in seconds (S4 §9, CLOSED:
+/// `--animate-caret-blink` hardcodes 1.25s; `duration-1000` is inert for
+/// the blink).
+pub(crate) const CARET_BLINK_PERIOD_SECS: f64 = 1.25;
+/// Fade step for the blink repaint driver: during the fade legs the blink
+/// is re-driven every 50ms, so each 250ms fade renders in ~5 steps.
+const CARET_BLINK_FADE_STEP_SECS: f64 = 0.05;
+
+/// The caret opacity at `time_secs` seconds on egui's clock, following
+/// the `caret-blink` keyframes (`0%,70%,100% {opacity:1}
+/// 20%,50% {opacity:0}`, S4 §9, CLOSED): fade out 0–250ms, hidden
+/// 250–625ms, fade in 625–875ms, visible 875–1250ms, then the cycle
+/// repeats.
+pub(crate) fn caret_blink_opacity(time_secs: f64) -> f32 {
+    let t = time_secs.rem_euclid(CARET_BLINK_PERIOD_SECS);
+    if t < 0.25 {
+        // Fade out 0–250ms: 1 → 0, linearly (keyframes 0% → 20%).
+        (1.0 - t / 0.25) as f32
+    } else if t < 0.625 {
+        // Hidden 250–625ms (keyframes 20% → 50%, both opacity 0).
+        0.0
+    } else if t < 0.875 {
+        // Fade in 625–875ms: 0 → 1, linearly (keyframes 50% → 70%).
+        ((t - 0.625) / 0.25) as f32
+    } else {
+        // Visible 875–1250ms (keyframes 70% → 100%, both opacity 1).
+        1.0
+    }
+}
+
+/// How long to wait before the next blink repaint, given the current
+/// blink phase (`time_secs` on egui's clock): 50ms steps during the fade
+/// legs, a jump to the next phase boundary during the holds — so the blink
+/// advances with no interaction (gate G4) while repainting ~10x/s on
+/// average instead of every frame.
+pub(crate) fn caret_blink_next_repaint(time_secs: f64) -> std::time::Duration {
+    let t = time_secs.rem_euclid(CARET_BLINK_PERIOD_SECS);
+    let delay_secs = if t < 0.25 {
+        // Fade out: re-drive every fade step, or at the hidden boundary.
+        (0.25 - t).min(CARET_BLINK_FADE_STEP_SECS)
+    } else if t < 0.625 {
+        // Hidden: sleep until the fade-in starts.
+        0.625 - t
+    } else if t < 0.875 {
+        // Fade in: re-drive every fade step, or at the visible boundary.
+        (0.875 - t).min(CARET_BLINK_FADE_STEP_SECS)
+    } else {
+        // Visible: sleep until the next cycle starts.
+        CARET_BLINK_PERIOD_SECS - t
+    };
+    // Never schedule a zero delay: at a phase boundary the next step is
+    // the following one (the phase is re-read from the clock on repaint,
+    // so a 1ms floor cannot skip a leg).
+    std::time::Duration::from_secs_f64(delay_secs.max(0.001))
+}
 
 /// Slot square side (`h-9 w-9` base recipe; nova `.cn-input-otp-slot`
 /// `size-8`).
@@ -1017,9 +1076,10 @@ fn paint_group_slots(ui: &Ui, ctx: &OtpCtx, slots: &[(usize, Rect)]) {
     let first = slots.first().map(|(i, _)| *i).unwrap_or(0);
     let last = slots.last().map(|(i, _)| *i).unwrap_or(0);
     let fade = if ctx.disabled { 0.5 } else { 1.0 };
-    // `animate-caret-blink` — 1s period, 50% square-wave duty (a
-    // documented assumption; OPEN-6 leaves the duty unestablished).
-    let caret_visible = ui.input(|i| (i.time * 2.0) % 2.0 < 1.0);
+    // `animate-caret-blink` — the caret opacity is a pure function of
+    // egui's clock (see `caret_blink_opacity`).
+    let blink_time = ui.input(|i| i.time);
+    let caret_opacity = caret_blink_opacity(blink_time);
     let painter = ui.painter();
 
     // Phase A: non-active slots.
@@ -1063,12 +1123,20 @@ fn paint_group_slots(ui: &Ui, ctx: &OtpCtx, slots: &[(usize, Rect)]) {
             None => {
                 // `h-4 w-px animate-caret-blink bg-foreground` — the caret
                 // renders only on an active EMPTY slot (`hasFakeCaret`).
-                if caret_visible {
+                // OTP-F-03/04 (gate G4): the blink is a repaint-driven
+                // animation — request the next frame at the next blink
+                // phase step so it advances with no interaction. The
+                // request is issued whenever the caret is live (even
+                // while its opacity is 0 in the hidden band), or the
+                // blink would freeze at the start of the hidden band.
+                ui.ctx()
+                    .request_repaint_after(caret_blink_next_repaint(blink_time));
+                if caret_opacity > 0.0 {
                     let caret = Rect::from_center_size(
                         content_center(rect, index == first),
                         Vec2::new(1.0, OTP_CARET_HEIGHT),
                     );
-                    painter.rect_filled(caret, 0, color_alpha(p.foreground, fade));
+                    painter.rect_filled(caret, 0, color_alpha(p.foreground, fade * caret_opacity));
                 }
             }
         }
@@ -1291,6 +1359,8 @@ mod tests {
     use super::*;
     use crate::theme::{Mode, Preset};
     use egui::Pos2;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     fn ui_rect() -> Rect {
         Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 200.0))
@@ -1479,6 +1549,222 @@ mod tests {
         let width = rects[5].1.max.x - rects[0].1.min.x;
         // 3×32 (group) + 8 (gap) + 16 (separator) + 8 (gap) + 3×32 (group).
         assert_eq!(width, 224.0, "nova 3+3 width: {:?}", rects);
+    }
+
+    /// OTP-F-03/04 (S4 §9, CLOSED): the caret blink follows the
+    /// `caret-blink` keyframes over a 1.25s cycle — fade out 0–250ms,
+    /// hidden 250–625ms, fade in 625–875ms, visible 875–1250ms.
+    #[test]
+    fn caret_blink_opacity_follows_keyframes_otp_f0304() {
+        let approx = |got: f32, want: f32| {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "caret_blink_opacity: got {got}, want {want}"
+            );
+        };
+        approx(caret_blink_opacity(0.0), 1.0); // cycle start: fully visible
+        approx(caret_blink_opacity(0.125), 0.5); // mid fade-out
+        approx(caret_blink_opacity(0.25), 0.0); // fade-out ends
+        approx(caret_blink_opacity(0.4375), 0.0); // mid hidden band
+        approx(caret_blink_opacity(0.625), 0.0); // fade-in starts
+        approx(caret_blink_opacity(0.75), 0.5); // mid fade-in
+        approx(caret_blink_opacity(0.875), 1.0); // fade-in ends
+        approx(caret_blink_opacity(1.0), 1.0); // visible hold
+        approx(caret_blink_opacity(1.25), 1.0); // cycle wraps
+    }
+
+    /// OTP-F-03 (S4 §9, CLOSED): the blink period is 1250ms, not 1000ms.
+    /// The opacity repeats one cycle (1.25s) later, but NOT 1.0s later:
+    /// 0.125s is mid fade-out (0.5) while 1.125s is in the visible hold (1.0).
+    #[test]
+    fn caret_blink_period_is_1250ms_not_1000ms_otp_f0304() {
+        assert!(
+            (caret_blink_opacity(0.125) - caret_blink_opacity(1.375)).abs() < 1e-6,
+            "opacity must repeat one 1.25s cycle later"
+        );
+        assert!(
+            (caret_blink_opacity(0.125) - caret_blink_opacity(1.125)).abs() > 0.4,
+            "opacity 1.0s later must differ (period is 1.25s, not 1s)"
+        );
+    }
+
+    /// Gate G4: the repaint driver schedules the next blink frame — 50ms
+    /// steps during the fade legs, a jump to the next phase boundary
+    /// during the holds.
+    #[test]
+    fn caret_blink_repaint_schedule_otp_f0304() {
+        let approx = |got: Duration, want_ms: u64| {
+            assert!(
+                got.as_millis().abs_diff(want_ms as u128) <= 2,
+                "caret_blink_next_repaint: got {got:?}, want ~{want_ms}ms"
+            );
+        };
+        approx(caret_blink_next_repaint(0.0), 50); // fade-out: step
+        approx(caret_blink_next_repaint(0.2), 50); // fade-out: step
+        approx(caret_blink_next_repaint(0.24), 10); // fade-out: boundary at 0.25
+        approx(caret_blink_next_repaint(0.3), 325); // hidden: until 0.625
+        approx(caret_blink_next_repaint(0.625), 50); // fade-in: step
+        approx(caret_blink_next_repaint(0.8), 50); // fade-in: step
+        approx(caret_blink_next_repaint(0.9), 350); // visible: until 1.25
+        approx(caret_blink_next_repaint(1.2), 50); // visible: boundary at 1.25
+    }
+
+    /// Fresh context with a repaint observer installed; returns the
+    /// context and the shared delay log. The observer fires for EVERY
+    /// `request_repaint_after` call (including egui's own), so pins
+    /// filter to non-zero delays (see `nonzero_delays`).
+    fn repaint_observer_ctx() -> (egui::Context, Arc<Mutex<Vec<Duration>>>) {
+        let delays: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let delays_clone = Arc::clone(&delays);
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        ctx.set_repaint_observer(move |info| {
+            delays_clone.lock().unwrap().push(info.delay);
+        });
+        (ctx, delays)
+    }
+
+    /// The non-zero repaint delays recorded so far — egui's own requests
+    /// are zero-delay, so only non-zero delays are the widget's scheduled
+    /// ones.
+    fn nonzero_delays(delays: &Arc<Mutex<Vec<Duration>>>) -> Vec<Duration> {
+        delays
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|d| *d > Duration::ZERO)
+            .collect()
+    }
+
+    /// Gate G4: the widget requests a repaint while the caret is live
+    /// (focused, active empty slot). The frame is at time 0.1s — still
+    /// in the fade-out leg — so the scheduled delay is one 50ms step.
+    #[test]
+    fn caret_blink_repaint_driver_requested_while_caret_live_otp_f0304() {
+        let (ctx, delays) = repaint_observer_ctx();
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_f0304_driver", "otp");
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f0304_driver",
+            "otp",
+            6,
+            false,
+        );
+        out.textures_delta.clear();
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        // Settle frame at time 0.0: focus-gain puts the caret at the
+        // first empty slot (3, 3) — the caret is live.
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.0);
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
+        out.textures_delta.clear();
+        assert_eq!(test_sel(&ctx, "otp_f0304_driver", "otp"), (3, 3));
+        // Observe frame at time 0.1 (fade-out leg): exactly one scheduled
+        // repaint, one 50ms step out.
+        delays.lock().unwrap().clear();
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.1);
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
+        out.textures_delta.clear();
+        assert_eq!(
+            nonzero_delays(&delays),
+            vec![Duration::from_millis(50)],
+            "one scheduled repaint ~50ms out"
+        );
+    }
+
+    /// Gate G4 (negative): no caret — no repaint. An unfocused control
+    /// has no active slot, so the blink driver must stay silent.
+    #[test]
+    fn caret_blink_no_repaint_when_unfocused_otp_f0304() {
+        let (ctx, delays) = repaint_observer_ctx();
+        let mut value = "123".to_owned();
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.1);
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
+        out.textures_delta.clear();
+        assert!(
+            nonzero_delays(&delays).is_empty(),
+            "unfocused control must not schedule repaints, got {:?}",
+            nonzero_delays(&delays)
+        );
+    }
+
+    /// Gate G4 (negative): a disabled control never paints a caret
+    /// (`is_slot_active` requires `!disabled`), so the blink driver must
+    /// stay silent even when the control holds focus.
+    #[test]
+    fn caret_blink_no_repaint_when_disabled_otp_f0304() {
+        let (ctx, delays) = repaint_observer_ctx();
+        let mut value = "123".to_owned();
+        let control = test_control_id("otp_f0304_driver", "otp");
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f0304_driver",
+            "otp",
+            6,
+            false,
+        );
+        out.textures_delta.clear();
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.1);
+        let mut out = ctx.run_ui(input, |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("otp_f0304_driver"),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            let _ = InputOTP::new(&mut value)
+                .length(6)
+                .numeric(false)
+                .disabled(true)
+                .id_salt("otp")
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        assert!(
+            nonzero_delays(&delays).is_empty(),
+            "disabled control must not schedule repaints, got {:?}",
+            nonzero_delays(&delays)
+        );
+    }
+
+    /// Gate G4 (negative): a full value has no empty active slot — the
+    /// active slot holds a char, so no caret paints and the blink driver
+    /// must stay silent.
+    #[test]
+    fn caret_blink_no_repaint_when_value_full_otp_f0304() {
+        let (ctx, delays) = repaint_observer_ctx();
+        let mut value = "123456".to_owned();
+        let control = test_control_id("otp_f0304_driver", "otp");
+        let (mut out, _) = run_frame(
+            &ctx,
+            &mut value,
+            egui::RawInput::default(),
+            "otp_f0304_driver",
+            "otp",
+            6,
+            false,
+        );
+        out.textures_delta.clear();
+        ctx.memory_mut(|mem| mem.request_focus(control));
+        let mut input = egui::RawInput::default();
+        input.time = Some(0.1);
+        let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
+        out.textures_delta.clear();
+        assert_eq!(test_sel(&ctx, "otp_f0304_driver", "otp"), (5, 6));
+        assert!(
+            nonzero_delays(&delays).is_empty(),
+            "full value (no caret) must not schedule repaints, got {:?}",
+            nonzero_delays(&delays)
+        );
     }
 
     #[test]
@@ -2343,7 +2629,8 @@ mod tests {
         out.textures_delta.clear();
         ctx.memory_mut(|mem| mem.request_focus(control));
 
-        // Time 0.0: the 1s-period blink is in its visible half.
+        // Time 0.0: the 1.25s keyframe blink is at the start of its
+        // visible phase (opacity 1 at t=0).
         let mut input = egui::RawInput::default();
         input.time = Some(0.0);
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_caret_test", "otp", 4, false);
