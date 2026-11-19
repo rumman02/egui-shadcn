@@ -1037,15 +1037,27 @@ impl InputOTPGroup {
         // ring-destructive/20 dark:ring-destructive/40` around the whole
         // group when any slot is invalid — faded with the container when
         // disabled (`has-disabled:opacity-50`).
-        if ctx.invalid {
+        // OTP-VIS-03 (S5 §6): the ring is painted adjacent to the SLOT BOX
+        // (the union of the recorded slot rects), not around the group's
+        // allocated rect — the allocated rect is 36px tall under nova
+        // (slots 32 + 2px top + 2px bottom margins), so painting around it
+        // (plus the 1px `expand2`) floated the ring 3px off the slot box.
+        // `paint_ring` itself is NOT changed (crate-wide convention): it
+        // paints directly outside the rect it is given, so passing the slot
+        // box is what makes the ring adjacent. With no slots there is no
+        // slot box to ring around, so nothing is painted.
+        if ctx.invalid && !slots.is_empty() {
             let theme = ShadcnTheme::of_ui(ui);
-            if theme.style == Style::Nova && ui.is_rect_visible(inner.response.rect) {
+            let slot_box = slots
+                .iter()
+                .fold(Rect::NOTHING, |acc, (_, rect)| acc.union(*rect));
+            if theme.style == Style::Nova && ui.is_rect_visible(slot_box) {
                 let alpha = if theme.mode.is_dark() { 0.4 } else { 0.2 };
                 let alpha = if ctx.disabled { alpha * 0.5 } else { alpha };
                 let ring_color = color_alpha(theme.palette.destructive, alpha);
                 crate::utils::focus::paint_ring(
                     ui.painter(),
-                    inner.response.rect.expand2(egui::vec2(1.0, 1.0)),
+                    slot_box,
                     ring_color,
                     3.0,
                     theme.radius.lg_u8() as f32,
@@ -1549,6 +1561,141 @@ mod tests {
         let width = rects[5].1.max.x - rects[0].1.min.x;
         // 3×32 (group) + 8 (gap) + 16 (separator) + 8 (gap) + 3×32 (group).
         assert_eq!(width, 224.0, "nova 3+3 width: {:?}", rects);
+    }
+
+    /// OTP-VIS-03 (S5 §6): the nova group-invalid ring must be adjacent to
+    /// the slot box (0px gap). Renders one frame with a single invalid
+    /// group of 3 slots under the given style/mode and returns the frame
+    /// output plus the recorded slot rects. Unfocused, so no active ring
+    /// exists — the only 3px stroke is the group-invalid ring.
+    fn run_invalid_group(
+        style: Style,
+        mode: Mode,
+        name: &'static str,
+    ) -> (egui::FullOutput, Vec<(usize, Rect)>) {
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(style)
+            .build(mode)
+            .install(&ctx);
+        let mut value = String::from("12");
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique(name),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            InputOTP::new(&mut value)
+                .length(3)
+                .numeric(true)
+                .invalid(true)
+                .id_salt("otp_vis03")
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        let rects = test_slot_rects(&ctx, name, "otp_vis03");
+        (out, rects)
+    }
+
+    /// The 3px ring strokes in a frame's shapes: `(rect, stroke, corner_radius)`.
+    fn ring_strokes(out: &egui::FullOutput) -> Vec<(Rect, Stroke, egui::CornerRadius)> {
+        let mut rings = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rect_shape) = &clipped.shape {
+                if rect_shape.stroke.width == 3.0 && !rect_shape.stroke.is_empty() {
+                    rings.push((rect_shape.rect, rect_shape.stroke, rect_shape.corner_radius));
+                }
+            }
+        }
+        rings
+    }
+
+    /// The slot box: the union of the recorded slot rects.
+    fn slot_box(rects: &[(usize, Rect)]) -> Rect {
+        rects
+            .iter()
+            .fold(Rect::NOTHING, |acc, (_, r)| acc.union(*r))
+    }
+
+    #[test]
+    fn nova_group_invalid_ring_adjacent_to_slot_box_otp_vis03() {
+        let (out, rects) = run_invalid_group(Style::Nova, Mode::Light, "otp_vis03_light_test");
+        assert_eq!(rects.len(), 3, "slot rects: {:?}", rects);
+        let want_box = slot_box(&rects);
+        let rings = ring_strokes(&out);
+        assert_eq!(rings.len(), 1, "3px ring strokes: {:?}", rings);
+        let (ring_rect, stroke, radius) = rings[0];
+        // Adjacent: the ring rect IS the slot box (0px gap on every side).
+        assert_eq!(
+            ring_rect, want_box,
+            "ring rect {:?} vs slot box {:?}",
+            ring_rect, want_box
+        );
+        // Still 3px, destructive/20, 10px corners.
+        let want_color = color_alpha(
+            Preset::default().build(Mode::Light).palette.destructive,
+            0.2,
+        );
+        assert_eq!(stroke.color, want_color, "ring colour: {:?}", stroke.color);
+        assert_eq!(
+            radius,
+            egui::CornerRadius::same(10),
+            "ring corners: {:?}",
+            radius
+        );
+    }
+
+    #[test]
+    fn nova_group_invalid_ring_adjacent_in_dark_otp_vis03() {
+        let (out, rects) = run_invalid_group(Style::Nova, Mode::Dark, "otp_vis03_dark_test");
+        assert_eq!(rects.len(), 3, "slot rects: {:?}", rects);
+        let want_box = slot_box(&rects);
+        let rings = ring_strokes(&out);
+        assert_eq!(rings.len(), 1, "3px ring strokes: {:?}", rings);
+        let (ring_rect, stroke, radius) = rings[0];
+        assert_eq!(
+            ring_rect, want_box,
+            "ring rect {:?} vs slot box {:?}",
+            ring_rect, want_box
+        );
+        let want_color = color_alpha(Preset::default().build(Mode::Dark).palette.destructive, 0.4);
+        assert_eq!(stroke.color, want_color, "ring colour: {:?}", stroke.color);
+        assert_eq!(
+            radius,
+            egui::CornerRadius::same(10),
+            "ring corners: {:?}",
+            radius
+        );
+    }
+
+    /// `paint_ring` itself is unchanged by this fix (crate-wide convention):
+    /// it paints a 3px stroke directly OUTSIDE the rect it is given, with no
+    /// extra expansion of its own — so the fix's locality rests on an
+    /// unchanged `paint_ring`. Guard: passes before AND after.
+    #[test]
+    fn paint_ring_paints_outside_given_rect_otp_vis03() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let given = Rect::from_min_size(Pos2::new(10.0, 20.0), egui::vec2(100.0, 32.0));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                Id::unique("otp_vis03_paint_ring_test"),
+                egui::UiBuilder::new().max_rect(ui_rect()),
+            );
+            crate::utils::focus::paint_ring(ui.painter(), given, Color32::RED, 3.0, 10.0);
+        });
+        out.textures_delta.clear();
+        let rings = ring_strokes(&out);
+        assert_eq!(rings.len(), 1, "3px ring strokes: {:?}", rings);
+        let (ring_rect, stroke, radius) = rings[0];
+        assert_eq!(
+            ring_rect, given,
+            "paint_ring must not expand its rect: {:?} vs {:?}",
+            ring_rect, given
+        );
+        assert_eq!(stroke.color, Color32::RED);
+        assert_eq!(radius, egui::CornerRadius::same(10));
     }
 
     /// OTP-F-03/04 (S4 §9, CLOSED): the caret blink follows the
