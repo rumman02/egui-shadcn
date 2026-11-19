@@ -31,26 +31,45 @@
 //! * The text selection is `(start, end)` in char positions. Focus-gain
 //!   sets it to `(min(len, maxLength - 1), len)` — the first empty slot,
 //!   or a 1-char range on the last slot when full. Clicking an already
-//!   focused control places a collapsed caret at the clicked slot.
+//!   focused control places the caret at the clicked slot, and the
+//!   mirror-expansion rule below rewrites it into a 1-char selection.
+//! * Mirror expansion (the library's `onDocumentSelectionChange`,
+//!   `input.tsx:124-155`): every collapsed caret that is NOT in insert
+//!   mode is rewritten into a 1-char selection, so the slot under the
+//!   caret stays active. Insert mode is the caret at the end of a
+//!   not-yet-full value. Caret `0` → `[0, 1)`; caret at `maxLength` → `[ml-1, ml)`;
+//!   otherwise the direction follows the previous
+//!   selection — backward when the caret lands left of the previous
+//!   range end and the previous selection was not an inserting caret,
+//!   giving `[c-1, c)`, else `[c, c+1)`. The expansion runs after every
+//!   event (typing, deletion, arrows, click, paste): typing the last
+//!   char leaves the last slot active; typing when full replaces the
+//!   last char; ArrowLeft from a range moves the active slot one
+//!   further left; Backspace/Delete from a range leave the active slot
+//!   one left of the deletion point; click-then-type replaces the
+//!   clicked slot's char; paste-to-full leaves the last slot active.
 //! * Typing inserts at the caret (native input, truncated to `maxLength`)
-//!   and advances it; typing the last char leaves the caret past the end
-//!   (no active slot). A 1-char selection is replaced, which is the same
-//!   result as inserting at the last slot and truncating.
+//!   and advances it; a 1-char selection is replaced. Typing the last
+//!   char leaves the last slot active (mirror expansion); typing when
+//!   full replaces the last char.
 //! * Paste inserts at the selection (replacing a range, if any) and lands
-//!   the caret after the last inserted char. The whole new value is tested
-//!   against the pattern: one bad char rejects the ENTIRE paste. An empty
-//!   paste is a no-op. (The library also has an iOS / `pasteTransformer`
-//!   path that lands the selection at `(min(new_len, maxLength - 1),
-//!   new_len)`; egui has no iOS paste quirk, so the desktop native path
-//!   above is the reference.)
+//!   the caret after the last inserted char — and the mirror expansion
+//!   then rewrites a non-insert-mode caret (paste-to-full leaves the
+//!   last slot active). The whole new value is tested against the
+//!   pattern: one bad char rejects the ENTIRE paste. An empty paste is
+//!   a no-op. (The library also has an iOS / `pasteTransformer` path
+//!   that lands the selection at `(min(new_len, maxLength - 1), new_len)`;
+//!   egui has no iOS paste quirk, so the desktop native path above is
+//!   the reference.)
 //! * Backspace deletes the selection, else the char before the caret, and
 //!   moves the caret back; Delete deletes the selection, else the char at
 //!   the caret, and stays. Both shift the remaining chars left — the value
 //!   is always a prefix, never a buffer with holes. Arrows move the
 //!   collapsed caret and stop at the ends (no wrap); on a range, Left
-//!   collapses to the range start and Right to the range end. Up/Down,
-//!   Enter and Escape are no-ops. Repeats are honoured (native
-//!   hold-to-repeat).
+//!   collapses to the range start and Right to the range end — and the
+//!   mirror expansion then rewrites the collapsed caret (Left from a
+//!   range moves the active slot one further left). Up/Down, Enter and
+//!   Escape are no-ops. Repeats are honoured (native hold-to-repeat).
 //! * The pattern is the only filter, tested against the whole value;
 //!   `.numeric()` is the library's `REGEXP_ONLY_DIGITS` preset
 //!   (`^\d+$`). `inputMode="numeric"` is a mobile-keyboard hint, not a
@@ -383,14 +402,60 @@ fn paint_otp_fused_stroke(
     }
 }
 
+/// The library's mirror-expansion rule (`input-otp` 1.4.2
+/// `onDocumentSelectionChange`, `input.tsx:124-155`): a collapsed caret
+/// that is NOT in insert mode is rewritten into a 1-char selection, so
+/// the slot under (or next to) the caret stays active. Insert mode is
+/// the caret at the end of a not-yet-full value. `prev` is the mirror
+/// selection from the previous selection change — the direction rule
+/// reads it: the caret moves backward when it lands left of the
+/// previous range end and the previous selection was not an inserting
+/// caret, giving `[c-1, c)`; otherwise `[c, c+1)`. The caret at `0`
+/// always gives `[0, 1)` and the caret at `maxLength` always gives
+/// `[ml-1, ml)`. A range or an empty value is left alone.
+fn expand_selection(
+    value_len: usize,
+    sel: &mut (usize, usize),
+    prev: (usize, usize),
+    length: usize,
+) {
+    if value_len == 0 || sel.0 != sel.1 {
+        return;
+    }
+    // Insert mode: the caret at the end of a not-yet-full value stays
+    // collapsed.
+    if sel.0 == value_len && value_len < length {
+        return;
+    }
+    let c = sel.0;
+    if c == 0 {
+        *sel = (0, 1);
+    } else if c == length {
+        *sel = (c - 1, c);
+    } else if length > 1 && value_len > 1 {
+        let backward = c < prev.1;
+        let was_previously_inserting = prev.0 == prev.1 && prev.0 < length;
+        let offset: isize = if backward && !was_previously_inserting {
+            -1
+        } else {
+            0
+        };
+        let start = (c as isize + offset) as usize;
+        *sel = (start, start + 1);
+    }
+}
+
 /// Applies one frame's keyboard/paste events to the working value and
 /// selection, per the `input-otp` 1.4.2 source (see the module docs):
 /// typing inserts at the caret (replacing a range, if any), paste inserts
 /// at the selection and is rejected ENTIRELY if any char fails the
 /// numeric pattern, Backspace/Delete delete the selection or the
 /// neighbouring char with a left-shift, arrows move the collapsed caret
-/// (or collapse a range), and repeats are honoured. Returns `true` if
-/// the value changed.
+/// (or collapse a range), and repeats are honoured. After every event
+/// that moved the value or the selection, the mirror-expansion rule
+/// (`expand_selection`) rewrites a non-insert-mode collapsed caret into
+/// a 1-char selection — the library's `onDocumentSelectionChange`.
+/// Returns `true` if the value changed.
 fn apply_otp_events(
     events: &[Event],
     value: &mut String,
@@ -410,6 +475,13 @@ fn apply_otp_events(
         match event {
             Event::Text(text) => {
                 for ch in text.chars().filter(|c| !c.is_control()) {
+                    // `prev` is the mirror selection before this
+                    // keypress — the expansion's direction rule reads
+                    // it. Each char is its own native keypress (and
+                    // its own `selectionchange`), so the expansion
+                    // runs per char, not per event.
+                    let prev = *sel;
+                    let before = value.clone();
                     // The library tests the whole new value against the
                     // pattern; for a single inserted char that is exactly
                     // this per-char test.
@@ -424,6 +496,12 @@ fn apply_otp_events(
                     *value = chars.into_iter().collect();
                     let at = (start + 1).min(length);
                     *sel = (at, at);
+                    // A keypress that changed nothing fires no native
+                    // `selectionchange`, so the expansion runs only
+                    // when the value or the selection moved.
+                    if *value != before || *sel != prev {
+                        expand_selection(value.chars().count(), sel, prev, length);
+                    }
                 }
             }
             Event::Paste(text) => {
@@ -436,6 +514,8 @@ fn apply_otp_events(
                 if numeric && content.iter().any(|c| !c.is_ascii_digit()) {
                     continue;
                 }
+                let prev = *sel;
+                let before = value.clone();
                 let mut chars: Vec<char> = value.chars().collect();
                 let start = sel.0.min(chars.len());
                 let end = sel.1.min(chars.len());
@@ -444,59 +524,74 @@ fn apply_otp_events(
                 *value = chars.into_iter().collect();
                 let at = (start + content.len()).min(length);
                 *sel = (at, at);
+                if *value != before || *sel != prev {
+                    expand_selection(value.chars().count(), sel, prev, length);
+                }
             }
             Event::Key {
                 key, pressed: true, ..
-            } => match key {
-                Key::Backspace => {
-                    let mut chars: Vec<char> = value.chars().collect();
-                    let start = sel.0.min(chars.len());
-                    let end = sel.1.min(chars.len());
-                    if start < end {
-                        chars.drain(start..end);
-                        *sel = (start, start);
-                    } else if start > 0 {
-                        chars.remove(start - 1);
-                        *sel = (start - 1, start - 1);
-                    } else {
-                        continue;
+            } => {
+                // As for Text/Paste: the expansion runs only when the
+                // keypress moved the value or the selection (a no-op
+                // keypress fires no native `selectionchange`). The
+                // `continue` paths below change nothing, so they skip
+                // the expansion by construction.
+                let prev = *sel;
+                let before = value.clone();
+                match key {
+                    Key::Backspace => {
+                        let mut chars: Vec<char> = value.chars().collect();
+                        let start = sel.0.min(chars.len());
+                        let end = sel.1.min(chars.len());
+                        if start < end {
+                            chars.drain(start..end);
+                            *sel = (start, start);
+                        } else if start > 0 {
+                            chars.remove(start - 1);
+                            *sel = (start - 1, start - 1);
+                        } else {
+                            continue;
+                        }
+                        *value = chars.into_iter().collect();
                     }
-                    *value = chars.into_iter().collect();
-                }
-                Key::Delete => {
-                    let mut chars: Vec<char> = value.chars().collect();
-                    let start = sel.0.min(chars.len());
-                    let end = sel.1.min(chars.len());
-                    if start < end {
-                        chars.drain(start..end);
-                        *sel = (start, start);
-                    } else if start < chars.len() {
-                        chars.remove(start);
-                    } else {
-                        continue;
+                    Key::Delete => {
+                        let mut chars: Vec<char> = value.chars().collect();
+                        let start = sel.0.min(chars.len());
+                        let end = sel.1.min(chars.len());
+                        if start < end {
+                            chars.drain(start..end);
+                            *sel = (start, start);
+                        } else if start < chars.len() {
+                            chars.remove(start);
+                        } else {
+                            continue;
+                        }
+                        *value = chars.into_iter().collect();
                     }
-                    *value = chars.into_iter().collect();
+                    Key::ArrowLeft => {
+                        let (start, end) = *sel;
+                        let at = if start < end {
+                            start
+                        } else {
+                            start.saturating_sub(1)
+                        };
+                        *sel = (at, at);
+                    }
+                    Key::ArrowRight => {
+                        let (start, end) = *sel;
+                        let at = if start < end {
+                            end
+                        } else {
+                            (start + 1).min(length)
+                        };
+                        *sel = (at, at);
+                    }
+                    _ => {}
                 }
-                Key::ArrowLeft => {
-                    let (start, end) = *sel;
-                    let at = if start < end {
-                        start
-                    } else {
-                        start.saturating_sub(1)
-                    };
-                    *sel = (at, at);
+                if *value != before || *sel != prev {
+                    expand_selection(value.chars().count(), sel, prev, length);
                 }
-                Key::ArrowRight => {
-                    let (start, end) = *sel;
-                    let at = if start < end {
-                        end
-                    } else {
-                        (start + 1).min(length)
-                    };
-                    *sel = (at, at);
-                }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -636,9 +731,17 @@ impl<'a> InputOTP<'a> {
                     // Already focused: the click places the caret at the
                     // clicked slot. Not yet focused: the focus-gain rule
                     // below places it (the library's `_focusListener`).
+                    // OTP-F-01: the library's `onDocumentSelectionChange`
+                    // rewrites the collapsed caret into a 1-char
+                    // selection immediately, so the click expands here
+                    // (not on the next event); `prev` is the mirror
+                    // selection before the click, which the expansion's
+                    // direction rule reads.
                     if let Some(pos) = response.interact_pointer_pos() {
                         if let Some(index) = nearest_slot(&prev_slot_rects, pos) {
+                            let prev = sel;
                             sel = (index, index);
+                            expand_selection(prev_len, &mut sel, prev, length);
                         }
                     }
                 }
@@ -1395,6 +1498,10 @@ mod tests {
     #[test]
     fn typing_inserts_and_advances() {
         // Mid-value typing inserts (native input), it does not replace.
+        // OTP-F-01: the mirror expansion then rewrites the collapsed
+        // caret (2, 2) into (2, 3) — the slot after the typed char is
+        // active (the caret moved right of the previous inserting
+        // caret, so the direction is forward).
         let mut value = "13".to_owned();
         let mut sel = (1, 1);
         assert!(apply_otp_events(
@@ -1405,8 +1512,9 @@ mod tests {
             false
         ));
         assert_eq!(value, "123");
-        assert_eq!(sel, (2, 2));
-        // Typing at the end inserts and advances past the end when full.
+        assert_eq!(sel, (2, 3));
+        // Typing at the end inserts and advances; typing the last char
+        // leaves the LAST slot active (mirror expansion), not (4, 4).
         let mut value = "123".to_owned();
         let mut sel = (3, 3);
         assert!(apply_otp_events(
@@ -1417,8 +1525,9 @@ mod tests {
             false
         ));
         assert_eq!(value, "1234");
-        assert_eq!(sel, (4, 4)); // past the end: no active slot
-                                 // Typing on the focus-gain range (full) replaces the last char.
+        assert_eq!(sel, (3, 4));
+        // Typing on the focus-gain range (full) replaces the last char,
+        // and the expansion keeps the last slot active.
         let mut value = "1234".to_owned();
         let mut sel = (3, 4);
         assert!(apply_otp_events(
@@ -1429,8 +1538,10 @@ mod tests {
             false
         ));
         assert_eq!(value, "1239");
-        assert_eq!(sel, (4, 4));
-        // Typing past the end when full is a no-op.
+        assert_eq!(sel, (3, 4));
+        // Typing past the end when full is a no-op — and a no-op
+        // keypress leaves the selection untouched (no native
+        // `selectionchange` fires when nothing changes).
         let mut value = "1234".to_owned();
         let mut sel = (4, 4);
         assert!(!apply_otp_events(
@@ -1441,6 +1552,7 @@ mod tests {
             false
         ));
         assert_eq!(value, "1234");
+        assert_eq!(sel, (4, 4));
     }
 
     #[test]
@@ -1470,7 +1582,8 @@ mod tests {
         assert_eq!(value, "1");
         assert_eq!(sel, (1, 1));
         // Overflow truncates to maxLength; the caret lands after the last
-        // accepted char.
+        // accepted char — and the mirror expansion (OTP-F-01) rewrites
+        // the full caret (4, 4) into the last-slot range (3, 4).
         let mut value = "12".to_owned();
         let mut sel = (2, 2);
         assert!(apply_otp_events(
@@ -1481,8 +1594,9 @@ mod tests {
             false
         ));
         assert_eq!(value, "1234");
-        assert_eq!(sel, (4, 4));
-        // Paste on a range replaces the range.
+        assert_eq!(sel, (3, 4));
+        // Paste on a range replaces the range; the expansion keeps the
+        // last slot active.
         let mut value = "1234".to_owned();
         let mut sel = (3, 4);
         assert!(apply_otp_events(
@@ -1493,7 +1607,7 @@ mod tests {
             false
         ));
         assert_eq!(value, "1239");
-        assert_eq!(sel, (4, 4));
+        assert_eq!(sel, (3, 4));
         // Empty paste is a no-op.
         let mut value = "12".to_owned();
         let mut sel = (1, 1);
@@ -1510,7 +1624,10 @@ mod tests {
 
     #[test]
     fn delete_clears_at_caret_without_moving() {
-        // Forward delete at the caret, shifting left, caret stays.
+        // Forward delete at the caret, shifting left, caret stays —
+        // and the mirror expansion (OTP-F-01) rewrites the collapsed
+        // caret (1, 1) into (1, 2): the caret moved right of the
+        // previous inserting caret, so the direction is forward.
         let mut value = "123".to_owned();
         let mut sel = (1, 1);
         assert!(apply_otp_events(
@@ -1527,7 +1644,7 @@ mod tests {
             false
         ));
         assert_eq!(value, "13");
-        assert_eq!(sel, (1, 1));
+        assert_eq!(sel, (1, 2));
         // Delete at the end is a no-op.
         let mut value = "123".to_owned();
         let mut sel = (3, 3);
@@ -1545,7 +1662,10 @@ mod tests {
             false
         ));
         assert_eq!(value, "123");
-        // Delete on a range deletes the range.
+        // Delete on a range deletes the range; the mirror expansion
+        // (OTP-F-01) leaves the active slot one LEFT of the deletion
+        // point (the caret moved left of the previous range end and
+        // the previous selection was a range, so the offset is -1).
         let mut value = "1234".to_owned();
         let mut sel = (1, 3);
         assert!(apply_otp_events(
@@ -1562,13 +1682,16 @@ mod tests {
             false
         ));
         assert_eq!(value, "14");
-        assert_eq!(sel, (1, 1));
+        assert_eq!(sel, (0, 1));
     }
 
     #[test]
     fn backspace_shifts_left_without_holes() {
         // Backspace on a mid-value caret deletes the previous char and
-        // shifts left — no hole is left behind.
+        // shifts left — no hole is left behind. The mirror expansion
+        // (OTP-F-01) rewrites the collapsed caret (1, 1) into (1, 2):
+        // the caret moved left of the previous inserting caret, but
+        // the previous selection WAS inserting, so the offset is 0.
         let mut value = "123".to_owned();
         let mut sel = (2, 2);
         assert!(apply_otp_events(
@@ -1585,8 +1708,9 @@ mod tests {
             false
         ));
         assert_eq!(value, "13");
-        assert_eq!(sel, (1, 1));
-        // Backspace on a range deletes the range.
+        assert_eq!(sel, (1, 2));
+        // Backspace on a range deletes the range; the mirror expansion
+        // leaves the active slot one LEFT of the deletion point.
         let mut value = "1234".to_owned();
         let mut sel = (1, 3);
         assert!(apply_otp_events(
@@ -1603,7 +1727,7 @@ mod tests {
             false
         ));
         assert_eq!(value, "14");
-        assert_eq!(sel, (1, 1));
+        assert_eq!(sel, (0, 1));
         // Backspace at the start is a no-op.
         let mut value = "123".to_owned();
         let mut sel = (0, 0);
@@ -1632,7 +1756,9 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::default(),
         };
-        // Left on a range collapses to the range start.
+        // Left on a range collapses to the range start — and the
+        // mirror expansion (OTP-F-01) moves the active slot one
+        // further left, to (0, 1).
         let mut value = "1234".to_owned();
         let mut sel = (1, 3);
         assert!(!apply_otp_events(
@@ -1642,8 +1768,10 @@ mod tests {
             4,
             false
         ));
-        assert_eq!(sel, (1, 1));
-        // Right on a range collapses to the range end.
+        assert_eq!(sel, (0, 1));
+        // Right on a range collapses to the range end — and the
+        // mirror expansion rewrites the caret (3, 3) into (3, 4):
+        // the active slot is still the range end (the agreement).
         let mut sel = (1, 3);
         assert!(!apply_otp_events(
             &[key(Key::ArrowRight)],
@@ -1652,7 +1780,7 @@ mod tests {
             4,
             false
         ));
-        assert_eq!(sel, (3, 3));
+        assert_eq!(sel, (3, 4));
         // Arrows stop at the ends (no wrap).
         let mut sel = (0, 0);
         assert!(!apply_otp_events(
@@ -1672,7 +1800,10 @@ mod tests {
             false
         ));
         assert_eq!(sel, (4, 4));
-        // Repeats are honoured (native hold-to-repeat).
+        // Repeats are honoured (native hold-to-repeat). The mirror
+        // expansion rewrites the moved caret (2, 2) into (2, 3): the
+        // caret moved left of the previous inserting caret, but the
+        // previous selection WAS inserting, so the offset is 0.
         let mut sel = (3, 3);
         assert!(!apply_otp_events(
             &[Event::Key {
@@ -1687,7 +1818,7 @@ mod tests {
             4,
             false
         ));
-        assert_eq!(sel, (2, 2));
+        assert_eq!(sel, (2, 3));
     }
 
     #[test]
@@ -1830,8 +1961,200 @@ mod tests {
         out.textures_delta.clear();
         assert_eq!(value, "1234");
         assert!(completed);
-        // Typing the last char leaves the caret past the end: no active slot.
-        assert_eq!(test_sel(&ctx, "otp_complete_test", "otp"), (4, 4));
+        // Typing the last char leaves the LAST slot active: the mirror
+        // expansion (OTP-F-01) rewrites the caret (4, 4) into (3, 4).
+        assert_eq!(test_sel(&ctx, "otp_complete_test", "otp"), (3, 4));
+    }
+
+    // OTP-F-01 pins: the library's mirror-expansion rule
+    // (`onDocumentSelectionChange`, `input.tsx:124-155`) — every
+    // non-insert-mode collapsed caret is rewritten into a 1-char
+    // selection. Each pin below is one of the six S4 sub-cases
+    // (a)–(f), plus the agreements that must not regress. All of
+    // them are RED on the old engine (collapsed carets everywhere)
+    // and GREEN on the fixed one.
+
+    #[test]
+    fn typing_last_char_leaves_last_slot_active_otp_f01() {
+        // (a) Type the last char (completing): the library leaves the
+        // last slot ACTIVE, (ml-1, ml) — S1 left (ml, ml), no active slot.
+        let mut value = "123".to_owned();
+        let mut sel = (3, 3);
+        assert!(apply_otp_events(
+            &[Event::Text("4".to_owned())],
+            &mut value,
+            &mut sel,
+            4,
+            false
+        ));
+        assert_eq!(value, "1234");
+        assert_eq!(sel, (3, 4));
+    }
+
+    #[test]
+    fn typing_when_full_replaces_last_char_otp_f01() {
+        // (b) Type when full: the expanded (ml-1, ml) selection is
+        // replaced by the native insert — S1 no-opped from the
+        // unreachable (ml, ml).
+        let mut value = "1234".to_owned();
+        let mut sel = (3, 4);
+        assert!(apply_otp_events(
+            &[Event::Text("5".to_owned())],
+            &mut value,
+            &mut sel,
+            4,
+            false
+        ));
+        assert_eq!(value, "1235");
+        assert_eq!(sel, (3, 4));
+    }
+
+    #[test]
+    fn arrow_left_from_range_moves_active_slot_left_otp_f01() {
+        // (c) ArrowLeft from a 1-char range: the native key collapses
+        // to the range start, and the expansion moves the active slot
+        // one further left — S1 stayed at the range start.
+        let mut value = "123456".to_owned();
+        let mut sel = (5, 6);
+        assert!(!apply_otp_events(
+            &[key_event(Key::ArrowLeft, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(sel, (4, 5));
+    }
+
+    #[test]
+    fn backspace_from_range_leaves_active_slot_left_otp_f01() {
+        // (d) Backspace deleting a mid-value range: the active slot
+        // lands one LEFT of the deletion point — S1 stayed at the point.
+        let mut value = "123".to_owned();
+        let mut sel = (1, 2);
+        assert!(apply_otp_events(
+            &[key_event(Key::Backspace, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(value, "13");
+        assert_eq!(sel, (0, 1));
+    }
+
+    #[test]
+    fn delete_from_range_leaves_active_slot_left_otp_f01() {
+        // (d) Delete, mirror of the Backspace pin: same one-left rule.
+        let mut value = "123".to_owned();
+        let mut sel = (1, 2);
+        assert!(apply_otp_events(
+            &[key_event(Key::Delete, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(value, "13");
+        assert_eq!(sel, (0, 1));
+    }
+
+    #[test]
+    fn click_then_type_replaces_clicked_slot_otp_f01() {
+        // (e) Click-then-type: the click placement expands the
+        // collapsed caret (1, 1) into (1, 2) — `prev` is the
+        // focus-gain caret (3, 3), an inserting caret, so the
+        // direction is forward — and typing then REPLACES the
+        // clicked slot's char ("193"), instead of inserting ("1923").
+        let mut sel = (1, 1);
+        expand_selection(3, &mut sel, (3, 3), 6);
+        assert_eq!(sel, (1, 2));
+        let mut value = "123".to_owned();
+        assert!(apply_otp_events(
+            &[Event::Text("9".to_owned())],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(value, "193");
+        assert_eq!(sel, (2, 3));
+    }
+
+    #[test]
+    fn click_then_backspace_deletes_clicked_slot_otp_f01() {
+        // (e) Click-then-Backspace: the click placement expands
+        // (1, 1) into (1, 2), so Backspace deletes the CLICKED
+        // slot's char ("13", slot 0 active) — S1 deleted the
+        // PREVIOUS slot's char ("23").
+        let mut sel = (1, 1);
+        expand_selection(3, &mut sel, (3, 3), 6);
+        assert_eq!(sel, (1, 2));
+        let mut value = "123".to_owned();
+        assert!(apply_otp_events(
+            &[key_event(Key::Backspace, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(value, "13");
+        assert_eq!(sel, (0, 1));
+    }
+
+    #[test]
+    fn paste_to_full_leaves_last_slot_active_otp_f01() {
+        // (f) Paste that fills to full: the caret lands at (ml, ml)
+        // and the expansion rewrites it into (ml-1, ml) — S1 left
+        // no active slot.
+        let mut value = String::new();
+        let mut sel = (0, 0);
+        assert!(apply_otp_events(
+            &[Event::Paste("1234".to_owned())],
+            &mut value,
+            &mut sel,
+            4,
+            false
+        ));
+        assert_eq!(value, "1234");
+        assert_eq!(sel, (3, 4));
+    }
+
+    #[test]
+    fn arrow_right_from_range_lands_on_range_end_otp_f01() {
+        // Agreement (must not regress): ArrowRight from a range lands
+        // the active slot at the range end — the expansion rewrites
+        // the collapsed caret (2, 2) into (2, 3), which still covers
+        // slot 2.
+        let mut value = "123".to_owned();
+        let mut sel = (1, 2);
+        assert!(!apply_otp_events(
+            &[key_event(Key::ArrowRight, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(sel, (2, 3));
+    }
+
+    #[test]
+    fn backspace_at_end_stays_in_insert_mode_otp_f01() {
+        // Agreement (must not regress): Backspace at the end of a
+        // not-yet-full value deletes the last char and the caret
+        // stays collapsed — the caret is in insert mode, so the
+        // expansion does not apply.
+        let mut value = "12345".to_owned();
+        let mut sel = (5, 5);
+        assert!(apply_otp_events(
+            &[key_event(Key::Backspace, true)],
+            &mut value,
+            &mut sel,
+            6,
+            false
+        ));
+        assert_eq!(value, "1234");
+        assert_eq!(sel, (4, 4));
     }
 
     #[test]
@@ -2267,7 +2590,10 @@ mod tests {
             Some(control_a),
             "ArrowRight must not move focus off the control"
         );
-        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 3));
+        // OTP-F-01: the mirror expansion rewrites the moved caret
+        // (3, 3) into (3, 4) — the caret is at the end of a full
+        // value, so the last slot stays active.
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 4));
         let mut input = egui::RawInput::default();
         input.events.push(key_event(Key::ArrowRight, false));
         run_two_frame(
@@ -2335,7 +2661,10 @@ mod tests {
             Some(control_b),
             "ArrowLeft must not move focus off the control"
         );
-        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (1, 1));
+        // OTP-F-01: the mirror expansion rewrites the moved caret
+        // (1, 1) into (1, 2) — the caret moved left of the previous
+        // inserting caret, so the offset is 0.
+        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (1, 2));
         let mut input = egui::RawInput::default();
         input.events.push(key_event(Key::ArrowLeft, false));
         run_two_frame(
@@ -2559,7 +2888,8 @@ mod tests {
         // must never be "fixed" by weakening the filter gate. The
         // engine still moves the caret in that frame (the key reaches
         // the engine before `end_pass` moves focus), so the caret
-        // lands at (3, 3) either way.
+        // lands at (3, 4) either way (OTP-F-01: the mirror expansion
+        // rewrites the moved caret (3, 3) into the last-slot range).
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut value_a = "12".to_owned();
@@ -2593,6 +2923,6 @@ mod tests {
             Some(control_b),
             "ArrowRight in the first pass after a grant still moves focus (latch window)"
         );
-        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 3));
+        assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 4));
     }
 }
