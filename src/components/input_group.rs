@@ -872,15 +872,21 @@ impl<'a> InputGroupInput<'a> {
             .desired_width(width.max(1.0))
             .min_size(Vec2::new(width.max(1.0), input::input_height(style)))
             .align(Align2::LEFT_CENTER)
-            .margin(margins)
             // The control is frameless: all chrome lives on the
             // container. A theme-default frame would paint its own
-            // 1px stroke inside the container border (the
-            // `background_color(TRANSPARENT)` below only clears the
-            // fill). `Frame::NONE` removes the stroke too; the text
-            // lands at the same offset (a zero-width stroke needs no
-            // inner-margin compensation).
-            .frame(Frame::NONE);
+            // 1px stroke inside the container border (see the module
+            // docs: `background_color(TRANSPARENT)` clears only the
+            // fill). `Frame::NONE` removes the stroke too — but with
+            // an explicit frame the builder's `.margin()` is IGNORED
+            // (egui 0.37 `builder.rs:693-706` applies it ONLY in the
+            // `else` branch, when no frame is given), so the §3.5
+            // padding is baked into the frame's `inner_margin`
+            // instead (the `input.rs` precedent). The text inset
+            // from the rect edge is exactly the §3.5 padding.
+            .frame(Frame {
+                inner_margin: margins,
+                ..Frame::NONE
+            });
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             if is_empty {
                 edit.hint_text(placeholder.to_owned())
@@ -1026,11 +1032,17 @@ impl<'a> InputGroupTextarea<'a> {
             .desired_width(width)
             .desired_rows(self.rows)
             .min_size(Vec2::new(width, input::input_height(style)))
-            .margin(Margin::symmetric(pad_x as i8, pad_y as i8))
             // Frameless, as above: `Frame::NONE` removes the
             // theme-default 1px frame stroke (fill-only
-            // transparency would leave the stroke behind).
-            .frame(Frame::NONE);
+            // transparency would leave the stroke behind). With an
+            // explicit frame the builder's `.margin()` is ignored
+            // (egui 0.37 `builder.rs:693-706`), so the `px-3 py-3` /
+            // `px-2.5 py-2` padding is baked into the frame's
+            // `inner_margin` instead.
+            .frame(Frame {
+                inner_margin: Margin::symmetric(pad_x as i8, pad_y as i8),
+                ..Frame::NONE
+            });
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             edit.hint_text(placeholder.to_owned())
         } else {
@@ -1163,8 +1175,9 @@ impl InputGroupAddon {
         // `pl-2`/`pl-1.5` margin). The outer padding is the explicit
         // `add_space` below. Consequence, documented: an addon with
         // several direct children renders them with NO gap (spec
-        // `gap-2`); single-child addons — every demo composition —
-        // are exactly spec-correct.
+        // `gap-2`); single-child addons are exactly spec-correct;
+        // §6's two-button addon renders with no gap (carried
+        // limitation).
         push_addon_id(ui, addon_id);
         let inner = match self.align {
             AddonAlign::InlineStart => {
@@ -1386,10 +1399,17 @@ impl InputGroupText {
             Some(ui.painter().layout_no_wrap(self.text.clone(), font, color))
         };
         let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
-        let gap = self
-            .icon
-            .map(|_| crate::theme::tokens::spacing::SM)
-            .unwrap_or(0.0);
+        // The `gap-2` between icon and text applies BETWEEN flex
+        // items: with an icon but NO text there is a single child,
+        // so no gap. (Before this fix the gap was unconditional, and
+        // an icon-only addon allocated 16 + 8 = 24px — the trailing
+        // 8px masqueraded as the input's §3.5 padding in §6, while
+        // the input itself sat flush. IGP-VIS-01.)
+        let gap = if self.icon.is_some() && !self.text.is_empty() {
+            crate::theme::tokens::spacing::SM
+        } else {
+            0.0
+        };
         let width = icon_size * self.icon.is_some() as i32 as f32 + gap + text_w;
         let desired = Vec2::new(width.max(1.0), container_height(theme.style));
 
@@ -2641,5 +2661,332 @@ mod tests {
             strokes.iter().any(|(_, _, s)| s.color == p.destructive),
             "an invalid addon must turn the container border destructive, got {strokes:?}"
         );
+    }
+
+    // ---- Text position (§3.5 / IGP-VIS-01) ----
+
+    /// The laid-out origin of the first text shape whose job text is `text`.
+    fn text_pos(out: &egui::FullOutput, text: &str) -> Option<Pos2> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(ts) if ts.galley.job.text == text => Some(ts.pos),
+            _ => None,
+        })
+    }
+
+    /// The inline-start addon shape for the text-position pins.
+    #[derive(Clone, Copy)]
+    enum StartAddon {
+        /// Text addon, e.g. "https://" (§1/§5).
+        Text(&'static str),
+        /// Icon-only addon (§2/§4/§6/§7).
+        Icon(Icon),
+        /// No addon.
+        None,
+    }
+
+    /// Renders one group (two frames, so the last-frame snapshot is
+    /// settled) and returns the input rect plus the origin of the text
+    /// shape for `text` (the placeholder when `typed` is empty, the
+    /// typed text otherwise).
+    fn measure_input_text_origin(
+        style: Style,
+        salt: &'static str,
+        start_addon: StartAddon,
+        end_addon: bool,
+        typed: &str,
+        placeholder: &'static str,
+    ) -> (Rect, Option<Pos2>) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::from(typed);
+        let input_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt(salt).show(ui, |ui| {
+                match start_addon {
+                    StartAddon::Text(t) => {
+                        let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new(t).show(ui);
+                        });
+                    }
+                    StartAddon::Icon(icon) => {
+                        let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new("").icon(icon).show(ui);
+                        });
+                    }
+                    StartAddon::None => {}
+                }
+                input_rect.set(
+                    InputGroupInput::new(&mut text)
+                        .placeholder(placeholder)
+                        .show(ui)
+                        .rect,
+                );
+                if end_addon {
+                    let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                        InputGroupButton::icon(Icon::Copy).show(ui);
+                    });
+                }
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        let want = if typed.is_empty() { placeholder } else { typed };
+        (input_rect.get(), text_pos(&out, want))
+    }
+
+    /// Renders the §3 shape (block addons + textarea, two frames) and
+    /// returns the textarea rect plus the origin of the placeholder text.
+    fn measure_textarea_text_origin(style: Style) -> (Rect, Option<Pos2>) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut bio = String::new();
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("ta_pos").show(ui, |ui| {
+                let _ = InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                    InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                });
+                ta_rect.set(
+                    InputGroupTextarea::new(&mut bio)
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui)
+                        .rect,
+                );
+                let _ = InputGroupAddon::new(AddonAlign::BlockEnd).show(ui, |ui| {
+                    InputGroupText::new("Markdown supported").show(ui);
+                });
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        (ta_rect.get(), text_pos(&out, "Tell us about yourself…"))
+    }
+
+    /// The allocated width of one `InputGroupText` in an inline-start
+    /// addon (two frames).
+    fn measure_text_addon_width(
+        style: Style,
+        salt: &'static str,
+        text: &'static str,
+        icon: Option<Icon>,
+    ) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt(salt).show(ui, |ui| {
+                let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                    let mut t = InputGroupText::new(text);
+                    if let Some(icon) = icon {
+                        t = t.icon(icon);
+                    }
+                    rect.set(t.show(ui).rect);
+                });
+                let mut dummy = String::new();
+                let _ = InputGroupInput::new(&mut dummy).show(ui);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        rect.get().width()
+    }
+
+    #[test]
+    fn text_position_inline_start_text_addon() {
+        // §1 shape: inline-start text addon → `pl-2` base / `pl-1.5`
+        // nova (§3.5). IGP-VIS-01: before the fix the glyph sat flush
+        // at the input rect edge (offset 0).
+        for (style, want) in [(Style::Nova, 6.0), (Style::Vega, 8.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_s1",
+                StartAddon::Text("https://"),
+                false,
+                "",
+                "example.com",
+            );
+            let pos = pos.expect("placeholder text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: placeholder must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_inline_start_icon_addon() {
+        // §6 shape: inline-start ICON addon → the same `pl-2` /
+        // `pl-1.5` as the text addon (§3.5). The §6 gap must come from
+        // the input's own padding (this pin reads the input rect edge);
+        // the addon-width pin below locks the addon gap itself, so the
+        // two cannot double up.
+        for (style, want) in [(Style::Nova, 6.0), (Style::Vega, 8.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_s6",
+                StartAddon::Icon(Icon::Search),
+                true,
+                "",
+                "Find a workspace…",
+            );
+            let pos = pos.expect("placeholder text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: placeholder must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_no_addon() {
+        // No addon on a side: the input's own padding (`px-3` base,
+        // `px-2.5` nova, §3.5).
+        for (style, want) in [(Style::Nova, 10.0), (Style::Vega, 12.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_noaddon",
+                StartAddon::None,
+                false,
+                "abc",
+                "",
+            );
+            let pos = pos.expect("typed text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: typed text must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_textarea_block_addons() {
+        // §3 shape: block addons + textarea → `px-3 py-3` base,
+        // `px-2.5 py-2` nova (§3.5; a textarea is never targeted by the
+        // input padding rules — it carries its own). Both axes are
+        // observable here (multiline is top-aligned).
+        for (style, want_x, want_y) in [(Style::Nova, 10.0, 8.0), (Style::Vega, 12.0, 12.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_textarea_text_origin(style);
+            let pos = pos.expect("textarea placeholder must be painted");
+            assert!(
+                (pos.x - rect.min.x - want_x).abs() < 1.0,
+                "{name}: textarea placeholder must sit {want_x}px inside the rect (x), got offset {}",
+                pos.x - rect.min.x
+            );
+            assert!(
+                (pos.y - rect.min.y - want_y).abs() < 1.0,
+                "{name}: textarea placeholder must sit {want_y}px inside the rect (y), got offset {}",
+                pos.y - rect.min.y
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_position_equals_typed_position() {
+        // S5 oracle: the placeholder position IS the text position —
+        // the hint and the typed text share the same origin (§1 shape,
+        // nova). Locks the S5 finding so a later change cannot move one
+        // without the other.
+        let (rect_hint, pos_hint) = measure_input_text_origin(
+            Style::Nova,
+            "txtpos_oracle_hint",
+            StartAddon::Text("https://"),
+            false,
+            "",
+            "example.com",
+        );
+        let (rect_typed, pos_typed) = measure_input_text_origin(
+            Style::Nova,
+            "txtpos_oracle_typed",
+            StartAddon::Text("https://"),
+            false,
+            "example.com",
+            "",
+        );
+        let pos_hint = pos_hint.expect("placeholder text shape must be painted");
+        let pos_typed = pos_typed.expect("typed text shape must be painted");
+        assert!(
+            (pos_hint.x - pos_typed.x).abs() < 1.0 && (pos_hint.y - pos_typed.y).abs() < 1.0,
+            "placeholder origin {pos_hint:?} must equal typed origin {pos_typed:?}"
+        );
+        assert!(
+            (rect_hint.min.x - rect_typed.min.x).abs() < 1.0,
+            "both compositions must give the input the same rect"
+        );
+    }
+
+    #[test]
+    fn icon_only_text_addon_has_no_trailing_gap() {
+        // §6 exception (IGP-VIS-01): an icon-only addon must allocate
+        // exactly the 16px icon — the `gap-2` between icon and text
+        // applies BETWEEN flex items, and a single child gets no gap.
+        // Before the fix the addon allocated 16 + 8 = 24px, and the
+        // trailing 8px masqueraded as the input's §3.5 padding.
+        for style in [Style::Nova, Style::Vega] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let w = measure_text_addon_width(style, "txtpos_gap", "", Some(Icon::Search));
+            assert!(
+                (w - 16.0).abs() < 0.5,
+                "{name}: icon-only addon must be 16px wide, got {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn icon_and_text_addon_keeps_gap() {
+        // Guard: with BOTH icon and text the 8px `gap-2` stays (§3
+        // "Bio" + User icon).
+        for style in [Style::Nova, Style::Vega] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let icon_text = measure_text_addon_width(style, "txtpos_gap2", "Bio", Some(Icon::User));
+            let text_only = measure_text_addon_width(style, "txtpos_gap3", "Bio", None);
+            assert!(
+                ((icon_text - text_only) - 24.0).abs() < 0.5,
+                "{name}: icon + gap must add 16 + 8px over text alone, got {}",
+                icon_text - text_only
+            );
+        }
+    }
+
+    #[test]
+    fn control_margins_match_section_35() {
+        // §3.5, pure: inline-start/end addon → `pl-2`/`pr-2` base,
+        // `pl-1.5`/`pr-1.5` nova; no addon → the input's own `px-3` /
+        // `px-2.5`; block addons → `pb-3`/`pt-3` (12px, both styles).
+        let m = control_margins(Style::Nova, true, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (6, 10, 0, 0));
+        let m = control_margins(Style::Vega, true, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (8, 12, 0, 0));
+        let m = control_margins(Style::Nova, false, true, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 6, 0, 0));
+        let m = control_margins(Style::Vega, false, true, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 8, 0, 0));
+        let m = control_margins(Style::Nova, false, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 10, 0, 0));
+        let m = control_margins(Style::Vega, false, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 12, 0, 0));
+        let m = control_margins(Style::Nova, false, false, true, true);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 10, 12, 12));
+        let m = control_margins(Style::Vega, false, false, true, true);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 12, 12, 12));
     }
 }
