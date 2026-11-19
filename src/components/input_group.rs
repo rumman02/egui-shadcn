@@ -54,10 +54,13 @@
 //!   rendering under nova is a defect.
 //! - Block-addon vertical padding follows the N15 conditional (base 12px,
 //!   or 10px when a direct-child `input` exists; nova uniformly 8px).
-//! - The kbd negative margin and kbd radius need a kbd-line mechanism
-//!   (`Kbd` reports nothing into this record; `kbd.rs` is not touched
-//!   here) and are not applied; the button negative margin is applied
-//!   when a direct-child `InputGroupButton` is detected.
+//! - The kbd negative margin is applied when a direct-child `Kbd` or
+//!   `KbdGroup` is detected via the kbd-line channel (`Kbd`/`KbdGroup`
+//!   record `has_kbd` against the addon id stack; `kbd.rs` is
+//!   recording-only). The kbd radius (5px) still needs the same channel
+//!   and is not applied here. The button negative margin is applied when
+//!   a direct-child `InputGroupButton` is detected; when both a button
+//!   and a kbd are present, the kbd margin wins (OPEN-7(a)).
 //!
 //! S1 implementation notes (egui mechanics, verified by pins):
 //!
@@ -226,6 +229,26 @@ fn addon_button_negative_margin(style: Style) -> f32 {
     match style {
         Style::Nova => 4.8, // 0.3rem
         _ => 7.2,           // 0.45rem
+    }
+}
+
+/// Negative margin for a direct-child kbd in an inline addon (§3.4):
+/// `ml-[-0.35rem]`/`mr-[-0.35rem]` base, `ml-[-0.15rem]`/`mr-[-0.15rem]`
+/// nova. Pulls the kbd toward the container's outer edge, compensating
+/// the addon's outer padding (base inline-end kbd outer edge sits
+/// 12 − 5.6 = 6.4px from the container's content edge; nova
+/// 8 − 2.4 = 5.6px).
+///
+/// When BOTH a direct-child button and a direct-child kbd exist, the kbd
+/// margin wins (OPEN-7(a), decided): Tailwind v4 emits the kbd rule after
+/// the button rule in the utilities layer and in the `.cn-*` @apply
+/// expansion, so with equal specificity the kbd margin is the one that
+/// paints (verified by a Tailwind v4.3.5 compile test; see the channel
+/// report §2).
+fn addon_kbd_negative_margin(style: Style) -> f32 {
+    match style {
+        Style::Nova => 2.4, // 0.15rem
+        _ => 5.6,           // 0.35rem
     }
 }
 
@@ -427,6 +450,27 @@ fn pop_addon_id(ui: &Ui) {
     stack.pop();
     ui.ctx()
         .data_mut(|d| d.insert_temp(addon_stack_key(), stack));
+}
+
+/// Records that a `Kbd` or `KbdGroup` was shown directly inside the
+/// innermost enclosing addon (kbd-line channel, IGP-VIS-04): sets the
+/// `has_kbd` flag against the addon id on top of the stack. Recording
+/// only — no rendering change. Idempotent (a plain boolean set), so a
+/// `KbdGroup`'s measure pass and real pass, and nested `Kbd` children,
+/// all set the same flag. A kbd shown outside any addon records nothing
+/// (`current_addon_id` is `None`); a kbd inside a nested addon records
+/// against the innermost addon only (same stack discipline as
+/// `has_button`).
+///
+/// Approximation (same class as `has_button`): the stack cannot tell a
+/// direct child from a kbd nested inside a non-addon container within the
+/// addon — both record. No demo composition exercises that case.
+pub(crate) fn record_kbd_in_addon(ui: &Ui) {
+    if let Some(addon_id) = current_addon_id(ui) {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(addon_id.with("has_kbd"), true);
+        });
+    }
 }
 
 /// Paints the container border with the leading edge removed for
@@ -1268,11 +1312,19 @@ impl InputGroupAddon {
             d.get_temp::<bool>(addon_id.with("has_button_prev"))
                 .unwrap_or(false)
         });
-        // The negative margin pulls a direct-child button toward the
-        // container's outer edge (§3.4); without a button the addon's
-        // full outer padding applies.
+        let has_kbd = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_kbd_prev"))
+                .unwrap_or(false)
+        });
+        // The negative margin pulls a direct-child button or kbd toward
+        // the container's outer edge (§3.4); without either, the addon's
+        // full outer padding applies. When both are present the kbd
+        // margin wins (OPEN-7(a)): Tailwind emits the kbd rule after the
+        // button rule, so the kbd margin is the one that paints.
         let outer_padding = addon_inline_padding(style)
-            - if has_button {
+            - if has_kbd {
+                addon_kbd_negative_margin(style)
+            } else if has_button {
                 addon_button_negative_margin(style)
             } else {
                 0.0
@@ -1309,8 +1361,9 @@ impl InputGroupAddon {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(0.0, container_height(style)));
                     // `pl-3 py-1.5` base recipe; nova `pl-2` (minus the
-                    // button negative margin when a direct-child button
-                    // is present, §3.4).
+                    // button/kbd negative margin when a direct-child
+                    // button or kbd is present, §3.4; kbd wins when
+                    // both are present, OPEN-7(a)).
                     ui.add_space(outer_padding);
                     content(ui)
                 })
@@ -1320,8 +1373,9 @@ impl InputGroupAddon {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(0.0, container_height(style)));
                     let r = content(ui);
-                    // `pr-3` base recipe; nova `pr-2` (minus the button
-                    // negative margin, §3.4).
+                    // `pr-3` base recipe; nova `pr-2` (minus the
+                    // button/kbd negative margin, §3.4; kbd wins when
+                    // both are present, OPEN-7(a)).
                     ui.add_space(outer_padding);
                     r
                 });
@@ -1402,6 +1456,18 @@ impl InputGroupAddon {
         ui.ctx().data_mut(|d| {
             d.insert_temp(addon_id.with("has_button_prev"), has_button_now);
             d.insert_temp(addon_id.with("has_button"), false);
+        });
+
+        // Rotate the direct-child-kbd detection the same way: this
+        // frame's flag (set by `Kbd`/`KbdGroup` during the content above)
+        // becomes next frame's snapshot; the flag is then cleared.
+        let has_kbd_now = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_kbd"))
+                .unwrap_or(false)
+        });
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(addon_id.with("has_kbd_prev"), has_kbd_now);
+            d.insert_temp(addon_id.with("has_kbd"), false);
         });
 
         // `onClick`: focus the group's control (unless the click hit a
@@ -1748,6 +1814,7 @@ impl egui::Widget for InputGroupButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::kbd::{Kbd, KbdGroup};
     use crate::theme::{Mode, Palette, Preset};
     use egui::Pos2;
     use std::cell::Cell;
@@ -2686,6 +2753,251 @@ mod tests {
         assert!((measure_inline_end_trailing(Style::Vega, false) - 12.0).abs() < 0.5);
         assert!((measure_inline_end_trailing(Style::Nova, true) - 3.2).abs() < 0.5);
         assert!((measure_inline_end_trailing(Style::Nova, false) - 8.0).abs() < 0.5);
+    }
+
+    // ---- Kbd negative margin (§3.4) + reporting channel (IGP-VIS-04) ----
+
+    /// Same harness as `measure_inline_end_trailing`, with a `KbdGroup` as
+    /// the addon's direct-child content; returns the trailing distance
+    /// (group right edge − last chip right edge).
+    fn measure_inline_end_trailing_kbd(style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let content_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("negmargin-kbd").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    let g = KbdGroup::new().show(ui, |ui| {
+                        Kbd::new("⌘").show(ui);
+                        Kbd::new("K").show(ui);
+                    });
+                    content_rect.set(g.response.rect);
+                });
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        group_rect.get().max.x - content_rect.get().max.x
+    }
+
+    /// Same harness, with BOTH a direct-child button and a direct-child
+    /// `KbdGroup` in the addon (button first, group last); returns the
+    /// trailing distance (group right edge − last chip right edge).
+    fn measure_inline_end_trailing_both(style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let content_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("negmargin-both").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    let _ = InputGroupButton::icon(Icon::Copy).show(ui);
+                    let g = KbdGroup::new().show(ui, |ui| {
+                        Kbd::new("⌘").show(ui);
+                        Kbd::new("K").show(ui);
+                    });
+                    content_rect.set(g.response.rect);
+                });
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        group_rect.get().max.x - content_rect.get().max.x
+    }
+
+    #[test]
+    fn kbd_negative_margin_applies_in_base_igp_vis04() {
+        // Base: a direct-child kbd pulls the addon 5.6px toward the edge
+        // (trailing 12 − 5.6 = 6.4px); without a kbd the full 12px
+        // applies (guarded by `negative_margin_for_direct_child_button`).
+        assert!((measure_inline_end_trailing_kbd(Style::Vega) - 6.4).abs() < 0.5);
+    }
+
+    #[test]
+    fn kbd_negative_margin_applies_in_nova_igp_vis04() {
+        // Nova: 2.4px margin (trailing 8 − 2.4 = 5.6px).
+        assert!((measure_inline_end_trailing_kbd(Style::Nova) - 5.6).abs() < 0.5);
+    }
+
+    #[test]
+    fn kbd_margin_wins_over_button_when_both_present_igp_open7a() {
+        // OPEN-7(a) DECIDED (see the channel report §2): when both a
+        // direct-child button and a direct-child kbd exist, the kbd
+        // margin wins — Tailwind v4 emits the kbd rule after the button
+        // rule in both the utilities layer and the `.cn-*` @apply
+        // expansion, so the kbd margin is the one that paints. Base
+        // trailing 6.4 (not 4.8); nova 5.6 (not 3.2).
+        assert!((measure_inline_end_trailing_both(Style::Vega) - 6.4).abs() < 0.5);
+        assert!((measure_inline_end_trailing_both(Style::Nova) - 5.6).abs() < 0.5);
+    }
+
+    /// Drives `frames` frames of a group whose InlineEnd addon (id salt
+    /// `salt`) holds `content`, then returns the addon's `has_kbd` /
+    /// `has_kbd_prev` temps after the last frame. The addon id is captured
+    /// from the group content Ui's scope id, exactly as
+    /// `InputGroupAddon::show` computes it.
+    fn has_kbd_temps<F>(salt: &str, mut content: F, frames: usize) -> (bool, bool)
+    where
+        F: FnMut(&mut Ui),
+    {
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let addon_id = Cell::new(Id::unique("kbd_temp_probe"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-temp").show(ui, |ui| {
+                addon_id.set(ui.scope_id().with(salt));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt(salt)
+                    .show(ui, |ui| {
+                        content(ui);
+                    });
+            });
+        };
+        for _ in 0..frames {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        let aid = addon_id.get();
+        ctx.data_mut(|d| {
+            (
+                d.get_temp::<bool>(aid.with("has_kbd")).unwrap_or(false),
+                d.get_temp::<bool>(aid.with("has_kbd_prev"))
+                    .unwrap_or(false),
+            )
+        })
+    }
+
+    #[test]
+    fn has_kbd_channel_records_direct_child_kbd_igp_vis04() {
+        // A direct-child Kbd sets has_kbd; after one frame the roll moves
+        // it to has_kbd_prev (and clears has_kbd).
+        let (now, prev) = has_kbd_temps(
+            "chan-direct",
+            |ui| {
+                Kbd::new("K").show(ui);
+            },
+            1,
+        );
+        assert!(
+            !now,
+            "has_kbd must be cleared by the roll at the end of the addon frame"
+        );
+        assert!(prev, "direct-child Kbd must record has_kbd");
+    }
+
+    #[test]
+    fn has_kbd_channel_records_kbd_group_igp_vis04() {
+        // A direct-child KbdGroup is itself a <kbd> element (spec §3.4):
+        // it records has_kbd. The group's double run (measure + real) is
+        // idempotent — the boolean is set, not toggled or counted — so one
+        // frame already leaves has_kbd_prev true.
+        let (now, prev) = has_kbd_temps(
+            "chan-group",
+            |ui| {
+                KbdGroup::new().show(ui, |ui| {
+                    Kbd::new("⌘").show(ui);
+                    Kbd::new("K").show(ui);
+                });
+            },
+            1,
+        );
+        assert!(
+            !now,
+            "has_kbd must be cleared by the roll at the end of the addon frame"
+        );
+        assert!(
+            prev,
+            "direct-child KbdGroup must record has_kbd (idempotent across its double run)"
+        );
+    }
+
+    #[test]
+    fn has_kbd_channel_ignores_kbd_outside_addon_igp_vis04() {
+        // A Kbd shown directly in the group (not inside any addon) must not
+        // set the addon's has_kbd: the addon's flag stays false.
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let addon_id = Cell::new(Id::unique("kbd_outside_probe"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-outside").show(ui, |ui| {
+                addon_id.set(ui.scope_id().with("chan-outside"));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt("chan-outside")
+                    .show(ui, |ui| {
+                        InputGroupText::new("Go").show(ui);
+                    });
+                Kbd::new("K").show(ui);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let aid = addon_id.get();
+        let prev = ctx.data_mut(|d| {
+            d.get_temp::<bool>(aid.with("has_kbd_prev"))
+                .unwrap_or(false)
+        });
+        assert!(
+            !prev,
+            "a Kbd outside any addon must not record has_kbd on the addon"
+        );
+    }
+
+    #[test]
+    fn has_kbd_channel_scopes_to_innermost_addon_igp_vis04() {
+        // A Kbd inside a nested (inner) addon records against the INNER
+        // addon only: the outer addon's has_kbd stays false.
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let outer_id = Cell::new(Id::unique("kbd_nested_outer"));
+        let inner_id = Cell::new(Id::unique("kbd_nested_inner"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-nested").show(ui, |ui| {
+                outer_id.set(ui.scope_id().with("chan-outer"));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt("chan-outer")
+                    .show(ui, |ui| {
+                        inner_id.set(ui.scope_id().with("chan-inner"));
+                        let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                            .id_salt("chan-inner")
+                            .show(ui, |ui| {
+                                Kbd::new("K").show(ui);
+                            });
+                    });
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let (outer, inner) = ctx.data_mut(|d| {
+            (
+                d.get_temp::<bool>(outer_id.get().with("has_kbd_prev"))
+                    .unwrap_or(false),
+                d.get_temp::<bool>(inner_id.get().with("has_kbd_prev"))
+                    .unwrap_or(false),
+            )
+        });
+        assert!(
+            !outer,
+            "a Kbd nested inside an inner addon must not record has_kbd on the outer addon"
+        );
+        assert!(
+            inner,
+            "a Kbd inside the inner addon must record has_kbd on the inner addon"
+        );
     }
 
     // ---- Click-to-focus (§7.2) ----

@@ -232,7 +232,12 @@ impl Kbd {
     }
 
     /// Renders the key chip.
+    ///
+    /// If shown directly inside an `InputGroup` addon, records the kbd
+    /// presence against the addon's id stack (kbd-line channel, IGP-VIS-04;
+    /// recording only — no paint, layout, size, or radius change).
     pub fn show(self, ui: &mut Ui) -> Response {
+        crate::components::input_group::record_kbd_in_addon(ui);
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let (bg, fg) = colors(&p, theme.mode, self.on_dark);
@@ -326,11 +331,19 @@ impl KbdGroup {
     /// (hence disabled), so no callbacks can double-fire; `Kbd` children
     /// are stateless paints and are unaffected. Callers must not rely on
     /// the closure running exactly once.
+    ///
+    /// A `KbdGroup` renders a `<kbd>` element itself, so it records the
+    /// kbd presence against the addon's id stack when shown directly
+    /// inside an `InputGroup` addon (kbd-line channel, IGP-VIS-04;
+    /// recording only — no paint, layout, size, or radius change). The
+    /// record is an idempotent boolean, so the measure pass and the real
+    /// pass both set the same flag.
     pub fn show<R>(
         self,
         ui: &mut Ui,
         mut content: impl FnMut(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        crate::components::input_group::record_kbd_in_addon(ui);
         // Measure-then-real (the `dialog_footer` pattern): the group must
         // PRESENT its true content-sized box to its parent, so a centring
         // parent centres the true box. Seeding the row with zero height
