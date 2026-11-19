@@ -726,7 +726,6 @@ impl<'a> InputOTP<'a> {
             let response = ui.interact(prev_rect, control, sense);
             if response.clicked() {
                 response.request_focus();
-                focused = true;
                 if was_focused {
                     // Already focused: the click places the caret at the
                     // clicked slot. Not yet focused: the focus-gain rule
@@ -746,6 +745,31 @@ impl<'a> InputOTP<'a> {
                     }
                 }
             }
+            // OTP-INT-02: Tab grants focus DURING `interact` — egui's
+            // `Memory::interested_in_focus` gives the next widget focus
+            // mid-frame when the previously-focused widget is shown
+            // (`egui-0.37.0/src/memory/mod.rs:655-668`), so the
+            // `focused` read above (taken before `interact`) is stale
+            // on the grant frame: it is `false` while `was_focused`
+            // is also `false`, and the focus-gain branch below never
+            // fires — while `focused_now` (read after layout) is
+            // `true`, so `was_focused` is written `true` and the next
+            // frame misses the window too. Re-read here so the grant
+            // is visible to the focus-gain check in the same frame.
+            // This also covers the click grant above (`request_focus`
+            // sets `focused_widget` immediately, so the re-read
+            // returns `true` after a click — the old `focused = true`
+            // assignment in the click branch is redundant and was
+            // removed). Safe: a disabled control can never be
+            // granted focus via `interact` (`create_widget` only
+            // calls `interested_in_focus` for enabled + focusable
+            // widgets, `context.rs:1525-1539`, and disabled OTP uses
+            // `Sense::hover()`). In the Tab-AWAY frame this reads
+            // `false` (focus was cleared during this control's
+            // `interact`), so the ring stops painting in the frame
+            // Tab is pressed — the Tab key itself is a no-op arm in
+            // `apply_otp_events`, so no engine behaviour changes.
+            focused = ui.ctx().memory(|m| m.has_focus(control));
         }
         // Focus-gain: the library's `_focusListener`.
         if focused && !was_focused {
@@ -2924,5 +2948,230 @@ mod tests {
             "ArrowRight in the first pass after a grant still moves focus (latch window)"
         );
         assert_eq!(two_test_sel(&ctx, scope, "otp-a"), (3, 4));
+    }
+
+    #[test]
+    fn first_tab_focus_applies_focus_gain_otp_int_02() {
+        // OTP-INT-02: a FIRST Tab focus must land the focus-gain
+        // selection. RED before the fix: the Tab grant lands DURING
+        // B's `ui.interact` (egui's `interested_in_focus` gives the
+        // next widget focus mid-frame), but `show_with` reads the
+        // local `focused` BEFORE `interact`, so on the grant frame it
+        // is `false` and focus-gain never fires; `was_focused` is
+        // written `true` from `focused_now` at the end of that same
+        // frame, so the next frame misses the window too. B's
+        // selection stays at the (0, 0) default instead of (3, 3).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = "123".to_owned();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+        // B has never been focused: its selection is the (0, 0) default.
+        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (0, 0));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::Tab, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int02_first_tab",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_b),
+            "Tab must move focus to control B"
+        );
+        assert_eq!(
+            two_test_sel(&ctx, scope, "otp-b"),
+            (3, 3),
+            "first Tab focus must land the focus-gain selection (3, 3) for value \"123\""
+        );
+    }
+
+    #[test]
+    fn first_tab_focus_to_full_value_leaves_last_slot_active_otp_int_02() {
+        // OTP-INT-02, full-value twin of the pin above: a first Tab
+        // focus onto a FULL control must leave the last slot active
+        // (`focus_gain_sel(4, 4) = (3, 4)` — the 1-char range on the
+        // last slot). RED before the fix: (0, 0).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = "1234".to_owned();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab_full",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab_full",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_first_tab_full",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(key_event(Key::Tab, true));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int02_first_tab_full",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_b));
+        assert_eq!(
+            two_test_sel(&ctx, scope, "otp-b"),
+            (3, 4),
+            "first Tab focus onto a full value must leave the last slot active"
+        );
+    }
+
+    #[test]
+    fn shift_tab_refocus_applies_focus_gain_otp_int_02() {
+        // OTP-INT-02 guard (passes BEFORE and AFTER the fix, by
+        // design): Shift+Tab re-focus must ALSO land the focus-gain
+        // selection. Previous-direction grants are frame-delayed via
+        // `id_next_frame` (applied in the NEXT frame's `begin_pass`),
+        // so the start-of-frame `focused` read already sees the
+        // grant — this path never had the bug. The value is shortened
+        // to "1" while B is blurred, so a re-fired focus-gain reads
+        // (1, 1) while a stale selection would still read (3, 3).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut value_a = "12".to_owned();
+        let mut value_b = "123".to_owned();
+
+        let (_, scope) = run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_shift_tab",
+            false,
+        );
+        let control_a = two_control_id(scope, "otp-a");
+        let control_b = two_control_id(scope, "otp-b");
+        ctx.memory_mut(|mem| mem.request_focus(control_b));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_shift_tab",
+            false,
+        );
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_shift_tab",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_b));
+        assert_eq!(two_test_sel(&ctx, scope, "otp-b"), (3, 3));
+
+        // Blur B by focusing A, then shorten B's value while blurred.
+        ctx.memory_mut(|mem| mem.request_focus(control_a));
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_shift_tab",
+            false,
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(control_a));
+        value_b = "1".to_owned();
+
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        });
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            input,
+            "otp_int02_shift_tab",
+            false,
+        );
+        // The Previous grant lands in the NEXT frame's `begin_pass`.
+        run_two_frame(
+            &ctx,
+            &mut value_a,
+            &mut value_b,
+            egui::RawInput::default(),
+            "otp_int02_shift_tab",
+            false,
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(control_b),
+            "Shift+Tab must move focus back to control B"
+        );
+        assert_eq!(
+            two_test_sel(&ctx, scope, "otp-b"),
+            (1, 1),
+            "Shift+Tab re-focus must re-apply focus-gain for the new value"
+        );
     }
 }
