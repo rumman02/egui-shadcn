@@ -8116,35 +8116,98 @@ fn card_demo_texture(ui: &mut egui::Ui) -> egui::ImageSource<'static> {
 }
 
 pub fn alert_demo(ui: &mut egui::Ui) {
-    ui.label("Default (no icon)");
-    ui.add_space(4.0);
-    Alert::new().id_salt("alert_demo_plain").show(ui, |ui| {
-        AlertTitle::new("Heads up!").show(ui);
-        AlertDescription::new("You can add components and dependencies to your app using the cli.")
-            .show(ui);
-    });
+    // Every section prints the rect the alert actually allocated
+    // (`Response.rect`), so S5/S6 can verify geometry from screenshots.
+    // Header: recipe position, stated honestly (spec §§0, 3.4, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Alert — callout for user attention. Active recipe: {recipe} (style: {}, mode: {mode}). Title 14px/500, 20px line-height; description 14px, 22.75px line-height; padding 10/8 nova, 16/12 base; radius 10px.",
+        theme.style.name()
+    ));
+    ui.label("D1: role=\"alert\" live-region announcement is NOT conveyed (no ARIA tree in egui). D2: tracking-tight (-0.35px/char) is NOT conveyed (no letter-spacing in egui). D4 (proposed): the action slot is a nova-only source rule; the port renders it in all styles — reviewer decides. D7: the 72px action reservation applies from frame 2 (one-frame settle). No hover/focus/disabled states, no animation (spec §4/§6).");
 
+    // Right padding implied by the laid-out geometry: outer width minus the
+    // text column, left padding, icon column + gap, and the 2px border.
+    // (The text column width is captured inside the alert closure.)
+    let right_clearance = |alert_w: f32, text_w: f32, has_icon: bool| -> f32 {
+        let (px, gap) = if nova { (10.0, 8.0) } else { (16.0, 12.0) };
+        let (icon_w, icon_gap) = if has_icon { (16.0, gap) } else { (0.0, 0.0) };
+        alert_w - text_w - px - icon_w - icon_gap - 2.0
+    };
+    let expected_right = |has_action: bool| -> f32 {
+        if nova && has_action {
+            72.0
+        } else if nova {
+            10.0
+        } else {
+            16.0
+        }
+    };
+    let long_title = "This alert title is far too long to fit on a single line and must be truncated with a trailing ellipsis, so it keeps going well past the edge of the text column in every layout the gallery can show";
+
+    // 1. Default + destructive (spec §2.2, §3.1, §3.3, §3.5).
     ui.add_space(12.0);
-    ui.label("Destructive with icon");
+    ui.label("1. Default + destructive — title 20px line-height, description 22.75px (spec §3.3/§3.5); destructive changes text only, fill stays bg-card");
     ui.add_space(4.0);
-    Alert::new()
+    let plain = Alert::new().id_salt("alert_demo_plain").show(ui, |ui| {
+        let text_w = ui.available_width();
+        let t = AlertTitle::new("Heads up!").show(ui).rect;
+        let d = AlertDescription::new(
+            "You can add components and dependencies to your app using the cli.",
+        )
+        .show(ui)
+        .rect;
+        (text_w, t, d)
+    });
+    let (text_w, t_rect, d_rect) = plain.inner;
+    ui.label(format!(
+        "measured: default title {:.1} x {:.1} px (expected h=20.0); description {:.1} x {:.1} px (expected h=22.75, one line); right clearance {:.1} px (expected {:.1})",
+        t_rect.width(),
+        t_rect.height(),
+        d_rect.width(),
+        d_rect.height(),
+        right_clearance(plain.response.rect.width(), text_w, false),
+        expected_right(false)
+    ));
+    ui.add_space(4.0);
+    let dest = Alert::new()
         .id_salt("alert_demo_destructive")
         .variant(AlertVariant::Destructive)
         .icon(Icon::CircleAlert)
         .show(ui, |ui| {
-            AlertTitle::new("Deployment failed").show(ui);
-            AlertDescription::new(
+            let text_w = ui.available_width();
+            let t = AlertTitle::new("Deployment failed").show(ui).rect;
+            let d = AlertDescription::new(
                 "Your build could not be completed. Check the logs and try again.",
             )
-            .show(ui);
+            .show(ui)
+            .rect;
+            (text_w, t, d)
         });
+    let (text_w, t_rect, d_rect) = dest.inner;
+    ui.label(format!(
+        "measured: destructive title {:.1} x {:.1} px (expected h=20.0); description {:.1} x {:.1} px (expected h=22.75, one line); right clearance {:.1} px (expected {:.1})",
+        t_rect.width(),
+        t_rect.height(),
+        d_rect.width(),
+        d_rect.height(),
+        right_clearance(dest.response.rect.width(), text_w, true),
+        expected_right(false)
+    ));
 
+    // Success and info icons (spec §4.2): the default variant keeps icons
+    // foreground-coloured (`[&>svg]:text-current`); do not recolor them per
+    // semantic.
     ui.add_space(12.0);
-    ui.label("Success and info icons");
+    ui.label("Success and info icons — default variant, icons keep text-current (spec §4.2)");
     ui.add_space(4.0);
-    // These use the default variant: the source's `[&>svg]:text-current`
-    // keeps icons foreground-colored unless the variant overrides it, so do
-    // not recolor them per semantic.
     Alert::new()
         .id_salt("alert_demo_success")
         .icon(Icon::CircleCheck)
@@ -8161,34 +8224,196 @@ pub fn alert_demo(ui: &mut egui::Ui) {
             AlertDescription::new("The API will be unavailable Sunday 02:00–04:00 UTC.").show(ui);
         });
 
+    // 2. With an action — nova reserves pr-18 = 72px TOTAL (spec §3.4).
     ui.add_space(12.0);
-    ui.label("With an action (top-right slot)");
+    ui.label("2. With an action — right clearance 72px total in nova (spec §3.4); D4: the action also renders in non-nova styles (reviewer decides)");
     ui.add_space(4.0);
-    Alert::new()
+    let action = Alert::new()
         .id_salt("alert_demo_action")
         .icon(Icon::CircleAlert)
         .show(ui, |ui| {
-            AlertTitle::new("Token expiring").show(ui);
-            AlertDescription::new("Your API token expires in 3 days.").show(ui);
+            let text_w = ui.available_width();
+            let t = AlertTitle::new("Token expiring").show(ui).rect;
+            let d = AlertDescription::new("Your API token expires in 3 days.")
+                .show(ui)
+                .rect;
             AlertAction::new().show(ui, |ui| {
                 Button::new("Renew").size(ButtonSize::Sm).show(ui);
             });
+            (text_w, t, d)
         });
+    let (text_w, t_rect, d_rect) = action.inner;
+    ui.label(format!(
+        "measured: action title {:.1} x {:.1} px (expected h=20.0); description {:.1} x {:.1} px (expected h=22.75); right clearance {:.1} px (expected {:.1})",
+        t_rect.width(),
+        t_rect.height(),
+        d_rect.width(),
+        d_rect.height(),
+        right_clearance(action.response.rect.width(), text_w, true),
+        expected_right(true)
+    ));
     ui.add_space(4.0);
-    Alert::new()
+    let action_dest = Alert::new()
         .id_salt("alert_demo_action_destructive")
         .variant(AlertVariant::Destructive)
         .icon(Icon::CircleX)
         .show(ui, |ui| {
-            AlertTitle::new("Storage quota exceeded").show(ui);
-            AlertDescription::new("Delete some files to keep syncing.").show(ui);
+            let text_w = ui.available_width();
+            let t = AlertTitle::new("Storage quota exceeded").show(ui).rect;
+            let d = AlertDescription::new("Delete some files to keep syncing.")
+                .show(ui)
+                .rect;
             AlertAction::new().show(ui, |ui| {
                 Button::new("Free up space")
                     .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Destructive)
                     .show(ui);
             });
+            (text_w, t, d)
         });
+    let (text_w, t_rect, d_rect) = action_dest.inner;
+    ui.label(format!(
+        "measured: destructive action title {:.1} x {:.1} px; description {:.1} x {:.1} px; right clearance {:.1} px (expected {:.1})",
+        t_rect.width(),
+        t_rect.height(),
+        d_rect.width(),
+        d_rect.height(),
+        right_clearance(action_dest.response.rect.width(), text_w, true),
+        expected_right(true)
+    ));
+
+    // 3. Long title (N4) — one line, trailing "…" (spec §3.3, §9.1/§9.2).
+    ui.add_space(12.0);
+    ui.label("3. Long title (N4) — must truncate to one line with a trailing \"…\", never wrap or overflow (spec §3.3)");
+    ui.add_space(4.0);
+    let lt = Alert::new()
+        .id_salt("alert_demo_long_title")
+        .icon(Icon::CircleAlert)
+        .show(ui, |ui| {
+            let text_w = ui.available_width();
+            let t = AlertTitle::new(long_title).show(ui).rect;
+            let d = AlertDescription::new(
+                "The description below the truncated title still wraps normally.",
+            )
+            .show(ui)
+            .rect;
+            (text_w, t, d)
+        });
+    let (text_w, t_rect, d_rect) = lt.inner;
+    ui.label(format!(
+        "measured: long title {:.1} x {:.1} px in a {:.1} px text column (expected: one line, h=20.0, w = text column, ends with \"…\"); description {:.1} px tall",
+        t_rect.width(),
+        t_rect.height(),
+        text_w,
+        d_rect.height()
+    ));
+    ui.add_space(4.0);
+    let lt_action = Alert::new()
+        .id_salt("alert_demo_long_title_action")
+        .variant(AlertVariant::Destructive)
+        .icon(Icon::CircleX)
+        .show(ui, |ui| {
+            let text_w = ui.available_width();
+            let t = AlertTitle::new(long_title).show(ui).rect;
+            AlertDescription::new("Long title with an action: the title truncates before the action; the 72px reservation keeps the text clear of it.")
+                .show(ui);
+            // Narrow action ("Undo", ~60px): it fits inside the 72px
+            // reservation, so the elided title stays clear of it. A wide
+            // action would overlap the text column instead (spec §9.12 —
+            // same as the browser); the §2 "Free up space" case shows that.
+            let btn_rect = AlertAction::new()
+                .show(ui, |ui| {
+                    Button::new("Undo")
+                        .size(ButtonSize::Sm)
+                        .variant(ButtonVariant::Destructive)
+                        .show(ui)
+                        .rect
+                })
+                .inner;
+            (text_w, t, btn_rect)
+        });
+    let (text_w, t_rect, btn_rect) = lt_action.inner;
+    // In nova the 72px reservation keeps the elided title clear of the
+    // action; in base (D4) there is no reservation, so the title runs
+    // under the button — the readout says so instead of asserting >= 0.
+    let action_note = if nova {
+        "expected >= 0 — text clears the action"
+    } else {
+        "D4: action is nova-only in the source; base has no 72px reservation, so the title runs under the button"
+    };
+    ui.label(format!(
+        "measured: long title + action {:.1} x {:.1} px in a {:.1} px text column; right clearance {:.1} px (expected {:.1}); title right -> button left {:.1} px ({})",
+        t_rect.width(),
+        t_rect.height(),
+        text_w,
+        right_clearance(lt_action.response.rect.width(), text_w, true),
+        expected_right(true),
+        btn_rect.left() - t_rect.right(),
+        action_note
+    ));
+
+    // 4. Multi-paragraph description — 20px gap nova / 4px base (spec §2.6).
+    ui.add_space(12.0);
+    ui.label("4. Multi-paragraph description — gap 20px nova / 4px base (spec §2.6: 16px mb-4 + 4px grid gap)");
+    ui.add_space(4.0);
+    let multi = Alert::new()
+        .id_salt("alert_demo_multi_para")
+        .icon(Icon::Info)
+        .show(ui, |ui| {
+            let t = AlertTitle::new("Two paragraphs").show(ui).rect;
+            let d = AlertDescription::new(
+                "First paragraph of the description, kept to one line.\n\nSecond paragraph of the description, also one line.",
+            )
+            .show(ui)
+            .rect;
+            (t, d)
+        });
+    let (t_rect, d_rect) = multi.inner;
+    let gap = if nova { 20.0 } else { 4.0 };
+    ui.label(format!(
+        "measured: two-paragraph description {:.1} px tall; derived gap {:.1} px (expected {:.1}; +0.5px is egui rounding each 22.75px line up to 23.0); title {:.1} px tall",
+        d_rect.height(),
+        d_rect.height() - 45.5,
+        gap,
+        t_rect.height()
+    ));
+
+    // 5. Narrow alert — no minimum width invented (spec §9.10).
+    ui.add_space(12.0);
+    ui.label("5. Narrow alert (360px) — title still truncates to one line; the 72px action clearance still holds (spec §9.10)");
+    ui.add_space(4.0);
+    let (narrow_text_w, narrow_t, narrow_alert_w, narrow_btn) = ui
+        .allocate_ui(egui::Vec2::new(360.0, 0.0), |ui| {
+            let resp = Alert::new()
+                .id_salt("alert_demo_narrow")
+                .icon(Icon::CircleAlert)
+                .show(ui, |ui| {
+                    let text_w = ui.available_width();
+                    let t = AlertTitle::new(long_title).show(ui).rect;
+                    AlertDescription::new("Narrow description wraps to the available width.")
+                        .show(ui);
+                    let btn_rect = AlertAction::new()
+                        .show(ui, |ui| {
+                            Button::new("Renew").size(ButtonSize::Sm).show(ui).rect
+                        })
+                        .inner;
+                    (text_w, t, btn_rect)
+                });
+            let (text_w, t, btn_rect) = resp.inner;
+            (text_w, t, resp.response.rect.width(), btn_rect)
+        })
+        .inner;
+    ui.label(format!(
+        "measured: narrow alert {:.1} px wide; long title {:.1} x {:.1} px in a {:.1} px text column; right clearance {:.1} px (expected {:.1}); title right -> button left {:.1} px ({})",
+        narrow_alert_w,
+        narrow_t.width(),
+        narrow_t.height(),
+        narrow_text_w,
+        right_clearance(narrow_alert_w, narrow_text_w, true),
+        expected_right(true),
+        narrow_btn.left() - narrow_t.right(),
+        action_note
+    ));
 }
 
 pub fn avatar_demo(ui: &mut egui::Ui) {
