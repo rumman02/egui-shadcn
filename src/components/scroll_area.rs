@@ -5,19 +5,31 @@
 //! `rounded-full bg-border` and whose track is `w-2.5` (10px) with `p-px`
 //! padding.
 //!
-//! The scrollbar look is applied through a *scoped* egui style
-//! (`ScrollStyle::solid` + themed handle/track colors), so the global style
-//! is never permanently mutated — nested `egui::ScrollArea`s created inside
-//! the closure inherit it.
+//! The scrollbar is egui's *floating* bar, so it overlays the viewport and
+//! takes no layout width (N14a — the viewport is `size-full`), and its
+//! outer edge is flush with the Root edge (`bar_outer_margin = 0`, N14b).
+//! egui's handle spans the bar's full cross range and cannot express the
+//! source's `p-px` thumb inset, so the handle is made invisible (all handle
+//! opacities 0) and the thumb is painted by this module instead: 8px wide,
+//! 1px inside the 10px bar on every side, radius 4 (`rounded-full`),
+//! `bg-border` in every state — the source defines no thumb hover state.
+//! Drag and track-click paging still run on egui's bar, whose geometry the
+//! painted thumb mirrors exactly (see [`scrollbar_thumb_rect`]).
 //!
-//! In egui 0.37 a solid scrollbar paints its background track with
-//! `visuals.extreme_bg_color` and the handle with
-//! `widgets.{inactive,hovered,active}.bg_fill` (using those widget visuals'
-//! `corner_radius` for the rounding). The source has *no* track
-//! (`border-l-transparent`) and a `rounded-full bg-border` thumb, so the
-//! scope sets a transparent track color and a `bg-border` handle in all
-//! three widget states. The thumb ends up `rounded-full` for free: epaint
-//! clamps the bar radius to half the 10px bar width.
+//! The viewport is one Tab stop; on focus it paints the source's
+//! `focus-visible` ring (3px `ring/50`) plus the 1px solid outline in
+//! `ring/50`.
+//!
+//! The scrollbar look is applied through a *scoped* egui style
+//! (`ScrollStyle::floating` + themed handle/track colors), so the global
+//! style is never permanently mutated — nested `egui::ScrollArea`s created
+//! inside the closure inherit it. The track is invisible
+//! (`extreme_bg_color = TRANSPARENT`, the source's `border-l-transparent`);
+//! the scoped widget `bg_fill`s stay `bg-border` in all three states (the
+//! audit-verified P0 fix). They no longer paint the handle itself (it is
+//! opacity-0) and are retained so content widgets inside the area keep
+//! their current paint — removing them would change the paint of every
+//! control nested in a scroll area, which is out of scope for this line.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -30,10 +42,25 @@
 //! ```
 
 use crate::theme::ShadcnTheme;
-use egui::{InnerResponse, Ui};
+use crate::utils::focus::{is_focused, paint_focus_ring, paint_ring};
+use egui::{CornerRadius, InnerResponse, Rect, Ui};
 
 /// The scrollbar track width (`w-2.5`).
 pub const SCROLLBAR_WIDTH: f32 = 10.0;
+
+/// The thumb width: the 10px bar minus `p-px` (1px) on each side.
+pub const SCROLLBAR_THUMB_WIDTH: f32 = 8.0;
+
+/// The thumb inset inside the bar (`p-px`, 1px on every side).
+const THUMB_INSET: f32 = 1.0;
+
+/// The thumb corner radius (`rounded-full` on the 8px thumb).
+const THUMB_RADIUS: u8 = 4;
+
+/// Minimum thumb length (egui `ScrollStyle::solid()` default).
+/// OPEN-3: no source basis — the `.tsx` states only `flex-1`
+/// (ratio-derived); never present this as spec truth.
+const THUMB_MIN_LENGTH: f32 = 12.0;
 
 /// A shadcn scroll area. See the [module docs](self) for an example.
 #[derive(Clone, Debug)]
@@ -95,28 +122,46 @@ impl ScrollArea {
 
     /// Builds the scoped scrollbar style.
     ///
-    /// Track = `w-2.5` (10px) with `p-px` margins, always-visible solid
-    /// thumb. The handle color/radius is applied separately through the
-    /// scoped widget visuals (see [`Self::show`]).
+    /// Floating bar (`N14a` — overlays the viewport, no layout width):
+    /// `floating_allocated_width = 0`, `bar_width = 10.0` (`w-2.5`),
+    /// `bar_outer_margin = 0` (`N14b` — flush with the Root edge),
+    /// `floating_width = 10.0` (never shrinks to the thin width),
+    /// `handle_min_length = 12.0` (OPEN-3, egui default, no source basis).
+    ///
+    /// egui's own handle is invisible in every state (all handle opacities
+    /// 0): it spans the bar's full cross range and cannot express the
+    /// source's `p-px` thumb inset, so S1 paints the thumb itself (8px,
+    /// 1px inset, radius 4 — see [`scrollbar_thumb_rect`]). Interaction
+    /// (drag, track-click paging) still runs on egui's bar.
     pub(crate) fn themed_scroll_style() -> egui::style::ScrollStyle {
-        let mut s = egui::style::ScrollStyle::solid();
+        let mut s = egui::style::ScrollStyle::floating();
         s.bar_width = SCROLLBAR_WIDTH; // w-2.5
-        s.bar_inner_margin = 1.0; // p-px
-        s.bar_outer_margin = 1.0;
-        s.handle_min_length = 12.0;
-        // Solid bars are always opaque; keep the handle visible.
-        s.dormant_handle_opacity = 1.0;
-        s.active_handle_opacity = 1.0;
-        s.interact_handle_opacity = 1.0;
+        s.bar_inner_margin = THUMB_INSET; // p-px (documents the inset; unused by floating cross placement)
+        s.bar_outer_margin = 0.0; // N14b: flush with the Root edge
+        s.handle_min_length = THUMB_MIN_LENGTH; // OPEN-3: egui default, no source basis
+        s.floating_width = SCROLLBAR_WIDTH; // never shrink to the thin width
+        s.floating_allocated_width = 0.0; // N14a: no layout width
+        s.foreground_color = false; // handle uses the widget bg_fill (= border), as before
+                                    // egui's handle is invisible; the thumb is painted by this module.
+        s.dormant_handle_opacity = 0.0;
+        s.active_handle_opacity = 0.0;
+        s.interact_handle_opacity = 0.0;
+        // The track is invisible (extreme_bg_color = TRANSPARENT, below);
+        // the background opacities are 0 for the same reason.
+        s.dormant_background_opacity = 0.0;
+        s.active_background_opacity = 0.0;
+        s.interact_background_opacity = 0.0;
         s
     }
 
     /// Applies the shadcn scrollbar colors to the scoped visuals.
     ///
     /// The track becomes invisible (the source only paints the thumb) and
-    /// the handle uses the `bg-border` token in every widget state. No
-    /// corner-radius override is needed: epaint clamps the bar radius to
-    /// half the 10px bar width, which is the source's `rounded-full` thumb.
+    /// the handle uses the `bg-border` token in every widget state. The
+    /// handle itself is painted invisible by the opacities in
+    /// [`Self::themed_scroll_style`] (egui's handle cannot express the
+    /// `p-px` inset); these `bg_fill`s are retained so content widgets
+    /// inside the area keep their current paint — see the module docs.
     pub(crate) fn themed_scroll_visuals(visuals: &mut egui::Visuals, border: egui::Color32) {
         visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
         visuals.widgets.inactive.bg_fill = border;
@@ -152,13 +197,104 @@ impl ScrollArea {
                 }
                 content(ui)
             });
-            // egui 0.37's ScrollAreaOutput has no Response; synthesize one
-            // over the visible inner rect.
-            let response = ui.allocate_rect(inner.inner_rect, egui::Sense::hover());
+
+            // Paint the thumbs. egui's own handle is invisible in every
+            // state (opacities 0 in `themed_scroll_style`); the source
+            // thumb is 8px wide, 1px inside the 10px bar on every side,
+            // radius 4, `bg-border` in all states (no hover state, §4.2).
+            // Drag and track-click paging run on egui's bar, whose geometry
+            // this mirrors exactly.
+            let offset = inner.state.clamped_offset();
+            let clip = ui.clip_rect();
+            if self.vertical {
+                if let Some(thumb) =
+                    scrollbar_thumb_rect(true, inner.inner_rect, inner.content_size, offset, clip)
+                {
+                    ui.painter()
+                        .rect_filled(thumb, CornerRadius::same(THUMB_RADIUS), p.border);
+                }
+            }
+            if self.horizontal {
+                if let Some(thumb) =
+                    scrollbar_thumb_rect(false, inner.inner_rect, inner.content_size, offset, clip)
+                {
+                    ui.painter()
+                        .rect_filled(thumb, CornerRadius::same(THUMB_RADIUS), p.border);
+                }
+            }
+
+            // The viewport is one Tab stop (spec §7): focusable but not
+            // interactive, so it never steals clicks from the content
+            // (dialog.rs precedent). egui 0.37's ScrollAreaOutput has no
+            // Response; synthesize one over the visible inner rect.
+            // On focus, paint the source's `focus-visible` ring (3px
+            // `ring/50`) plus the 1px solid outline in `ring/50`
+            // (`globals.css:193`), just outside the ring. D2: egui cannot
+            // distinguish keyboard from pointer focus, so the ring shows on
+            // any focus.
+            let response =
+                ui.allocate_rect(inner.inner_rect, egui::Sense::focusable_noninteractive());
+            if is_focused(&response) {
+                paint_focus_ring(ui, &response, 0.0, true);
+                let ring = crate::theme::color_alpha(p.ring, 0.5);
+                paint_ring(ui.painter(), response.rect.expand(4.0), ring, 1.0, 0.0);
+            }
             InnerResponse::new(inner.inner, response)
         });
         outer.inner
     }
+}
+
+/// Computes the thumb rect for one axis, mirroring egui 0.37's
+/// `calculate_handle_rect` (`containers/scroll_area.rs`) with the source's
+/// `p-px` inset applied: the thumb is 8px wide inside the 10px bar
+/// (`rounded-full` → radius 4), 1px inside the bar on every side.
+///
+/// `viewport` is the scroll area's inner rect (== the Root rect for the
+/// floating bar); `content_size` / `offset` are the along-axis content size
+/// and clamped scroll offset from the `ScrollAreaOutput`; `clip_rect` is
+/// the outer ui's clip rect — egui clamps the bar so it stays visible when
+/// the area is scrolled out of view in a parent (spec §9 item 3).
+///
+/// Returns `None` when the content fits (no bar), matching egui's
+/// `content_is_too_large` check.
+pub(crate) fn scrollbar_thumb_rect(
+    vertical: bool,
+    viewport: Rect,
+    content_size: egui::Vec2,
+    offset: egui::Vec2,
+    clip_rect: Rect,
+) -> Option<Rect> {
+    let d = usize::from(vertical); // 1 = y (vertical), 0 = x (horizontal)
+    let along = viewport.size()[d];
+    let content = content_size[d];
+    // egui: `limit_rect.size()[d].ceil() < content_size[d]`
+    if along.ceil() >= content {
+        return None;
+    }
+    let max_offset = content - along;
+    // egui: `max_cross = min(outer_rect.max, clip_rect.max) - outer_margin`
+    // (outer_margin is 0 — N14b flush; outer_rect == viewport for floating).
+    let cross_max = viewport.max[1 - d].min(clip_rect.max[1 - d]);
+    let bar_min_cross = cross_max - SCROLLBAR_WIDTH;
+    // Along-axis bar range (egui's `scroll_bar_rect` defaults to inner_rect).
+    let bar_min = viewport.min[d];
+    let bar_max = viewport.max[d];
+    let from_content = |c: f32| egui::emath::remap_clamp(c, 0.0..=content, bar_min..=bar_max);
+    let handle_size =
+        (from_content(offset[d] + along) - from_content(offset[d])).max(THUMB_MIN_LENGTH);
+    let handle_start = egui::emath::remap_clamp(
+        offset[d],
+        0.0..=max_offset,
+        bar_min..=(bar_max - handle_size),
+    );
+    let mut min = viewport.min;
+    let mut max = viewport.max;
+    min[1 - d] = bar_min_cross + THUMB_INSET;
+    max[1 - d] = cross_max - THUMB_INSET;
+    min[d] = handle_start;
+    max[d] = handle_start + handle_size;
+    Some(Rect::from_min_max(min, max))
 }
 
 #[cfg(test)]
@@ -170,10 +306,66 @@ mod tests {
     #[test]
     fn scrollbar_style_matches_source() {
         let s = ScrollArea::themed_scroll_style();
+        assert!(s.floating); // N14a: overlay — no layout width
         assert_eq!(s.bar_width, 10.0); // w-2.5
         assert_eq!(s.bar_inner_margin, 1.0); // p-px
-        assert!(!s.floating); // solid, always allocates space
-        assert_eq!(s.dormant_handle_opacity, 1.0);
+        assert_eq!(s.bar_outer_margin, 0.0); // N14b: flush with the Root edge
+        assert_eq!(s.floating_width, 10.0); // never shrinks to the thin width
+        assert_eq!(s.floating_allocated_width, 0.0); // N14a: no layout width
+        assert_eq!(s.handle_min_length, 12.0); // OPEN-3: egui default, no source basis
+                                               // egui's own handle is invisible in every state; S1 paints the
+                                               // thumb itself (see `scrollbar_thumb_rect`).
+        assert_eq!(s.dormant_handle_opacity, 0.0);
+        assert_eq!(s.active_handle_opacity, 0.0);
+        assert_eq!(s.interact_handle_opacity, 0.0);
+        assert_eq!(s.dormant_background_opacity, 0.0);
+        assert_eq!(s.active_background_opacity, 0.0);
+        assert_eq!(s.interact_background_opacity, 0.0);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rect_matches_source() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0));
+        let clip = viewport; // unclipped
+                             // Vertical, content twice the viewport, offset 0: thumb is the top
+                             // half of the bar, 8px wide, 1px inside the bar on every side.
+        let thumb = scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 600.0), Vec2::ZERO, clip)
+            .expect("bar when content overflows");
+        assert_eq!(thumb.width(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.x, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.x, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.min.y, 0.0);
+        assert_eq!(thumb.height(), 150.0); // half the content visible -> half the bar
+                                           // Scrolled to the bottom: the thumb sits at the bar's bottom end.
+        let thumb = scrollbar_thumb_rect(
+            true,
+            viewport,
+            Vec2::new(300.0, 600.0),
+            Vec2::new(0.0, 300.0),
+            clip,
+        )
+        .expect("bar when content overflows");
+        assert_eq!(thumb.max.y, 300.0);
+        assert_eq!(thumb.height(), 150.0);
+        // Content fits: no thumb.
+        assert!(
+            scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 300.0), Vec2::ZERO, clip)
+                .is_none()
+        );
+        // Horizontal mirror: 8px tall, 1px inside the bar top/bottom.
+        let thumb =
+            scrollbar_thumb_rect(false, viewport, Vec2::new(600.0, 300.0), Vec2::ZERO, clip)
+                .expect("bar when content overflows");
+        assert_eq!(thumb.height(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.y, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.y, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.width(), 150.0);
+        // Clipped viewport: the bar moves inward so it stays visible
+        // (egui's "move the scrollbar so it is visible" clamp).
+        let clip = Rect::from_min_size(Pos2::ZERO, Vec2::new(280.0, 300.0));
+        let thumb = scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 600.0), Vec2::ZERO, clip)
+            .expect("bar when content overflows");
+        assert_eq!(thumb.max.x, 280.0 - THUMB_INSET);
     }
 
     #[test]
@@ -205,6 +397,148 @@ mod tests {
         // The default (unscoped) style must not be mutated.
         let global = ctx.style_of(egui::Theme::Light).visuals.clone();
         assert_ne!(global.extreme_bg_color, egui::Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn scrollbar_overlays_content() {
+        // N14a: a vertical scroll area with overflowing content in a
+        // 300px-wide Ui — the viewport keeps the full 300px because the bar
+        // overlays it and takes no layout width. With the old solid bar the
+        // content width was 288px (300 - 10 bar - 2 margins).
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut content_width = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_overlay_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+            );
+            ScrollArea::new().height(120.0).show(ui, |ui| {
+                content_width = Some(ui.available_width());
+                for i in 0..20 {
+                    ui.label(format!("Row {i}"));
+                }
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(content_width, Some(300.0));
+    }
+
+    #[test]
+    fn thumb_painted_8px_wide() {
+        // Painted-shape closing evidence for the 8px thumb (D4): exactly
+        // one border-filled rect, 8px wide, 1px inside the bar's right edge,
+        // radius 4; no 10px-wide border-filled rect (the old egui handle).
+        let ctx = egui::Context::default();
+        let preset = Preset::default();
+        preset.build(Mode::Light).install(&ctx);
+        let border = preset.build(Mode::Light).palette.border;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_thumb_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+            );
+            ScrollArea::new()
+                .height(120.0)
+                .id_salt("thumb")
+                .show(ui, |ui| {
+                    for i in 0..20 {
+                        ui.label(format!("Row {i}"));
+                    }
+                });
+        });
+        out.textures_delta.clear();
+        let fills: Vec<(Rect, CornerRadius)> = out
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.fill == border => Some((rs.rect, rs.corner_radius)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), 1, "thumb fills: {fills:?}");
+        let (thumb, radius) = fills[0];
+        assert_eq!(thumb.width(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.x, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.x, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.min.y, 0.0);
+        assert_eq!(radius, CornerRadius::same(THUMB_RADIUS));
+    }
+
+    #[test]
+    fn viewport_focus_ring_paints_on_focus() {
+        // The viewport is one Tab stop (spec §7); on focus it paints the
+        // 3px `ring/50` ring plus the 1px solid outline in `ring/50`.
+        let ctx = egui::Context::default();
+        let preset = Preset::default();
+        preset.build(Mode::Light).install(&ctx);
+        let ring50 = crate::theme::color_alpha(preset.build(Mode::Light).palette.ring, 0.5);
+
+        let frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut id = egui::Id::NULL;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("scroll_area_focus_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                id = ScrollArea::new()
+                    .height(120.0)
+                    .id_salt("focus_ring")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                    })
+                    .response
+                    .id;
+            });
+            out.textures_delta.clear();
+            (id, out.shapes)
+        };
+
+        // Frame 1: render, record the viewport response id; then focus it.
+        let (id, _) = frame(&ctx, egui::RawInput::default());
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Frame 2: the focused viewport paints the ring + the outline.
+        let (_, shapes) = frame(&ctx, egui::RawInput::default());
+        let ring_strokes: Vec<(Rect, egui::Stroke)> = shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.stroke.color == ring50 => Some((rs.rect, rs.stroke)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            ring_strokes.iter().any(|(_, s)| s.width == 3.0),
+            "3px focus ring in ring/50 painted; ring strokes: {ring_strokes:?}"
+        );
+        assert!(
+            ring_strokes.iter().any(|(_, s)| s.width == 1.0),
+            "1px focus outline in ring/50 painted; ring strokes: {ring_strokes:?}"
+        );
+        // The ring sits just outside the viewport rect (expanded by 1px,
+        // 3px stroke outside); the outline sits just outside the ring.
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 120.0));
+        assert!(
+            ring_strokes
+                .iter()
+                .any(|(r, s)| s.width == 3.0 && *r == viewport.expand(1.0)),
+            "ring rect is the viewport expanded by 1px; ring strokes: {ring_strokes:?}"
+        );
+        assert!(
+            ring_strokes
+                .iter()
+                .any(|(r, s)| s.width == 1.0 && *r == viewport.expand(4.0)),
+            "outline rect is the viewport expanded by 4px; ring strokes: {ring_strokes:?}"
+        );
     }
 
     #[test]
