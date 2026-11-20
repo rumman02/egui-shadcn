@@ -4,9 +4,10 @@
 //! `TableHeader` / `TableBody` / `TableFooter` sections of `TableRow`s made
 //! of `TableHead` (`h-10 px-2 font-medium`) and `TableCell` (`p-2`) cells,
 //! ending with an optional `TableCaption` (`mt-4 text-sm
-//! text-muted-foreground`). Rows have `border-b`, `hover:bg-muted/50` and
-//! `data-[state=selected]:bg-muted`; the footer is `border-t bg-muted/50
-//! font-medium`; the body's last row drops its border.
+//! text-muted-foreground`). Rows have `border-b`, `hover:bg-muted/50`,
+//! `has-aria-expanded:bg-muted/50` and `data-[state=selected]:bg-muted`;
+//! the footer is `border-t bg-muted/50 font-medium`; the body's last row
+//! drops its border.
 //!
 //! Columns: give [`TableHead`]/[`TableCell`] an explicit `.width(f32)` to
 //! align columns across rows; cells without a width take the remaining
@@ -17,13 +18,22 @@
 //! [`ScrollArea`](crate::components::ScrollArea)::new().horizontal(true).
 //! Rows only sense hover by default (they are not buttons in the source);
 //! call [`TableRow::interactive`] to make rows clickable for
-//! click-to-select recipes. The caption is the typography
+//! click-to-select recipes. Expanded rows render `bg-muted/50` via
+//! [`TableRow::expanded`]; cells holding a checkbox take `pr-0` and a 2px
+//! downward shift via [`TableCell::checkbox_cell`] /
+//! [`TableHead::checkbox_cell`]. The caption is the typography
 //! [`TableCaption`](crate::components::typography::TableCaption) slot (the
 //! source adds `mt-4`, so give it 16px of space above).
 //!
 //! Known gap: the body/footer's last-row border drop (`border-0`) is
 //! learned over two frames, so the very first frame after a resize paints
-//! the final row's bottom border one frame late.
+//! the final row's bottom border one frame late. Header rows always keep
+//! their bottom borders (spec §4.5, N9) — the tracker applies to
+//! body/footer sections only.
+//!
+//! The `transition-colors` 150ms fade (§6) renders as an instant recolour:
+//! egui has no per-property CSS transitions, so row backgrounds are set per
+//! frame (documented limitation D2, not a defect).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -45,11 +55,15 @@
 //! });
 //! ```
 
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, fonts, Palette, ShadcnTheme};
 use egui::{Color32, FontId, InnerResponse, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 /// The row background for its state: `data-[state=selected]:bg-muted`,
-/// `hover:bg-muted/50` (pure, unit-testable).
+/// `hover:bg-muted/50` (pure, unit-testable). Selected wins over hover —
+/// it is the opaque fill while hover is half-strength (spec §4.3–§4.4).
+/// Expanded rows render the same `bg-muted/50` value as hover
+/// (`has-aria-expanded:bg-muted/50`, spec §4.4), so callers pass
+/// `hovered || expanded` for the `hovered` argument.
 pub(crate) fn row_bg(p: &Palette, selected: bool, hovered: bool) -> Color32 {
     if selected {
         p.muted
@@ -57,6 +71,40 @@ pub(crate) fn row_bg(p: &Palette, selected: bool, hovered: bool) -> Color32 {
         color_alpha(p.muted, 0.5)
     } else {
         Color32::TRANSPARENT
+    }
+}
+
+/// Cell inner margins: `p-2` (8px all sides) by default. A cell holding a
+/// checkbox (`[&:has([role=checkbox])]:pr-0`, spec §2.6–2.7) takes no right
+/// padding, and its content shifts 2px down (`translate-y-[2px]`); the
+/// bottom margin shrinks by 2px so the cell's total height is unchanged —
+/// a transform moves the content without affecting layout.
+pub(crate) fn cell_margins(checkbox_cell: bool) -> egui::Margin {
+    if checkbox_cell {
+        egui::Margin {
+            left: TABLE_CELL_PADDING as i8,
+            right: 0,
+            top: TABLE_CELL_PADDING as i8 + 2,
+            bottom: TABLE_CELL_PADDING as i8 - 2,
+        }
+    } else {
+        egui::Margin::same(TABLE_CELL_PADDING as i8)
+    }
+}
+
+/// Head font: `font-medium` (500) via the embedded Inter Medium face
+/// (spec §2.6, §5.2).
+pub(crate) fn head_font() -> FontId {
+    fonts::medium(crate::theme::tokens::type_scale::SM)
+}
+
+/// Cell text font: medium in footer sections — footer cells inherit
+/// `font-medium` from the `tfoot` (spec §2.4) — regular elsewhere.
+pub(crate) fn cell_text_font(medium: bool) -> FontId {
+    if medium {
+        head_font()
+    } else {
+        FontId::proportional(crate::theme::tokens::type_scale::SM)
     }
 }
 
@@ -150,10 +198,16 @@ mod tracker {
     }
 }
 
-/// Section context for rows (body/footer membership and last-row tracking).
+/// Section context for rows: last-row tracking plus the per-section rules
+/// rows and cells need (spec §2.4, §4.5).
 #[derive(Clone, Copy, Debug)]
 struct SectionCtx {
     tracker_id: egui::Id,
+    /// Only body/footer sections drop their last row's bottom border;
+    /// header rows keep theirs (`[&_tr]:border-b`, no exception — N9).
+    drops_last_border: bool,
+    /// Footer cells inherit `font-medium` from the `tfoot` (spec §2.4).
+    medium_text: bool,
 }
 
 fn section_stack_id() -> egui::Id {
@@ -242,7 +296,14 @@ impl TableHeader {
             None => ui.auto_id_with("shadcn_table_header"),
         };
         tracker::begin(ui, id);
-        push_section(ui, SectionCtx { tracker_id: id });
+        push_section(
+            ui,
+            SectionCtx {
+                tracker_id: id,
+                drops_last_border: false,
+                medium_text: false,
+            },
+        );
         let inner = ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             content(ui)
@@ -278,7 +339,14 @@ impl TableBody {
             None => ui.auto_id_with("shadcn_table_body"),
         };
         tracker::begin(ui, id);
-        push_section(ui, SectionCtx { tracker_id: id });
+        push_section(
+            ui,
+            SectionCtx {
+                tracker_id: id,
+                drops_last_border: true,
+                medium_text: false,
+            },
+        );
         let inner = ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             content(ui)
@@ -320,7 +388,14 @@ impl TableFooter {
         let band_idx = painter.add(egui::Shape::Noop);
 
         tracker::begin(ui, id);
-        push_section(ui, SectionCtx { tracker_id: id });
+        push_section(
+            ui,
+            SectionCtx {
+                tracker_id: id,
+                drops_last_border: true,
+                medium_text: true,
+            },
+        );
         let inner = ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             content(ui)
@@ -357,12 +432,14 @@ impl TableFooter {
 }
 
 /// `TableRow` — `border-b hover:bg-muted/50
-/// data-[state=selected]:bg-muted`. Rows report hover via the response; the
-/// source's rows are not buttons, so they only sense hover unless
-/// [`TableRow::interactive`] opts them into click events.
+/// has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted`. Rows
+/// report hover via the response; the source's rows are not buttons, so
+/// they only sense hover unless [`TableRow::interactive`] opts them into
+/// click events.
 #[derive(Clone, Debug, Default)]
 pub struct TableRow {
     selected: bool,
+    expanded: bool,
     interactive: bool,
     id_salt: Option<String>,
 }
@@ -372,6 +449,7 @@ impl TableRow {
     pub fn new() -> Self {
         Self {
             selected: false,
+            expanded: false,
             interactive: false,
             id_salt: None,
         }
@@ -380,6 +458,16 @@ impl TableRow {
     /// Marks the row `data-state="selected"`.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Marks the row expanded (`has-aria-expanded:bg-muted/50`). The
+    /// source defines the style rule only — expansion state is owned by the
+    /// consumer (data-table, Batch G); this builder is the port mapping
+    /// (spec §4.4, OPEN-2/OPEN-5: the `aria-expanded` placement is open,
+    /// the requirement is frozen). Selected still wins over expanded.
+    pub fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = expanded;
         self
     }
 
@@ -410,11 +498,13 @@ impl TableRow {
             None => ui.auto_id_with("shadcn_table_row"),
         };
 
-        // Last row of a body/footer drops its bottom border.
+        // Last row of a body/footer drops its bottom border; header rows
+        // keep theirs (spec §4.5, N9 — the section's `drops_last_border`
+        // flag, not the row's position, decides).
         let mut is_last = false;
         if let Some(section) = current_section(ui) {
             let (_, last) = tracker::next_index(ui, section.tracker_id);
-            is_last = last;
+            is_last = last && section.drops_last_border;
         }
 
         let inner = ui.horizontal(|ui| {
@@ -436,7 +526,9 @@ impl TableRow {
             egui::Shape::Rect(egui::epaint::RectShape::filled(
                 rect,
                 0,
-                row_bg(&p, self.selected, hovered),
+                // Expanded rows render the same `bg-muted/50` as hover
+                // (spec §4.4), so `expanded` ORs into the hovered arm.
+                row_bg(&p, self.selected, hovered || self.expanded),
             )),
         );
         if !is_last {
@@ -459,6 +551,7 @@ impl TableRow {
 pub struct TableHead {
     text: String,
     width: Option<f32>,
+    checkbox_cell: bool,
     id_salt: Option<String>,
 }
 
@@ -468,6 +561,7 @@ impl TableHead {
         Self {
             text: text.into(),
             width: None,
+            checkbox_cell: false,
             id_salt: None,
         }
     }
@@ -476,6 +570,15 @@ impl TableHead {
     /// space; give every non-last column a width to align rows).
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// Marks the cell as holding a checkbox (`[&:has([role=checkbox])]`):
+    /// the cell takes no right padding (`pr-0`, spec §2.6). The checkbox
+    /// itself is translated 2px down — that rule applies to content shown
+    /// via [`Self::show_with`]; a text head has no checkbox to translate.
+    pub fn checkbox_cell(mut self, checkbox_cell: bool) -> Self {
+        self.checkbox_cell = checkbox_cell;
         self
     }
 
@@ -490,7 +593,7 @@ impl TableHead {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let w = self.width.unwrap_or_else(|| ui.available_width());
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        let font = head_font();
         let galley = ui.painter().layout_no_wrap(self.text, font, p.foreground);
 
         let cell_w = w.min(ui.available_width());
@@ -508,14 +611,44 @@ impl TableHead {
         }
         response
     }
+
+    /// Renders the header cell with arbitrary content (e.g. a select-all
+    /// checkbox, spec §2.6/§9.6). The cell keeps the fixed `h-10` height;
+    /// with `.checkbox_cell(true)` the content takes `pr-0` and shifts 2px
+    /// down (`translate-y-[2px]`), matching the checkbox-cell rules.
+    pub fn show_with<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+        let w = self.width.unwrap_or_else(|| ui.available_width());
+        let cell_w = w.min(ui.available_width());
+        let margins = cell_margins(self.checkbox_cell);
+        // Allocate the exact 40px rect first: `allocate_ui_with_layout`
+        // would shrink to the space actually used, which would break the
+        // fixed `h-10` height for short content.
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(cell_w, TABLE_HEAD_HEIGHT), Sense::hover());
+        let inner = ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            |ui| {
+                egui::Frame::new().inner_margin(margins).show(ui, |ui| {
+                    ui.set_min_width((cell_w - margins.leftf() - margins.rightf()).max(0.0));
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    content(ui)
+                })
+            },
+        );
+        InnerResponse::new(inner.inner.inner, response)
+    }
 }
 
 /// `TableCell` — `p-2 align-middle whitespace-nowrap`. Either set the text
 /// with [`TableCell::text`] or show arbitrary content with [`Self::show`].
+/// A cell holding a checkbox uses [`Self::checkbox_cell`].
 #[derive(Clone, Debug, Default)]
 pub struct TableCell {
     text: Option<String>,
     width: Option<f32>,
+    checkbox_cell: bool,
     id_salt: Option<String>,
 }
 
@@ -530,6 +663,7 @@ impl TableCell {
         Self {
             text: Some(text.into()),
             width: None,
+            checkbox_cell: false,
             id_salt: None,
         }
     }
@@ -537,6 +671,16 @@ impl TableCell {
     /// Fixes the column width (see [`TableHead::width`]).
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// Marks the cell as holding a checkbox (`[&:has([role=checkbox])]`):
+    /// the cell takes no right padding (`pr-0`) and its content shifts 2px
+    /// down (`[&>[role=checkbox]]:translate-y-[2px]`, spec §2.7). The shift
+    /// is relative to the cell's content origin; the cell's total height is
+    /// unchanged (see [`cell_margins`]).
+    pub fn checkbox_cell(mut self, checkbox_cell: bool) -> Self {
+        self.checkbox_cell = checkbox_cell;
         self
     }
 
@@ -550,13 +694,12 @@ impl TableCell {
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let w = self.width.unwrap_or_else(|| ui.available_width());
         let cell_w = w.min(ui.available_width());
-        egui::Frame::new()
-            .inner_margin(egui::Margin::same(TABLE_CELL_PADDING as i8))
-            .show(ui, |ui| {
-                ui.set_min_width((cell_w - TABLE_CELL_PADDING * 2.0).max(0.0));
-                ui.spacing_mut().item_spacing.y = 0.0;
-                content(ui)
-            })
+        let margins = cell_margins(self.checkbox_cell);
+        egui::Frame::new().inner_margin(margins).show(ui, |ui| {
+            ui.set_min_width((cell_w - margins.leftf() - margins.rightf()).max(0.0));
+            ui.spacing_mut().item_spacing.y = 0.0;
+            content(ui)
+        })
     }
 
     /// Renders a text cell.
@@ -564,10 +707,15 @@ impl TableCell {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let text = self.text.clone().unwrap_or_default();
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+        // Footer cells inherit `font-medium` from the `tfoot` (spec §2.4);
+        // other cells render at regular weight. Text is not a checkbox, so
+        // the 2px shift does not apply here — only the `pr-0` does.
+        let medium = current_section(ui).map(|s| s.medium_text).unwrap_or(false);
+        let font = cell_text_font(medium);
         let galley = ui.painter().layout_no_wrap(text, font, p.foreground);
         let w = self.width.unwrap_or_else(|| ui.available_width());
-        let cell_w = (galley.size().x + TABLE_CELL_PADDING * 2.0)
+        let margins = cell_margins(self.checkbox_cell);
+        let cell_w = (galley.size().x + margins.leftf() + margins.rightf())
             .max(w)
             .min(ui.available_width());
         let (rect, response) = ui.allocate_exact_size(
@@ -577,7 +725,7 @@ impl TableCell {
         if ui.is_rect_visible(rect) {
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + TABLE_CELL_PADDING,
+                    rect.left() + margins.leftf(),
                     rect.center().y - galley.size().y * 0.5,
                 ),
                 galley,
@@ -611,10 +759,275 @@ mod tests {
     }
 
     #[test]
+    fn expanded_rows_render_the_hover_fill() {
+        // N7 (spec §4.4): an expanded row renders `bg-muted/50` — the same
+        // value as hover. `TableRow::show` passes `hovered || expanded` to
+        // `row_bg`, so the expanded fill is the hover fill; the
+        // painted-shape test below pins the wiring end-to-end. Selected
+        // still wins over expanded (derived-by-value, §4.4).
+        let p = palette(Mode::Light);
+        assert_eq!(row_bg(&p, false, true), color_alpha(p.muted, 0.5));
+        assert_eq!(row_bg(&p, true, true), p.muted);
+    }
+
+    #[test]
     fn head_geometry_matches_source() {
         // h-10 px-2
         assert_eq!(TABLE_HEAD_HEIGHT, 40.0);
         assert_eq!(TABLE_CELL_PADDING, 8.0);
+    }
+
+    #[test]
+    fn head_and_footer_fonts_are_medium() {
+        // `font-medium` (500) on the head (spec §2.6) and on footer cells
+        // via inheritance (spec §2.4) — the embedded Inter Medium face.
+        assert_eq!(head_font().family, fonts::medium_family());
+        assert_eq!(head_font().size, crate::theme::tokens::type_scale::SM);
+        assert_eq!(cell_text_font(true).family, fonts::medium_family());
+        assert_eq!(
+            cell_text_font(false).family,
+            FontId::proportional(crate::theme::tokens::type_scale::SM).family
+        );
+    }
+
+    #[test]
+    fn checkbox_cell_padding_rules() {
+        // `pr-0` + 2px downward content shift, total height unchanged
+        // (spec §2.6–2.7, N8).
+        let plain = cell_margins(false);
+        assert_eq!(
+            (plain.left, plain.right, plain.top, plain.bottom),
+            (8, 8, 8, 8)
+        );
+        let checkbox = cell_margins(true);
+        assert_eq!(
+            (checkbox.left, checkbox.right, checkbox.top, checkbox.bottom),
+            (8, 0, 10, 6)
+        );
+    }
+
+    /// Flattens painted shapes into their line segments (recursing into
+    /// `Shape::Vec`).
+    fn line_segments(shapes: &[egui::epaint::ClippedShape]) -> Vec<([Pos2; 2], egui::Stroke)> {
+        fn push(shape: &egui::Shape, out: &mut Vec<([Pos2; 2], egui::Stroke)>) {
+            match shape {
+                egui::Shape::LineSegment { points, stroke } => {
+                    out.push((*points, *stroke));
+                }
+                egui::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        push(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            push(&c.shape, &mut out);
+        }
+        out
+    }
+
+    /// Flattens painted shapes into their `RectShape`s (recursing into
+    /// `Shape::Vec`).
+    fn rect_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::epaint::RectShape> {
+        fn push(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(r) => out.push(r.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        push(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for c in shapes {
+            push(&c.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn header_rows_keep_border_body_last_row_drops_it() {
+        // N9 (P1, spec §4.5) + N7 (spec §4.4): the header's last row — the
+        // header/body divider — keeps its `border-b` from frame 2 onward,
+        // while the body's last row drops its border; an expanded non-last
+        // row keeps its border and paints `bg-muted/50`. The header-border
+        // bug only shows from frame 2 (the tracker learns totals across
+        // frames), so this test runs two frames and judges the second
+        // frame's painted shapes.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let p = palette(Mode::Light);
+        let header_rect = std::cell::Cell::new(Rect::NOTHING);
+        let body_first_rect = std::cell::Cell::new(Rect::NOTHING);
+        let expanded_rect = std::cell::Cell::new(Rect::NOTHING);
+        let body_last_rect = std::cell::Cell::new(Rect::NOTHING);
+        let footer_rect = std::cell::Cell::new(Rect::NOTHING);
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("table_n9_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                Table::new().show(ui, |ui| {
+                    TableHeader::new().show(ui, |ui| {
+                        let r = TableRow::new().show(ui, |ui| {
+                            TableHead::new("Invoice").show(ui);
+                            TableHead::new("Amount").width(90.0).show(ui);
+                        });
+                        header_rect.set(r.response.rect);
+                    });
+                    TableBody::new().show(ui, |ui| {
+                        let r = TableRow::new().show(ui, |ui| {
+                            TableCell::text("INV-001").show_text(ui);
+                            TableCell::text("$250.00").width(90.0).show_text(ui);
+                        });
+                        body_first_rect.set(r.response.rect);
+                        let r = TableRow::new().expanded(true).show(ui, |ui| {
+                            TableCell::text("INV-002").show_text(ui);
+                            TableCell::text("$125.00").width(90.0).show_text(ui);
+                        });
+                        expanded_rect.set(r.response.rect);
+                        let r = TableRow::new().show(ui, |ui| {
+                            TableCell::text("INV-003").show_text(ui);
+                            TableCell::text("$300.00").width(90.0).show_text(ui);
+                        });
+                        body_last_rect.set(r.response.rect);
+                    });
+                    TableFooter::new().show(ui, |ui| {
+                        let r = TableRow::new().show(ui, |ui| {
+                            TableCell::text("Total").show_text(ui);
+                            TableCell::text("$675.00").width(90.0).show_text(ui);
+                        });
+                        footer_rect.set(r.response.rect);
+                    });
+                });
+            });
+            shapes = std::mem::take(&mut out.shapes);
+            out.textures_delta.clear();
+        }
+        let segments = line_segments(&shapes);
+        // A 1px border line at a row's bottom edge, in the border token.
+        let has_border_at = |rect: Rect| {
+            let y = rect.bottom() - 0.5;
+            segments.iter().any(|(pts, stroke)| {
+                (pts[0].y - y).abs() < 0.01
+                    && (pts[1].y - y).abs() < 0.01
+                    && (pts[0].x - rect.left()).abs() < 0.01
+                    && (pts[1].x - rect.right()).abs() < 0.01
+                    && stroke.color == p.border
+                    && (stroke.width - 1.0).abs() < 0.01
+            })
+        };
+        assert!(
+            has_border_at(header_rect.get()),
+            "header's last row keeps its border-b (N9)"
+        );
+        assert!(
+            has_border_at(body_first_rect.get()),
+            "body non-last row keeps its border"
+        );
+        assert!(
+            has_border_at(expanded_rect.get()),
+            "expanded non-last row keeps its border"
+        );
+        assert!(
+            !has_border_at(body_last_rect.get()),
+            "body's last row drops its border"
+        );
+        assert!(
+            !has_border_at(footer_rect.get()),
+            "footer's last row drops its border"
+        );
+        // Footer band's `border-t` paints at the band top.
+        let band_y = footer_rect.get().top() + 0.5;
+        assert!(
+            segments.iter().any(|(pts, stroke)| {
+                (pts[0].y - band_y).abs() < 0.01
+                    && (pts[1].y - band_y).abs() < 0.01
+                    && stroke.color == p.border
+            }),
+            "footer top border present"
+        );
+        // Expanded row fill: `bg-muted/50` (N7).
+        let rects = rect_shapes(&shapes);
+        assert!(
+            rects
+                .iter()
+                .any(|r| r.rect == expanded_rect.get() && r.fill == color_alpha(p.muted, 0.5)),
+            "expanded row renders bg-muted/50"
+        );
+    }
+
+    #[test]
+    fn checkbox_cell_content_shifts_down_2px() {
+        // N8 (spec §2.6–2.7): a checkbox cell's content sits 2px lower
+        // than in a plain cell (`translate-y-[2px]`), with the same total
+        // height — measured at the checkbox's allocated rect, in a body
+        // cell and in a header cell (`show_with`).
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        for checkbox_cell in [false, true] {
+            let mut flag = false;
+            let cell_top = std::cell::Cell::new(0.0f32);
+            let box_top = std::cell::Cell::new(0.0f32);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("table_checkbox_cell_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                let resp = TableCell::new()
+                    .checkbox_cell(checkbox_cell)
+                    .show(ui, |ui| {
+                        crate::components::checkbox::Checkbox::new(&mut flag).show(ui)
+                    });
+                cell_top.set(resp.response.rect.min.y);
+                box_top.set(resp.inner.rect.min.y);
+            });
+            out.textures_delta.clear();
+            let expected = if checkbox_cell { 10.0 } else { 8.0 };
+            assert!(
+                (box_top.get() - cell_top.get() - expected).abs() < 0.01,
+                "cell checkbox_cell={checkbox_cell}: checkbox top offset {} (want {expected})",
+                box_top.get() - cell_top.get()
+            );
+        }
+        // Header cell via `show_with`: same 2px shift inside the fixed
+        // 40px head, for the checkbox case.
+        let mut flag = false;
+        let head_top = std::cell::Cell::new(0.0f32);
+        let head_box_top = std::cell::Cell::new(0.0f32);
+        let head_height = std::cell::Cell::new(0.0f32);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("table_checkbox_head_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            let resp = TableHead::new("").checkbox_cell(true).show_with(ui, |ui| {
+                crate::components::checkbox::Checkbox::new(&mut flag).show(ui)
+            });
+            head_top.set(resp.response.rect.min.y);
+            head_box_top.set(resp.inner.rect.min.y);
+            head_height.set(resp.response.rect.height());
+        });
+        out.textures_delta.clear();
+        assert!((head_height.get() - TABLE_HEAD_HEIGHT).abs() < 0.01);
+        assert!(
+            (head_box_top.get() - head_top.get() - 10.0).abs() < 0.01,
+            "head checkbox cell: checkbox top offset {} (want 10.0)",
+            head_box_top.get() - head_top.get()
+        );
     }
 
     #[test]
