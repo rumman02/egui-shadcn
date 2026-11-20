@@ -11,9 +11,12 @@
 //! salt.
 //!
 //! Scope notes: keyboard resize steps by 5% of the group length (an
-//! approximation of `react-resizable-panels`' keyboard increments); sizes
-//! are fractional — the source's pixel `defaultSize`/`minSize` and
-//! collapsible panels are out of scope.
+//! approximation of `react-resizable-panels`' keyboard increments —
+//! OPEN-2, not spec truth); sizes are fractional — the source's pixel
+//! `defaultSize`/`minSize` and collapsible panels are out of scope
+//! (D4). The base grip chip's border is `currentColor` (foreground),
+//! per the frozen spec §0 correction 5; the nova pill is borderless
+//! (OPEN-11 frozen value).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -406,6 +409,28 @@ impl ResizablePanel {
     }
 }
 
+/// Frozen grip geometry (§2.4, §2.5, §3.3).
+///
+/// Base chip: 12×16 on a vertical bar, 16×12 on a horizontal bar
+/// (rotated 90°). Nova pill: 4×24 on a vertical bar, 24×4 on a
+/// horizontal bar.
+fn chip_size(nova: bool, horizontal_group: bool) -> Vec2 {
+    match (nova, horizontal_group) {
+        (true, true) => Vec2::new(4.0, 24.0),
+        (true, false) => Vec2::new(24.0, 4.0),
+        (false, true) => Vec2::new(12.0, 16.0),
+        (false, false) => Vec2::new(16.0, 12.0),
+    }
+}
+
+/// Base grip chip border colour: `currentColor` — the inherited text
+/// colour, i.e. the foreground token (§0 correction 5, accepted by the
+/// coordinator at sign-off). NOT the `border` token. The nova pill has
+/// no border (OPEN-11 frozen value).
+fn chip_border_color(p: &crate::theme::Palette) -> Color32 {
+    p.foreground
+}
+
 /// A draggable separator between panels: a 1px `bg-border` line with an
 /// optional grip chip. Drag it, or focus it and use the Arrow keys.
 #[derive(Clone, Debug, Default)]
@@ -495,29 +520,28 @@ impl ResizableHandle {
                 let nova = theme.style == Style::Nova;
                 if nova {
                     // Nova grip: a plain `bg-border` pill (`h-6 w-1
-                    // rounded-lg`, rotated on horizontal groups), no glyph.
-                    let (cw, ch) = if horizontal_group {
-                        (4.0, 24.0)
-                    } else {
-                        (24.0, 4.0)
-                    };
-                    let chip = Rect::from_center_size(flow_rect.center(), Vec2::new(cw, ch));
+                    // rounded-lg`, rotated on horizontal groups), no glyph,
+                    // no border (OPEN-11 frozen value).
+                    let chip = Rect::from_center_size(
+                        flow_rect.center(),
+                        chip_size(true, horizontal_group),
+                    );
                     painter.rect_filled(chip, CornerRadius::same(2), p.border);
                 } else {
                     // Base grip chip: `h-4 w-3 rounded-xs border bg-border`
                     // with the `size-2.5` grip glyph (the source rotates the
                     // chip on horizontal dividers, so the glyph follows).
-                    let (cw, ch) = if horizontal_group {
-                        (12.0, 16.0)
-                    } else {
-                        (16.0, 12.0)
-                    };
-                    let chip = Rect::from_center_size(flow_rect.center(), Vec2::new(cw, ch));
+                    let chip = Rect::from_center_size(
+                        flow_rect.center(),
+                        chip_size(false, horizontal_group),
+                    );
                     painter.rect_filled(chip, CornerRadius::same(2), p.border);
                     painter.rect_stroke(
                         chip,
                         CornerRadius::same(2),
-                        Stroke::new(1.0, p.border),
+                        // `border` = 1px solid `currentColor` (foreground),
+                        // §0 correction 5 — NOT the `border` token.
+                        Stroke::new(1.0, chip_border_color(&p)),
                         egui::epaint::StrokeKind::Inside,
                     );
                     let glyph = if horizontal_group {
@@ -599,7 +623,7 @@ fn color_ring(p: &crate::theme::Palette) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Mode, Preset};
+    use crate::theme::{Mode, Preset, Style};
     use egui::{Key, Pos2};
 
     #[test]
@@ -729,5 +753,245 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// Frozen chip geometry (§2.4, §2.5, §3.3).
+    #[test]
+    fn chip_size_matches_frozen_geometry() {
+        // Base chip: 12×16 on a vertical bar, 16×12 rotated.
+        assert_eq!(chip_size(false, true), Vec2::new(12.0, 16.0));
+        assert_eq!(chip_size(false, false), Vec2::new(16.0, 12.0));
+        // Nova pill: 4×24 on a vertical bar, 24×4 rotated.
+        assert_eq!(chip_size(true, true), Vec2::new(4.0, 24.0));
+        assert_eq!(chip_size(true, false), Vec2::new(24.0, 4.0));
+    }
+
+    #[test]
+    fn chip_border_is_foreground_not_border_token() {
+        for mode in [Mode::Light, Mode::Dark] {
+            let p = Preset::default().build(mode).palette;
+            assert_eq!(chip_border_color(&p), p.foreground);
+            assert_ne!(chip_border_color(&p), p.border);
+        }
+    }
+
+    /// `Shape::Rect`s in the output filled with `fill`.
+    fn rects_with_fill(out: &egui::FullOutput, fill: Color32) -> Vec<&egui::epaint::RectShape> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.fill == fill => Some(rs),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `Shape::Rect`s in the output stroked in `color` (non-zero width).
+    fn rects_with_stroke(out: &egui::FullOutput, color: Color32) -> Vec<&egui::epaint::RectShape> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.stroke.width > 0.0 && rs.stroke.color == color => {
+                    Some(rs)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// All meshes in the output (icon glyphs are meshes).
+    fn meshes(out: &egui::FullOutput) -> Vec<&egui::Mesh> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh) => Some(mesh.as_ref()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Renders one horizontal group (length 400, two panels, one handle)
+    /// in a fixed 500×500 UI, `frames` times, and returns the last
+    /// frame's output plus the handle's (id, interact rect) from that
+    /// frame. Two frames settle the learned totals (§9.2).
+    fn render_group_frames(
+        ctx: &egui::Context,
+        frames: usize,
+        with_handle: bool,
+    ) -> (egui::FullOutput, Id, Rect) {
+        let mut out = None;
+        let mut handle = None;
+        // One stable Ui id for all frames, so group/handle ids (and focus)
+        // persist across frames.
+        let ui_id = egui::Id::unique("resizable_paint_test_ui");
+        for _ in 0..frames {
+            let mut frame_out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    ui_id,
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                ResizablePanelGroup::new()
+                    .id_salt("paint_test")
+                    .length(400.0)
+                    .show(ui, |ui| {
+                        ResizablePanel::new().min(0.2).show(ui, |ui| {
+                            ui.label("Left");
+                        });
+                        let resp = ResizableHandle::new()
+                            .with_handle(with_handle)
+                            .id_salt("paint_handle")
+                            .show(ui);
+                        handle = Some((resp.id, resp.rect));
+                        ResizablePanel::new().show(ui, |ui| {
+                            ui.label("Right");
+                        });
+                    });
+            });
+            frame_out.textures_delta.clear();
+            out = Some(frame_out);
+        }
+        let (id, rect) = handle.expect("handle must render");
+        (out.expect("at least one frame"), id, rect)
+    }
+
+    #[test]
+    fn paints_base_chip_with_foreground_border() {
+        let ctx = egui::Context::default();
+        let preset = Preset::default().with_style(Style::Vega);
+        preset.clone().build(Mode::Light).install(&ctx);
+        let p = preset.build(Mode::Light).palette;
+
+        let (out, _, hit_rect) = render_group_frames(&ctx, 2, true);
+
+        // Hit band: 4px centred on the 1px line (§3.2).
+        assert!(
+            (hit_rect.width() - 4.0).abs() < 1e-4,
+            "hit band must be 4px wide, got {}",
+            hit_rect.width()
+        );
+
+        // Handle line: 1px, `bg-border` fill.
+        let border_fills = rects_with_fill(&out, p.border);
+        let line = border_fills
+            .iter()
+            .find(|rs| (rs.rect.width() - 1.0).abs() < 1e-4)
+            .expect("1px handle line");
+        assert!((hit_rect.center().x - line.rect.center().x).abs() < 1e-4);
+
+        // Base chip: 12×16, `bg-border` fill, 2px radius (§2.4, §3.3).
+        let chip = border_fills
+            .iter()
+            .find(|rs| {
+                (rs.rect.width() - 12.0).abs() < 1e-4 && (rs.rect.height() - 16.0).abs() < 1e-4
+            })
+            .expect("12×16 base chip");
+        assert_eq!(chip.corner_radius, CornerRadius::same(2));
+        assert!((chip.rect.center().x - line.rect.center().x).abs() < 1e-4);
+
+        // Chip border: 1px stroke in foreground — NOT the `border` token
+        // (§0 correction 5).
+        let fg_strokes = rects_with_stroke(&out, p.foreground);
+        assert_eq!(
+            fg_strokes.len(),
+            1,
+            "expected exactly one foreground stroke (the chip border), got {}",
+            fg_strokes.len()
+        );
+        assert!((fg_strokes[0].stroke.width - 1.0).abs() < 1e-4);
+        assert_eq!(fg_strokes[0].rect, chip.rect);
+        assert!(
+            rects_with_stroke(&out, p.border).is_empty(),
+            "no stroke may use the border token"
+        );
+
+        // Grip glyph: one 10×10 mesh in `currentColor`, centred on the chip.
+        let glyph_meshes = meshes(&out);
+        assert_eq!(
+            glyph_meshes.len(),
+            1,
+            "expected exactly one glyph mesh, got {}",
+            glyph_meshes.len()
+        );
+        let glyph_bounds = glyph_meshes[0].calc_bounds();
+        assert!(
+            (glyph_bounds.width() - 10.0).abs() < 1e-4
+                && (glyph_bounds.height() - 10.0).abs() < 1e-4,
+            "glyph mesh must be 10×10, got {glyph_bounds:?}"
+        );
+        assert_eq!(glyph_bounds.center(), chip.rect.center());
+        assert!(
+            glyph_meshes[0]
+                .vertices
+                .iter()
+                .all(|v| v.color == p.foreground),
+            "glyph mesh must be tinted foreground"
+        );
+    }
+
+    #[test]
+    fn paints_nova_pill_borderless_without_glyph() {
+        let ctx = egui::Context::default();
+        let preset = Preset::default(); // nova
+        preset.clone().build(Mode::Light).install(&ctx);
+        let p = preset.build(Mode::Light).palette;
+
+        let (out, _, _) = render_group_frames(&ctx, 2, true);
+
+        // Nova pill: 4×24, `bg-border` fill, 2px radius (§2.5, §3.3).
+        let border_fills = rects_with_fill(&out, p.border);
+        let pill = border_fills
+            .iter()
+            .find(|rs| {
+                (rs.rect.width() - 4.0).abs() < 1e-4 && (rs.rect.height() - 24.0).abs() < 1e-4
+            })
+            .expect("4×24 nova pill");
+        assert_eq!(pill.corner_radius, CornerRadius::same(2));
+
+        // No border on the pill (OPEN-11 frozen value): no stroke in
+        // foreground or in the border token, and no glyph (no mesh).
+        assert!(
+            rects_with_stroke(&out, p.foreground).is_empty(),
+            "nova pill must have no border"
+        );
+        assert!(
+            rects_with_stroke(&out, p.border).is_empty(),
+            "nova pill must have no border"
+        );
+        assert!(meshes(&out).is_empty(), "nova pill must have no glyph");
+    }
+
+    #[test]
+    fn focus_ring_is_1px_ring_with_1px_offset() {
+        let ctx = egui::Context::default();
+        let preset = Preset::default().with_style(Style::Vega);
+        preset.clone().build(Mode::Light).install(&ctx);
+        let p = preset.build(Mode::Light).palette;
+
+        // Settle two frames, then focus the handle (no grip chip, so the
+        // ring is the only stroke painted).
+        let (_, handle_id, _) = render_group_frames(&ctx, 2, false);
+        ctx.memory_mut(|mem| mem.request_focus(handle_id));
+        let (out, _, _) = render_group_frames(&ctx, 1, false);
+
+        // Handle line: 1px, `bg-border` fill.
+        let border_fills = rects_with_fill(&out, p.border);
+        let line = border_fills
+            .iter()
+            .find(|rs| (rs.rect.width() - 1.0).abs() < 1e-4)
+            .expect("1px handle line");
+
+        // Ring: 1px, `ring` token, occupying the band 1–2px outside the
+        // handle rect (§3.4); no outline is painted.
+        let ring_strokes = rects_with_stroke(&out, p.ring);
+        assert_eq!(
+            ring_strokes.len(),
+            1,
+            "expected exactly one ring stroke, got {}",
+            ring_strokes.len()
+        );
+        assert!((ring_strokes[0].stroke.width - 1.0).abs() < 1e-4);
+        assert_eq!(ring_strokes[0].rect, line.rect.expand(1.0));
     }
 }
