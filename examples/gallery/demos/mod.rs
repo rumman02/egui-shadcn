@@ -9218,15 +9218,41 @@ impl BorderRow {
 }
 
 pub fn resizable_demo(ui: &mut egui::Ui) {
-    ui.label("Horizontal group (drag the handle; grip chip shown)");
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let p = theme.palette;
+    let style_name = if nova { "nova" } else { "base" };
+    // Frozen chip geometry (spec §3.3): base 12x16 / 16x12, nova pill
+    // 4x24 / 24x4. Duplicated here only so the readouts can state the
+    // expected size next to the measured handle rect.
+    let chip_expected = |horizontal_group: bool| -> (f32, f32) {
+        match (nova, horizontal_group) {
+            (true, true) => (4.0, 24.0),
+            (true, false) => (24.0, 4.0),
+            (false, true) => (12.0, 16.0),
+            (false, false) => (16.0, 12.0),
+        }
+    };
+
+    ui.label(format!(
+        "Resizable — draggable split-panel groups (style: {style_name}). Base recipe: 1px bg-border handle line, 4px centred hit band, grip chip (base 12x16 / 16x12 with a 1px currentColor border and 10px grip glyph; nova 4x24 / 24x4 plain bg-border pill, no border, no glyph). Focus ring: 1px ring token, 1px offset, no outline."
+    ));
+    ui.label("Honest notes: D4 — fraction-only sizing (no collapsible panels, no pixel min/max). OPEN-2 — the 5% arrow-key step is a documented approximation, NOT spec truth. OPEN-11 — the nova pill is kept borderless (S8 decides). OPEN-6 — equal split is the port's first-frame choice, not a spec value. E1 — resize cursors on hover are an extension. D1 — the focus ring shows on any egui focus, not keyboard-only. No hover/drag/disabled visuals in the source.");
+
+    ui.add_space(12.0);
+    ui.label("§1 Horizontal group (drag the handle; grip chip shown)");
     ui.add_space(4.0);
     let store = egui::Id::unique("resizable_demo_left");
     let mut left_count: usize = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(3));
+    let mut h1_left_w = 0.0f32;
+    let mut h1_right_w = 0.0f32;
+    let mut h1_hit = egui::Rect::NOTHING;
     ResizablePanelGroup::new()
         .id_salt("resizable_demo_h")
         .length(440.0)
         .show(ui, |ui| {
             ResizablePanel::new().min(0.2).max(0.7).show(ui, |ui| {
+                h1_left_w = ui.available_width();
                 ui.heading("Left panel");
                 for i in 1..=left_count {
                     ui.label(format!("Item {i}"));
@@ -9239,57 +9265,220 @@ pub fn resizable_demo(ui: &mut egui::Ui) {
                     left_count += 1;
                 }
             });
-            ResizableHandle::new().with_handle(true).show(ui);
+            h1_hit = ResizableHandle::new().with_handle(true).show(ui).rect;
             ResizablePanel::new().show(ui, |ui| {
+                h1_right_w = ui.available_width();
                 ui.heading("Right panel");
                 ui.label("Drag the divider between us.");
                 ui.small("Panel sizes persist across frames (per group id).");
             });
         });
     ui.ctx().data_mut(|d| d.insert_temp(store, left_count));
+    let (h1_cw, h1_ch) = chip_expected(true);
+    let h1_chip = egui::Rect::from_center_size(h1_hit.center(), egui::Vec2::new(h1_cw, h1_ch));
+    ui.label(format!(
+        "measured: handle hit rect {:.1} x {:.1} px (expected 4.0 wide, full group height); line 1.0 px; chip {:.1} x {:.1} at x={:.1} y={:.1} (expected {:.1} x {:.1}); left panel {:.1} px, right panel {:.1} px",
+        h1_hit.width(),
+        h1_hit.height(),
+        h1_cw,
+        h1_ch,
+        h1_chip.min.x,
+        h1_chip.min.y,
+        h1_cw,
+        h1_ch,
+        h1_left_w,
+        h1_right_w
+    ));
 
     ui.add_space(12.0);
-    ui.label("Vertical group (thin handles, arrow keys when focused)");
+    ui.label("§2 Vertical group (thin handles, arrow keys when focused)");
     ui.add_space(4.0);
+    let mut v_top_h = 0.0f32;
+    let mut v_mid_h = 0.0f32;
+    let mut v_bot_h = 0.0f32;
+    let mut v_hit = egui::Rect::NOTHING;
     ResizablePanelGroup::new()
         .id_salt("resizable_demo_v")
         .orientation(ResizableOrientation::Vertical)
         .length(200.0)
         .show(ui, |ui| {
             ResizablePanel::new().min(0.15).show(ui, |ui| {
+                v_top_h = ui.available_height();
                 ui.heading("Top");
                 ui.label("Tab to a handle and use Arrow Up / Arrow Down.");
             });
             ResizableHandle::new().show(ui);
             ResizablePanel::new().show(ui, |ui| {
+                v_mid_h = ui.available_height();
                 ui.heading("Middle");
                 ui.label("20% minimum via .min(0.15).");
             });
-            ResizableHandle::new().with_handle(true).show(ui);
+            v_hit = ResizableHandle::new().with_handle(true).show(ui).rect;
             ResizablePanel::new().show(ui, |ui| {
+                v_bot_h = ui.available_height();
                 ui.heading("Bottom");
             });
         });
+    let (v_cw, v_ch) = chip_expected(false);
+    let v_chip = egui::Rect::from_center_size(v_hit.center(), egui::Vec2::new(v_cw, v_ch));
+    ui.label(format!(
+        "measured: chip handle hit rect {:.1} x {:.1} px (expected full group width, 4.0 tall); chip {:.1} x {:.1} at x={:.1} y={:.1} (expected {:.1} x {:.1}, rotated on a horizontal bar); panels {:.1} / {:.1} / {:.1} px tall",
+        v_hit.width(),
+        v_hit.height(),
+        v_cw,
+        v_ch,
+        v_chip.min.x,
+        v_chip.min.y,
+        v_cw,
+        v_ch,
+        v_top_h,
+        v_mid_h,
+        v_bot_h
+    ));
 
     ui.add_space(12.0);
-    ui.label("Three panels with clamps (middle capped at 0.4)");
+    ui.label("§3 Three panels with clamps (middle capped at 0.4)");
     ui.add_space(4.0);
+    let mut t_w = [0.0f32; 3];
     ResizablePanelGroup::new()
         .id_salt("resizable_demo_3")
         .length(440.0)
         .show(ui, |ui| {
             ResizablePanel::new().min(0.15).show(ui, |ui| {
+                t_w[0] = ui.available_width();
                 ui.label("Sidebar");
             });
             ResizableHandle::new().show(ui);
             ResizablePanel::new().max(0.4).show(ui, |ui| {
+                t_w[1] = ui.available_width();
                 ui.label("Content (max 40%)");
             });
             ResizableHandle::new().show(ui);
             ResizablePanel::new().min(0.2).show(ui, |ui| {
+                t_w[2] = ui.available_width();
                 ui.label("Details");
             });
         });
+    let t_panels = t_w[0] + t_w[1] + t_w[2];
+    ui.label(format!(
+        "measured: panels {:.1} / {:.1} / {:.1} px (fractions {:.3} / {:.3} / {:.3} of {:.1} px panel area; group is 440.0 px incl. two 1px lines; first frame is the equal split, OPEN-6 — not a spec value; middle capped at 0.4)",
+        t_w[0],
+        t_w[1],
+        t_w[2],
+        t_w[0] / t_panels,
+        t_w[1] / t_panels,
+        t_w[2] / t_panels,
+        t_panels
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§4 Base chip border — the S1 fix (S5: judge the rendered border colour)");
+    ui.add_space(4.0);
+    let mut b_hit = egui::Rect::NOTHING;
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_border")
+        .length(440.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("Chip border case");
+            });
+            b_hit = ResizableHandle::new().with_handle(true).show(ui).rect;
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("The chip's 1px border must read foreground, NOT the border token.");
+            });
+        });
+    let (b_cw, b_ch) = chip_expected(true);
+    let b_chip = egui::Rect::from_center_size(b_hit.center(), egui::Vec2::new(b_cw, b_ch));
+    if nova {
+        ui.label(format!(
+            "measured: chip {:.1} x {:.1} at x={:.1} y={:.1} — nova pill, borderless by the frozen OPEN-11 value (no border token, no foreground stroke; S8 decides)",
+            b_cw, b_ch, b_chip.min.x, b_chip.min.y
+        ));
+    } else {
+        ui.label(format!(
+            "measured: chip {:.1} x {:.1} at x={:.1} y={:.1}; border colour = foreground rgb({}, {}, {}) — NOT the border token rgb({}, {}, {}) (spec §0 correction 5; S5: sample the chip edge pixels in the capture)",
+            b_cw,
+            b_ch,
+            b_chip.min.x,
+            b_chip.min.y,
+            p.foreground.r(),
+            p.foreground.g(),
+            p.foreground.b(),
+            p.border.r(),
+            p.border.g(),
+            p.border.b()
+        ));
+    }
+
+    ui.add_space(12.0);
+    ui.label("§5 Nova pill — rotated chip on a horizontal bar");
+    ui.add_space(4.0);
+    let mut p5_hit = egui::Rect::NOTHING;
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_pill")
+        .orientation(ResizableOrientation::Vertical)
+        .length(160.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("Above the pill");
+            });
+            p5_hit = ResizableHandle::new().with_handle(true).show(ui).rect;
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("Below the pill");
+            });
+        });
+    let (p5_cw, p5_ch) = chip_expected(false);
+    let p5_chip = egui::Rect::from_center_size(p5_hit.center(), egui::Vec2::new(p5_cw, p5_ch));
+    ui.label(format!(
+        "measured: pill/chip {:.1} x {:.1} at x={:.1} y={:.1} (expected {:.1} x {:.1} — nova 24 x 4, base 16 x 12; nova: no border, no glyph, OPEN-11; fill bg-border rgb({}, {}, {}))",
+        p5_cw,
+        p5_ch,
+        p5_chip.min.x,
+        p5_chip.min.y,
+        p5_cw,
+        p5_ch,
+        p.border.r(),
+        p.border.g(),
+        p.border.b()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§6 Focus ring — Tab to the handle (S6: verify the ring)");
+    ui.add_space(4.0);
+    let mut f_focused = false;
+    let mut f_hit = egui::Rect::NOTHING;
+    ResizablePanelGroup::new()
+        .id_salt("resizable_demo_focus")
+        .length(440.0)
+        .show(ui, |ui| {
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("Focus target — left");
+            });
+            let resp = ResizableHandle::new()
+                .with_handle(true)
+                .id_salt("resizable_demo_focus_handle")
+                .show(ui);
+            f_focused = resp.has_focus();
+            f_hit = resp.rect;
+            ResizablePanel::new().show(ui, |ui| {
+                ui.label("Focus target — right");
+            });
+        });
+    let (f_cw, f_ch) = chip_expected(true);
+    ui.label(format!(
+        "measured: handle focused: {}; hit rect {:.1} x {:.1} px; ring: 1px in the ring token rgb({}, {}, {}), offset 1px (band 1–2px outside the 1px line), no outline; chip {:.1} x {:.1}",
+        f_focused,
+        f_hit.width(),
+        f_hit.height(),
+        p.ring.r(),
+        p.ring.g(),
+        p.ring.b(),
+        f_cw,
+        f_ch
+    ));
+
+    ui.add_space(12.0);
+    ui.label("S5/S6 handoff: judge the §4 chip border colour (foreground vs border token) and the §5 pill (borderless, no glyph) in all 4 configs; page-31 goldens are pre-rebuild baseline — expect a diff on the base chip border colour only. §6 is the Tab target; the 5% arrow-key step is OPEN-2 (fetch the react-resizable-panels source).");
 }
 
 pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
