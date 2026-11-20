@@ -8309,16 +8309,19 @@ pub fn progress_demo(ui: &mut egui::Ui) {
     let store = egui::Id::unique("progress_demo_value");
     let mut value: f32 = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(30.0));
 
-    ui.label("Default");
+    ui.label("Progress — determinate value bar (Radix Progress). Non-interactive: no keys, no Tab stop, no hover/focus/disabled/invalid recipe (spec §7). Track 8px base / 4px nova; track fill primary @ 20% base, muted nova; indicator primary. N6: square cut at partial fill, pill only at 100%. Clamp is port-side (D3, contingent on OPEN-2 Radix clamping — reviewer decides). Fill animates 150ms; linear-vs-bezier is an S7 item, not spec. No label/value slots (OPEN-3); no indeterminate state (falsy → empty bar); max has no visual effect.");
+    ui.add_space(8.0);
+
+    ui.label("1. Interactive — the fill animates over 150ms (shadcn transition-all; S7: linear vs cubic-bezier(0.4, 0, 0.2, 1))");
     ui.add_space(4.0);
-    let resp = ui
-        .horizontal(|ui| {
-            let r = Progress::new(value).show(ui);
-            ui.small(format!("{:.0}%", value));
-            r
-        })
-        .inner;
-    let _ = resp;
+    let resp = Progress::new(value).show(ui);
+    ui.small(format!(
+        "value {:.0}% — track: {:.1} x {:.1} px (expected h = 8 base / 4 nova); settled fill {:.1} px",
+        value,
+        resp.rect.width(),
+        resp.rect.height(),
+        value.clamp(0.0, 100.0) / 100.0 * resp.rect.width()
+    ));
 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -8339,25 +8342,83 @@ pub fn progress_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Values");
+    ui.label("2. Values — measured track and settled fill width");
     ui.add_space(4.0);
     for v in [0.0, 25.0, 50.0, 75.0, 100.0] {
-        ui.horizontal(|ui| {
-            Progress::new(v).show(ui);
-            ui.small(format!("{:.0}%", v));
-        });
+        // NOTE: no inline "%" label in the bar's row — a trailing label
+        // after a full-width bar overflows the row, widens the scroll
+        // content, and makes each successive track wider than the last
+        // (measured 1053.8 → 1183.5px in the first smoke run, clipping the
+        // 100% bar at the window edge). The value is in the readout below.
+        let r = Progress::new(v)
+            .id_salt(format!("s3-value-{v:.0}"))
+            .show(ui);
+        ui.small(format!(
+            "{:.0}% — track {:.1} x {:.1} px; settled fill {:.1} px",
+            v,
+            r.rect.width(),
+            r.rect.height(),
+            v / 100.0 * r.rect.width()
+        ));
     }
 
     ui.add_space(12.0);
-    ui.label("Clamped and fixed width");
+    ui.label(
+        "3. N6 — square cut at partial fill vs pill at 100% (S5: judge the right edge rendered)",
+    );
     ui.add_space(4.0);
-    Progress::new(250.0).width(200.0).show(ui);
-    Progress::new(-5.0).width(200.0).show(ui);
-    ui.add_space(4.0);
-    Progress::new(40.0).width(120.0).show(ui);
+    ui.small("50% — square right edge, rounded left edge:");
+    let half = Progress::new(50.0)
+        .width(400.0)
+        .id_salt("s3-n6-half")
+        .show(ui);
+    ui.small(format!(
+        "track {:.1} x {:.1} px; settled fill {:.1} px; right edge square (N6)",
+        half.rect.width(),
+        half.rect.height(),
+        0.5 * half.rect.width()
+    ));
+    ui.add_space(8.0);
+    ui.small("100% — pill, both ends rounded (track rounded-full):");
+    let full = Progress::new(100.0)
+        .width(400.0)
+        .id_salt("s3-n6-full")
+        .show(ui);
+    ui.small(format!(
+        "track {:.1} x {:.1} px; settled fill {:.1} px; right edge pill",
+        full.rect.width(),
+        full.rect.height(),
+        full.rect.width()
+    ));
 
     ui.add_space(12.0);
-    ui.label("The fill animates over 150ms (shadcn transition-all).");
+    ui.label("4. Clamped (D3, port-side) and fixed widths");
+    ui.add_space(4.0);
+    let over = Progress::new(250.0)
+        .width(200.0)
+        .id_salt("s3-clamp-over")
+        .show(ui);
+    ui.small(format!(
+        "250.0 — rendered fill: full ({:.1} px of {:.1} px track; clamped to 100, D3)",
+        over.rect.width(),
+        over.rect.width()
+    ));
+    ui.add_space(4.0);
+    let under = Progress::new(-5.0)
+        .width(200.0)
+        .id_salt("s3-clamp-under")
+        .show(ui);
+    ui.small("-5.0 — rendered fill: empty (clamped to 0, D3)");
+    let _ = under;
+    ui.add_space(4.0);
+    let narrow = Progress::new(40.0)
+        .width(120.0)
+        .id_salt("s3-fixed-120")
+        .show(ui);
+    ui.small(format!(
+        "40% of 120.0 px — settled fill {:.1} px",
+        0.4 * narrow.rect.width()
+    ));
 
     ui.ctx().data_mut(|d| d.insert_temp(store, value));
 }
