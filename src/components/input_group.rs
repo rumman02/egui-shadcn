@@ -45,8 +45,13 @@
 //!   50% opacity). `InputGroup::group_disabled` is the group-level flag
 //!   (mechanism (b): both styles — addons fade 50%). Fade factors are
 //!   multiplicative (`0.5^n`): both firing under nova renders an addon
-//!   at 25%. Addon buttons do not fade (`Button` has no fade-only
-//!   rendering) — a known limitation, proposed D6.
+//!   at 25%. Footnote (S1 §1.3 wording, carried from the VIS-03
+//!   adjudication): the frozen spec text says the text alpha is
+//!   "50% × 0.5"; the 25% effective fade is implemented via the opaque
+//!   precomposite (`container_group_fade`, shape alpha 1.0, not 0.25) —
+//!   the rendered values are the 25% fade and are correct. Addon buttons
+//!   do not fade (`Button` has no fade-only rendering) — a known
+//!   limitation, proposed D6.
 //! - Combined state (OPEN-2): invalid wins BOTH border and ring colour
 //!   when focused+invalid. Under nova, invalid at rest gets a 3px
 //!   destructive ring; under base it gets none.
@@ -57,8 +62,9 @@
 //! - The kbd negative margin is applied when a direct-child `Kbd` or
 //!   `KbdGroup` is detected via the kbd-line channel (`Kbd`/`KbdGroup`
 //!   record `has_kbd` against the addon id stack; `kbd.rs` is
-//!   recording-only). The kbd radius (5px) still needs the same channel
-//!   and is not applied here. The button negative margin is applied when
+//!   recording-only). The kbd radius (5px) is carried, not fixed — it
+//!   rides on the same channel and is now implementable via it, but is
+//!   not applied here. The button negative margin is applied when
 //!   a direct-child `InputGroupButton` is detected; when both a button
 //!   and a kbd are present, the kbd margin wins (OPEN-7(a)).
 //!
@@ -103,6 +109,47 @@
 //! - Addon buttons do not fade under the disabled mechanisms (proposed
 //!   D6); the outline variant's `shadow-none` (OPEN-1(c)) cannot be
 //!   enforced from here (`Button` has no shadow-override API).
+//!
+//! Deviations (PROPOSED) and verification state (S10, 2026-11-20):
+//!
+//! - D1 (PROPOSED): `:focus-visible` modality — the container ring shows
+//!   whenever the inner control holds focus, not only for
+//!   keyboard-initiated `:focus-visible` focus. Ring geometry (3px,
+//!   outside the border) and colours are unchanged; only the trigger
+//!   condition differs.
+//! - D2 (PROPOSED): no ARIA tree in egui — `role="group"` on the
+//!   container/addons and the `data-slot` / `data-align` / `data-size`
+//!   attributes have no egui analogue and are not rendered. `data-align`
+//!   IS ported as the `AddonAlign` layout enum because it drives layout.
+//! - D3 (PROPOSED, conditional): `has-[]` reactivity timing — focus,
+//!   invalid, disabled and layout flags resolve from the previous frame,
+//!   so settled frames are correct but a state change is visible one
+//!   frame late. The one-frame timing stays UNRESOLVED (S10 did not
+//!   re-attempt it, S8 gate G3); what S10 verified is that the addon
+//!   click focuses the input in every config.
+//! - D6 (PROPOSED): addon buttons do not fade under the disabled
+//!   mechanisms (`Button` has no fade-only rendering) — see Known
+//!   limitations above.
+//! - OPEN-4 (DECIDED, S8 gate G2): ruling 6's narrow reading governs —
+//!   base `transition-[color,box-shadow]` covers text colour +
+//!   box-shadow only, so the base ring eases 150ms and the base border
+//!   snaps; nova `transition-colors` covers colours only, so the nova
+//!   border colour eases 150ms and the nova ring snaps. Wired via
+//!   `utils::animation` (`container_transition_specs`); everything else
+//!   snaps as before.
+//! - OPEN-1 residuals (spec §11): the `cn()` merge questions for the
+//!   three composed parts stay open — S5 judges rendered output; the
+//!   outline variant's `shadow-none` cannot be enforced from here (see
+//!   Known limitations).
+//! - S10 (2026-11-20): PASS, 0 defects — all 6 S9 fixes verified
+//!   rendered in all 4 configs; S5/S6 PASSes re-verified; S7 budgets
+//!   re-measured within limits; render floor NOT VERIFIED
+//!   (environment-limited, S8 gate G5). Qualifications, not defects:
+//!   the vega-dark border OUT leg is UNRESOLVED by video alone (0.3s
+//!   presentation gap; the pins + the other three border legs support
+//!   SNAP), and the nova-dark border IN leg is PARTIAL
+//!   (presentation-compressed; the ease is confirmed by the
+//!   intermediate + the pins).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
