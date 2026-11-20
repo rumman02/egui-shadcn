@@ -7997,9 +7997,26 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
 }
 
 pub fn card_demo(ui: &mut egui::Ui) {
-    ui.label("Default (display-only card)");
+    // Header: recipe position, stated honestly (spec §§0, 2, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    ui.label(format!(
+        "Card — a layout container with no behaviour of its own. Active recipe: {recipe} (style: {}, mode: {mode}).",
+        theme.style.name()
+    ));
+    ui.label("Title weights: 600 base / 500 nova (Inter SemiBold / Medium, embedded). Nova edge: 1px border + 1px ring (foreground/10) + shadow-sm; base edge: 1px border + shadow-sm. Footer children sit with gap 0. Honest notes: D1 — the header action is a top-right overlay, so a taller-than-header action does not grow the header. D3 — base unstyled content 14-vs-16px is a theme-level note, not a card defect. OPEN-1 — the sm title rule (14px) is frozen; its group/card attachment is the port's CardCtx size stack.");
+    let title_lh = if nova { 22.0 } else { 16.0 };
+
+    ui.add_space(16.0);
+    ui.label("1. Default — two-button footer (gap 0; nova footer band bleeds to the card's bottom inner edge)");
     ui.add_space(4.0);
-    Card::new().show(ui, |ui| {
+    let default_card = Card::new().show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
             CardTitle::new("Create project").show(ui);
             CardDescription::new("Deploy your new project in one-click.").show(ui);
@@ -8020,9 +8037,14 @@ pub fn card_demo(ui: &mut egui::Ui) {
                 .show(ui);
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px",
+        default_card.response.rect.width(),
+        default_card.response.rect.height()
+    ));
 
     ui.add_space(16.0);
-    ui.label("With a header action (top-right slot)");
+    ui.label("2. With a header action (top-right slot)");
     ui.add_space(4.0);
     Card::new().show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
@@ -8042,7 +8064,7 @@ pub fn card_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(16.0);
-    ui.label("Destructive action in a card");
+    ui.label("3. Destructive action in a card");
     ui.add_space(4.0);
     Card::new().show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
@@ -8060,9 +8082,9 @@ pub fn card_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(16.0);
-    ui.label("Compact (size=sm) card");
+    ui.label("4. Compact (size=sm) card — nova only: 12px spacing, 14px title; no effect under non-nova styles");
     ui.add_space(4.0);
-    Card::new().size(CardSize::Sm).show(ui, |ui| {
+    let sm_card = Card::new().size(CardSize::Sm).show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
             CardTitle::new("Compact card").show(ui);
             CardDescription::new("Tighter spacing and a smaller title.").show(ui);
@@ -8071,41 +8093,126 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.label("Nova shrinks --card-spacing to 12px and the title to 14px.");
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px",
+        sm_card.response.rect.width(),
+        sm_card.response.rect.height()
+    ));
 
     ui.add_space(16.0);
-    ui.label("Card with a top image slot");
+    ui.label("5. Card with a top image slot (D2(a) — nova-only full-bleed)");
     ui.add_space(4.0);
-    Card::new().image_top(card_demo_texture(ui)).show(ui, |ui| {
+    let image_card = Card::new().image_top(card_demo_texture(ui)).show(ui, |ui| {
         CardHeader::new().show(ui, |ui| {
             CardTitle::new("Landscape").show(ui);
-            CardDescription::new("The image bleeds to the rounded top corners.").show(ui);
+            CardDescription::new("Top image: nova bleeds full-bleed, base sits below the padding.").show(ui);
         });
         CardContent::new().show(ui, |ui| {
-            ui.label("The media slot removes the card's top padding.");
+            ui.label("Nova: the image bleeds to the card's top edge (pt-0, 14px top corners, clipped). Base: it sits below the 24px top padding with square corners.");
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px (nova: top padding 0; base: 24px)",
+        image_card.response.rect.width(),
+        image_card.response.rect.height()
+    ));
+
+    ui.add_space(16.0);
+    ui.label("6. Image + footer (N1 §3.2) — nova: top 0 / bottom 0; base: 24 / 24");
+    ui.add_space(4.0);
+    let image_footer_card = Card::new().image_top(card_demo_texture(ui)).show(ui, |ui| {
+        CardHeader::new().show(ui, |ui| {
+            CardTitle::new("Landscape with footer").show(ui);
+            CardDescription::new("Image above, footer band below.").show(ui);
+        });
+        CardContent::new().show(ui, |ui| {
+            ui.label("The footer band must bleed to the card's bottom inner edge.");
+        });
+        CardFooter::new().show(ui, |ui| {
+            Button::new("Save").show(ui);
+            Button::new("Discard")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+        });
+    });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px",
+        image_footer_card.response.rect.width(),
+        image_footer_card.response.rect.height()
+    ));
+
+    ui.add_space(16.0);
+    ui.label("7. Long title with an action (N2) — the title wraps at the header width; the action stays top-aligned");
+    ui.add_space(4.0);
+    let avail = ui.available_rect_before_wrap();
+    let narrow = ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_size(
+                avail.min,
+                egui::vec2(360.0, avail.height()),
+            ))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            let mut title_rect = egui::Rect::NOTHING;
+            Card::new().show(ui, |ui| {
+                CardHeader::new().show(ui, |ui| {
+                    title_rect = CardTitle::new(
+                        "A very long card title that must wrap across several lines inside the header column while the action stays pinned to the top-right corner",
+                    )
+                    .show(ui)
+                    .rect;
+                    CardDescription::new("The action spans both header rows.").show(ui);
+                    CardAction::new().show(ui, |ui| {
+                        Button::new("")
+                            .size(ButtonSize::IconSm)
+                            .variant(ButtonVariant::Outline)
+                            .icon_start(Icon::MoreHorizontal)
+                            .show(ui);
+                    });
+                });
+                CardContent::new().show(ui, |ui| {
+                    ui.label("Narrow 360px card, so the wrap is visible at a glance.");
+                });
+            });
+            title_rect
+        },
+    );
+    let title_rect = narrow.inner;
+    let lines = (title_rect.height() / title_lh).round().max(1.0);
+    ui.label(format!(
+        "measured: card {:.1} x {:.1} px; title {:.1} x {:.1} px ({:.0} lines at {:.0}px line-height)",
+        narrow.response.rect.width(),
+        narrow.response.rect.height(),
+        title_rect.width(),
+        title_rect.height(),
+        lines,
+        title_lh
+    ));
 }
 
 /// A generated gradient texture for the card demo's image slot (cached in
-/// temp storage like the avatar demo's).
+/// temp storage like the avatar demo's). Landscape 4:1, so the image
+/// renders ~255px tall at full card width and the whole demo page still
+/// fits one 1200x3300 capture; the image's intrinsic aspect is its own
+/// (spec §3.5 — height is the image's intrinsic height at that width).
 fn card_demo_texture(ui: &mut egui::Ui) -> egui::ImageSource<'static> {
     let tex_store = egui::Id::unique("card_demo_texture");
     let tex_id = ui
         .ctx()
         .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_store));
     let texture = tex_id.unwrap_or_else(|| {
-        let size = 128;
-        let mut pixels = Vec::with_capacity(size * size);
-        for y in 0..size {
-            for x in 0..size {
-                let t = (x as f32 / size as f32) * 0.6 + (y as f32 / size as f32) * 0.4;
+        let (w, h) = (256, 64);
+        let mut pixels = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let t = (x as f32 / w as f32) * 0.6 + (y as f32 / h as f32) * 0.4;
                 let r = (40.0 + 160.0 * t) as u8;
                 let g = (70.0 + 60.0 * (1.0 - t)) as u8;
                 let b = (180.0 + 60.0 * t) as u8;
                 pixels.push(egui::Color32::from_rgb(r, g, b));
             }
         }
-        let image = egui::ColorImage::new([size, size], pixels);
+        let image = egui::ColorImage::new([w, h], pixels);
         ui.ctx()
             .load_texture("card_demo_gradient", image, egui::TextureOptions::default())
     });
