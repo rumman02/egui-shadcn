@@ -8473,9 +8473,27 @@ pub fn table_demo(ui: &mut egui::Ui) {
 }
 
 pub fn empty_demo(ui: &mut egui::Ui) {
-    ui.label("Bordered empty state with icon media, actions and inputs");
+    // Header: recipe position, stated honestly (spec §§0, 2, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    let title_size = if nova { 14.0 } else { 18.0 };
+    let title_lh = if nova { 20.0 } else { 28.0 };
+    ui.label(format!(
+        "Empty — a static placeholder with no behaviour of its own. Active recipe: {recipe} (style: {}, mode: {mode}). Title {title_size}px / {title_lh}px line-height, weight 500 (Inter Medium, embedded); description 14px / 22.75px line-height.",
+        theme.style.name()
+    ));
+    ui.label("Honest notes: D1 — EmptyFooter (§5) is an invented slot, not exported by empty.tsx; kept as a documented extension pending the Expert Reviewer (prefer EmptyContent). D4 — the 48px padding in §2 is a manual override for md:p-12, not a media query: egui has no md breakpoint. OPEN-1 — the other 7 styles are not frozen here. OPEN-2 — cn() merge semantics are unknown. OPEN-3 — the dashed-border geometry (6px dash / 4px gap) is a reasonable rendering, not a frozen value. OPEN-4 — free-form media sizing follows the S1 contract (the box takes its content's size; the mb-2 8px sits below it). Nothing animates; no keys or Tab stops — the only interaction is the link hover in §3.");
+
+    ui.add_space(16.0);
+    ui.label("§1 Default — 24px padding (p-6), icon media, actions");
     ui.add_space(4.0);
-    Empty::new().bordered(true).show(ui, |ui| {
+    let default_empty = Empty::new().bordered(true).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
             EmptyMedia::icon(Icon::Search).show(ui);
             EmptyTitle::new("No results found").show(ui);
@@ -8493,11 +8511,20 @@ pub fn empty_demo(ui: &mut egui::Ui) {
             });
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; padding 24.0px; title {:.1}px / {:.1}px line-height; description 14px / 22.75px line-height; media icon box {}px, glyph {}px",
+        default_empty.response.rect.width(),
+        default_empty.response.rect.height(),
+        title_size,
+        title_lh,
+        if nova { 32 } else { 40 },
+        if nova { 16 } else { 24 },
+    ));
 
     ui.add_space(16.0);
-    ui.label("Form-style empty (new project)");
+    ui.label("§2 Wide padding — .padding(48.0), the md:p-12 approximation (D4)");
     ui.add_space(4.0);
-    Empty::new().bordered(true).show(ui, |ui| {
+    let wide_empty = Empty::new().bordered(true).padding(48.0).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
             EmptyMedia::icon(Icon::Plus).show(ui);
             EmptyTitle::new("No projects yet").show(ui);
@@ -8514,32 +8541,93 @@ pub fn empty_demo(ui: &mut egui::Ui) {
             Button::new("Create project").show(ui);
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; padding 48.0px — a manual override for md:p-12 (D4), NOT a media query: the same 48px applies at every width",
+        wide_empty.response.rect.width(),
+        wide_empty.response.rect.height(),
+    ));
 
     ui.add_space(16.0);
-    ui.label("Bare (no border) and free-form media");
+    ui.label(
+        "§3 Description link — underline, 4px offset, hover recolour to text-primary (S6 leg)",
+    );
     ui.add_space(4.0);
-    Empty::new().show(ui, |ui| {
+    let link_empty = Empty::new().bordered(true).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
-            EmptyMedia::new().show_with(ui, |ui| {
-                let theme = ShadcnTheme::of_ui(ui);
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 8, theme.palette.muted);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "img",
-                    egui::FontId::proportional(12.0),
-                    theme.palette.muted_foreground,
-                );
-            });
-            EmptyTitle::new("Inbox is empty").show(ui);
-            EmptyDescription::new("Messages you receive will show up here.").show(ui);
+            EmptyMedia::icon(Icon::Message).show(ui);
+            EmptyTitle::new("No conversations yet").show(ui);
+            EmptyDescription::new("Check the ")
+                .link("docs")
+                .text(" for examples, or ")
+                .link("contact support")
+                .text(".")
+                .show(ui);
+        });
+        EmptyContent::new().show(ui, |ui| {
+            Button::new("Start a conversation").show(ui);
+        });
+    });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; link underline offset 4.0px below the baseline (spec §2.5 — S5 judges it rendered); hovering a link recolours it to text-primary (S6 leg)",
+        link_empty.response.rect.width(),
+        link_empty.response.rect.height(),
+    ));
+
+    ui.add_space(16.0);
+    ui.label("§4 Free-form media — 64×48 box, mb-2 gap below the media");
+    ui.add_space(4.0);
+    let media_empty = Empty::new().show(ui, |ui| {
+        let (media_rect, title_rect) = EmptyHeader::new()
+            .show(ui, |ui| {
+                let media = EmptyMedia::new().show_with(ui, |ui| {
+                    let theme = ShadcnTheme::of_ui(ui);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 8, theme.palette.muted);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "img",
+                        egui::FontId::proportional(12.0),
+                        theme.palette.muted_foreground,
+                    );
+                });
+                let title = EmptyTitle::new("Inbox is empty").show(ui);
+                EmptyDescription::new("Messages you receive will show up here.").show(ui);
+                (media.response.rect, title.rect)
+            })
+            .inner;
+        (media_rect, title_rect)
+    });
+    let (media_rect, title_rect) = media_empty.inner;
+    ui.label(format!(
+        "measured: container {:.1} x {:.1} px; media box {:.1} x {:.1} px (full-width allocation per the S1 OPEN-4 contract; content 64.0 x 48.0 centred); gap media→title {:.1} px = mb-2 8.0px + header gap 8.0px (spec §2.2 + §2.3; the mb-2 alone is unit-pinned at 8.0px in S1)",
+        media_empty.response.rect.width(),
+        media_empty.response.rect.height(),
+        media_rect.width(),
+        media_rect.height(),
+        title_rect.top() - media_rect.bottom(),
+    ));
+
+    ui.add_space(16.0);
+    ui.label("§5 Footer (D1) — EmptyFooter is an invented slot; kept as a documented extension, reviewer decides");
+    ui.add_space(4.0);
+    let footer_empty = Empty::new().bordered(true).show(ui, |ui| {
+        EmptyHeader::new().show(ui, |ui| {
+            EmptyMedia::icon(Icon::Send).show(ui);
+            EmptyTitle::new("Outbox is empty").show(ui);
+            EmptyDescription::new("Sent messages will appear here once you send your first one.")
+                .show(ui);
         });
         EmptyFooter::new().show(ui, |ui| {
             Button::new("Compose message").show(ui);
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; footer is NOT exported by empty.tsx (D1) — prefer EmptyContent; the reviewer decides keep vs remove",
+        footer_empty.response.rect.width(),
+        footer_empty.response.rect.height(),
+    ));
 }
 
 pub fn item_demo(ui: &mut egui::Ui) {
