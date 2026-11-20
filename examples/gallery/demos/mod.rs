@@ -8717,26 +8717,39 @@ pub fn item_demo(ui: &mut egui::Ui) {
 }
 
 pub fn scroll_area_demo(ui: &mut egui::Ui) {
-    ui.label("Vertical (fixed height, themed 10px scrollbar)");
+    ui.label("Scroll area — the scrollbar OVERLAYS the viewport (D3: it takes no layout width), the thumb is self-painted 8px wide with radius 4 inside the 10px bar (D4), and there is NO thumb hover state in either style (the audit's nova hover claim was wrong). The viewport is one Tab stop: on focus it paints a 3px ring/50 plus a 1px solid outline (D2: egui cannot tell keyboard from pointer focus, so the ring shows on any focus). OPEN-1 (scrollbar `type` default), OPEN-2 (no keyboard scrolling wired yet) and OPEN-4 (hide-when-fitting) stay OPEN — S6 fetches the Radix source. The scoped `bg_fill = border` leaks into nested content widgets (S1 observation for S8/foundation, not a defect of this line). Select and native-select use the BARE egui ScrollArea, not this wrapper — do not re-judge them here.");
+    ui.add_space(8.0);
+
+    ui.label("§1 Vertical (fixed height, themed 10px scrollbar)");
     ui.add_space(4.0);
-    ScrollArea::new()
+    let vertical = ScrollArea::new()
         .height(160.0)
         .id_salt("scroll_demo_vertical")
         .show(ui, |ui| {
+            let w = ui.available_width();
             for i in 1..=40 {
                 ui.label(format!("Item {i:02} — scroll me"));
             }
+            w
         });
+    let vp = vertical.response.rect;
+    ui.small(format!(
+        "viewport {:.1} × {:.1} · content width {:.1} — equal: the bar overlays (N14a); thumb 8px wide, radius 4, 1px inside the bar on every side",
+        vp.width(),
+        vp.height(),
+        vertical.inner
+    ));
 
     ui.add_space(12.0);
-    ui.label("Horizontal");
+    ui.label("§2 Horizontal");
     ui.add_space(4.0);
-    ScrollArea::new()
+    let horizontal = ScrollArea::new()
         .vertical(false)
         .horizontal(true)
         .height(64.0)
         .id_salt("scroll_demo_horizontal")
         .show(ui, |ui| {
+            let h = ui.available_height();
             ui.horizontal(|ui| {
                 for i in 1..=30 {
                     Button::new(format!("Tag {i}"))
@@ -8744,10 +8757,82 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
                         .show(ui);
                 }
             });
+            h
         });
+    let vp = horizontal.response.rect;
+    ui.small(format!(
+        "viewport {:.1} × {:.1} · content height {:.1} — equal: the bar overlays (N14a); thumb 8px tall, radius 4",
+        vp.width(),
+        vp.height(),
+        horizontal.inner
+    ));
 
     ui.add_space(12.0);
-    ui.label("Both axes");
+    ui.label("§3 Flush rule (N14b) — S5: judge rendered");
+    ui.add_space(4.0);
+    let flush = ScrollArea::new()
+        .height(140.0)
+        .width(420.0)
+        .id_salt("scroll_demo_flush")
+        .show(ui, |ui| {
+            for i in 1..=40 {
+                ui.label(format!("Row {i:02}"));
+            }
+        });
+    let vp = flush.response.rect;
+    ui.small(format!(
+        "viewport right edge {:.1} — the bar's outer edge is flush with it (bar_outer_margin = 0); the thumb's outer edge is viewport right − 1px (1px p-px inset)",
+        vp.max.x
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§4 Focus ring — Tab reaches the viewport AFTER its content (see below)");
+    ui.add_space(4.0);
+    let focus_area = ScrollArea::new()
+        .height(160.0)
+        .id_salt("scroll_demo_focus")
+        .show(ui, |ui| {
+            for i in 1..=12 {
+                ui.label(format!("Line {i:02} — focusable content lives here"));
+            }
+            Button::new("Button inside the scroll area")
+                .variant(ButtonVariant::Outline)
+                .show(ui);
+        });
+    let vp_id = focus_area.response.id;
+    ui.add_space(4.0);
+    if ui.button("Focus viewport").clicked() {
+        ui.memory_mut(|m| m.request_focus(vp_id));
+    }
+    ui.small(format!(
+        "viewport focused: {} — the ring is 3px ring/50 + a 1px outline at viewport.expand(4.0). Tab-order note: the viewport's Tab stop is allocated after its content, so Tab reaches it AFTER the button above, not before it as in DOM order.",
+        focus_area.response.has_focus()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§5 Thumb size — very long content, thumb floored at the 12px minimum");
+    ui.add_space(4.0);
+    let thumb = ScrollArea::new()
+        .height(160.0)
+        .id_salt("scroll_demo_thumb")
+        .show(ui, |ui| {
+            for i in 1..=400 {
+                ui.label(format!("Row {i:03}"));
+            }
+            ui.min_rect().height()
+        });
+    let vp = thumb.response.rect;
+    let content_h = thumb.inner;
+    let expect = (vp.height() * vp.height() / content_h).max(12.0);
+    ui.small(format!(
+        "content {:.1}px in a {:.1}px viewport — expected thumb length {:.1}px (12.0 minimum, OPEN-3: egui default, no source basis)",
+        content_h,
+        vp.height(),
+        expect
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§6 Both axes");
     ui.add_space(4.0);
     ScrollArea::new()
         .horizontal(true)
@@ -8765,7 +8850,7 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
-    ui.label("Short content (no scrollbar needed)");
+    ui.label("§7 Short content (no scrollbar needed)");
     ui.add_space(4.0);
     ScrollArea::new()
         .height(80.0)
@@ -8774,6 +8859,7 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
             ui.label("Just a couple of lines — the scrollbar only appears when needed.");
             ui.label("Second line.");
         });
+    ui.small("OPEN-4: whether the bar hides when content fits is Radix behaviour not in the .tsx — S6 fetches the source; judge the rendered result, not this label.");
 }
 
 pub fn tabs_demo(ui: &mut egui::Ui) {
