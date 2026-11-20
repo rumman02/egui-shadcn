@@ -2,28 +2,154 @@
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/input-group.tsx`. The
 //! container is a `h-9 rounded-md border border-input shadow-xs` row
-//! (`dark:bg-input/30`) that switches to a column when a block addon or a
-//! textarea is present (`has-[>[data-align=block-start]]:flex-col
-//! has-[>textarea]:h-auto`), grows a 3px ring when any control inside is
-//! focused (`has-[[data-slot=input-group-control]:focus-visible]`), turns
-//! destructive when any child is `aria-invalid`, and under the nova style
-//! (`.cn-input-group`) tightens to `h-8 rounded-lg` with
-//! `has-disabled:bg-input/50 dark:has-disabled:bg-input/80`.
+//! (`dark:bg-input/30`) that switches to a column when a block addon is
+//! present (`has-[>[data-align=block-start]]:flex-col`) and to auto
+//! height when a direct-child textarea is present
+//! (`has-[>textarea]:h-auto`, row layout kept), grows a 3px ring when
+//! any control inside is focused
+//! (`has-[[data-slot=input-group-control]:focus-visible]`), turns
+//! destructive when any slotted descendant is `aria-invalid`, and under
+//! the nova style (`.cn-input-group`) tightens to `h-8 rounded-lg` with
+//! `has-disabled:bg-input/50 dark:has-disabled:bg-input/80` plus
+//! `has-disabled:opacity-50` on the whole container.
 //!
 //! The source's slots map as follows:
 //!
-//! - [`InputGroupAddon`] — `inline-start` / `inline-end` / `block-start` /
-//!   `block-end` alignment; holds text, icons, [`Kbd`](crate::components::kbd::Kbd)
-//!   and [`InputGroupButton`]s.
-//! - [`InputGroupText`] — `text-sm text-muted-foreground` inline text.
-//! - [`InputGroupButton`] — ghost `Button` with `xs`/`sm`/`icon-xs`/`icon-sm`
+//! - `InputGroupAddon` — `inline-start` / `inline-end` / `block-start` /
+//!   `block-end` alignment; holds text, icons, `Kbd` and
+//!   `InputGroupButton`s.
+//! - `InputGroupText` — `text-sm text-muted-foreground` inline text.
+//! - `InputGroupButton` — ghost `Button` with `xs`/`sm`/`icon-xs`/`icon-sm`
 //!   sizes.
-//! - [`InputGroupInput`] / [`InputGroupTextarea`] — frameless borderless
+//! - `InputGroupInput` / `InputGroupTextarea` — frameless borderless
 //!   controls (`flex-1 rounded-none border-0 bg-transparent shadow-none`).
 //!
 //! Focus, invalid and layout flags are resolved from the previous frame
 //! (like the source's `has-[]:` selectors, which are reactive); they settle
 //! one frame after a state change.
+//!
+//! S1 decisions (frozen spec, Batch B input-group S1 report):
+//!
+//! - FG-1 stretch: a width-`auto` member of a vertical `ButtonGroup`
+//!   stretches to the widest member's width (`group::stretch_target`);
+//!   horizontal targets never stretch inputs; an explicit `.width()` is
+//!   exempt. Inline addons/buttons are never stretched to the container
+//!   height (the container is `items-center`, not `items-stretch`).
+//! - Fusing: members paint on the FULL layout rect and share ONE 1px
+//!   border by border REMOVAL (clip), not by shifting the draw rect
+//!   (BTG-VIS-01: the earlier 1px draw-rect inset left the shared column
+//!   painted by neither member — a backdrop seam).
+//! - Disabled (OPEN-3): two separate mechanisms, never collapsed.
+//!   `InputGroup::disabled` is the control-level disabled (mechanism (a):
+//!   nova only — container fill `bg-input/50`/`/80` plus whole-container
+//!   50% opacity). `InputGroup::group_disabled` is the group-level flag
+//!   (mechanism (b): both styles — addons fade 50%). Fade factors are
+//!   multiplicative (`0.5^n`): both firing under nova renders an addon
+//!   at 25%. Footnote (S1 §1.3 wording, carried from the VIS-03
+//!   adjudication): the frozen spec text says the text alpha is
+//!   "50% × 0.5"; the 25% effective fade is implemented via the opaque
+//!   precomposite (`container_group_fade`, shape alpha 1.0, not 0.25) —
+//!   the rendered values are the 25% fade and are correct. Addon buttons
+//!   do not fade (`Button` has no fade-only rendering) — a known
+//!   limitation, proposed D6.
+//! - Combined state (OPEN-2): invalid wins BOTH border and ring colour
+//!   when focused+invalid. Under nova, invalid at rest gets a 3px
+//!   destructive ring; under base it gets none.
+//! - `icon-sm` is `size-8` = 32x32 under BOTH styles (N4); a 28px
+//!   rendering under nova is a defect.
+//! - Block-addon vertical padding follows the N15 conditional (base 12px,
+//!   or 10px when a direct-child `input` exists; nova uniformly 8px).
+//! - The kbd negative margin is applied when a direct-child `Kbd` or
+//!   `KbdGroup` is detected via the kbd-line channel (`Kbd`/`KbdGroup`
+//!   record `has_kbd` against the addon id stack; `kbd.rs` is
+//!   recording-only). The kbd radius (5px) is carried, not fixed — it
+//!   rides on the same channel and is now implementable via it, but is
+//!   not applied here. The button negative margin is applied when
+//!   a direct-child `InputGroupButton` is detected; when both a button
+//!   and a kbd are present, the kbd margin wins (OPEN-7(a)).
+//!
+//! S1 implementation notes (egui mechanics, verified by pins):
+//!
+//! - The addon's row is a `ui.horizontal`, which sizes a new row to
+//!   `spacing().interact_size.y` (36pt theme floor) — under the nova
+//!   `h-8` (32pt) row that stretched every addon (and the content rect)
+//!   to 36pt. The group's child `Ui` pins `interact_size.y` to the
+//!   container height, the same guard the input already applies in its
+//!   own scope.
+//! - The addon's row uses NO inter-item spacing: egui adds
+//!   `item_spacing` after EVERY widget including the last, so a `gap-2`
+//!   (8px) would inflate the addon's outer edge by 8px (InlineEnd
+//!   trailing 20px instead of the spec's 12px; InlineStart pushing the
+//!   input 8px too far right, beyond the spec §3.5 margin). Single-child
+//!   addons are exactly spec-correct; an addon with several direct
+//!   children renders them with no gap (spec `gap-2` — documented
+//!   limitation).
+//! - Inner controls are frameless via `Frame::NONE`, not
+//!   `background_color(TRANSPARENT)` — the latter clears only the fill
+//!   and leaves the theme-default 1px frame stroke inside the container
+//!   border.
+//! - Addon click-to-focus is DEFERRED one frame: a focus request made in
+//!   the click frame is undone by the input's own `interact` in the same
+//!   frame (egui surrenders focus when a click lands on a widget the
+//!   pointer is not over, `SurrenderFocusOn::Clicks`, and the click lands
+//!   on the addon, not the input). The click only records the target;
+//!   the request fires on the first click-free frame (field.rs's
+//!   deferred-forward pattern).
+//!
+//! Known limitations (carried to S3/S5/S6, see the S1 report):
+//!
+//! - A block addon's row is `interact_size`-tall (36px base / 32px nova)
+//!   instead of content-height (~20px for text): the input sits 46px
+//!   below the container top (base) instead of the spec's 30px. The
+//!   divider still adds exactly its 10px. Measure-then-real would fix
+//!   it but is blocked — the content closure is `FnOnce`.
+//! - A narrow inline addon in a column group renders left-aligned, not
+//!   centred (§3.1 `items-center`): the addon's `ui.horizontal`
+//!   allocates the full available width. Same `FnOnce` block.
+//! - Addon buttons do not fade under the disabled mechanisms (proposed
+//!   D6); the outline variant's `shadow-none` (OPEN-1(c)) cannot be
+//!   enforced from here (`Button` has no shadow-override API).
+//!
+//! Deviations (PROPOSED) and verification state (S10, 2026-11-20):
+//!
+//! - D1 (PROPOSED): `:focus-visible` modality — the container ring shows
+//!   whenever the inner control holds focus, not only for
+//!   keyboard-initiated `:focus-visible` focus. Ring geometry (3px,
+//!   outside the border) and colours are unchanged; only the trigger
+//!   condition differs.
+//! - D2 (PROPOSED): no ARIA tree in egui — `role="group"` on the
+//!   container/addons and the `data-slot` / `data-align` / `data-size`
+//!   attributes have no egui analogue and are not rendered. `data-align`
+//!   IS ported as the `AddonAlign` layout enum because it drives layout.
+//! - D3 (PROPOSED, conditional): `has-[]` reactivity timing — focus,
+//!   invalid, disabled and layout flags resolve from the previous frame,
+//!   so settled frames are correct but a state change is visible one
+//!   frame late. The one-frame timing stays UNRESOLVED (S10 did not
+//!   re-attempt it, S8 gate G3); what S10 verified is that the addon
+//!   click focuses the input in every config.
+//! - D6 (PROPOSED): addon buttons do not fade under the disabled
+//!   mechanisms (`Button` has no fade-only rendering) — see Known
+//!   limitations above.
+//! - OPEN-4 (DECIDED, S8 gate G2): ruling 6's narrow reading governs —
+//!   base `transition-[color,box-shadow]` covers text colour +
+//!   box-shadow only, so the base ring eases 150ms and the base border
+//!   snaps; nova `transition-colors` covers colours only, so the nova
+//!   border colour eases 150ms and the nova ring snaps. Wired via
+//!   `utils::animation` (`container_transition_specs`); everything else
+//!   snaps as before.
+//! - OPEN-1 residuals (spec §11): the `cn()` merge questions for the
+//!   three composed parts stay open — S5 judges rendered output; the
+//!   outline variant's `shadow-none` cannot be enforced from here (see
+//!   Known limitations).
+//! - S10 (2026-11-20): PASS, 0 defects — all 6 S9 fixes verified
+//!   rendered in all 4 configs; S5/S6 PASSes re-verified; S7 budgets
+//!   re-measured within limits; render floor NOT VERIFIED
+//!   (environment-limited, S8 gate G5). Qualifications, not defects:
+//!   the vega-dark border OUT leg is UNRESOLVED by video alone (0.3s
+//!   presentation gap; the pins + the other three border legs support
+//!   SNAP), and the nova-dark border IN leg is PARTIAL
+//!   (presentation-compressed; the ease is confirmed by the
+//!   intermediate + the pins).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -35,20 +161,22 @@
 //!     });
 //!     InputGroupInput::new(&mut url).placeholder("example.com").show(ui);
 //!     InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
-//!         InputGroupButton::new("").icon(Icon::Copy).show(ui);
+//!         InputGroupButton::icon(Icon::Copy).show(ui);
 //!     });
 //! });
 //! ```
 
+use crate::components::attachment::mix;
 use crate::components::button::{
     fuse_radius, group, Button, ButtonSize, ButtonVariant, GroupOrientation, GroupPosition,
 };
 use crate::components::input;
 use crate::icons::Icon;
-use crate::theme::{color_alpha, RadiusTokens, ShadcnTheme, Style};
+use crate::theme::{blend, color_alpha, Palette, RadiusTokens, ShadcnTheme, Style};
+use crate::utils::animation::{transition_alpha, transition_color_to, Easing, TransitionSpec};
 use egui::{
-    Align as EguiAlign, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Rect, Response,
-    Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
+    Align as EguiAlign, Align2, Color32, CornerRadius, EventFilter, FontId, Frame, Id, Layout,
+    Margin, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
 };
 
 /// Container height (`h-9` base recipe; nova `.cn-input-group` `h-8`).
@@ -64,6 +192,37 @@ pub(crate) fn container_radius(style: Style, radius: &RadiusTokens) -> u8 {
     match style {
         Style::Nova => radius.lg_u8(),
         _ => radius.md_u8(),
+    }
+}
+
+/// Per-property transition specs for the container chrome (IGP-ANM-01,
+/// S8 gate G2 + ruling 6 narrow reading; the input.rs precedent).
+#[derive(Clone, Copy, Debug)]
+struct ContainerTransitionSpecs {
+    /// Border colour: eases under nova (`transition-colors`), snaps
+    /// under base (`transition-[color,box-shadow]` covers text colour
+    /// + box-shadow only).
+    color: TransitionSpec,
+    /// Ring (a `box-shadow` layer): eases under base, snaps under nova
+    /// (`transition-colors` has no box-shadow).
+    shadow: TransitionSpec,
+}
+
+fn container_transition_specs(style: Style) -> ContainerTransitionSpecs {
+    // A zero-duration spec snaps instantly while keeping the animator
+    // state fresh across style switches (input/checkbox precedent).
+    let snap = TransitionSpec::secs(0.0, Easing::EaseInOut);
+    // 150ms + EaseInOut: the Tailwind v4 framework defaults.
+    let live = TransitionSpec::default();
+    match style {
+        Style::Nova => ContainerTransitionSpecs {
+            color: live,
+            shadow: snap,
+        },
+        _ => ContainerTransitionSpecs {
+            color: snap,
+            shadow: live,
+        },
     }
 }
 
@@ -122,15 +281,6 @@ fn addon_block_padding_x(style: Style) -> f32 {
     }
 }
 
-/// Block addon vertical padding (`pt-3`/`pb-3` base recipe; nova
-/// `pt-2`/`pb-2`).
-fn addon_block_padding_y(style: Style) -> f32 {
-    match style {
-        Style::Nova => 8.0, // pt-2 / pb-2
-        _ => 12.0,          // pt-3 / pb-3
-    }
-}
-
 /// Control side padding next to an inline addon
 /// (`[&>input]:pl-2`/`pr-2` base recipe; nova `pl-1.5`/`pr-1.5`).
 fn control_inline_padding(style: Style) -> f32 {
@@ -138,6 +288,144 @@ fn control_inline_padding(style: Style) -> f32 {
         Style::Nova => 6.0, // pl-1.5 / pr-1.5
         _ => 8.0,           // pl-2 / pr-2
     }
+}
+
+/// Default control side padding with no addon on that side: the input's
+/// own padding (`px-3` base; `px-2.5` nova via `.cn-input`, §3.5).
+fn control_default_padding(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0,                    // px-2.5
+        _ => crate::theme::tokens::spacing::MD, // px-3
+    }
+}
+
+/// Negative margin for a direct-child button in an inline addon (§3.4):
+/// `ml-[-0.45rem]`/`mr-[-0.45rem]` base, `ml-[-0.3rem]`/`mr-[-0.3rem]`
+/// nova. Pulls the button toward the container's outer edge,
+/// compensating the addon's outer padding (base inline-start button
+/// outer edge sits 12 − 7.2 = 4.8px from the container's content edge).
+fn addon_button_negative_margin(style: Style) -> f32 {
+    match style {
+        Style::Nova => 4.8, // 0.3rem
+        _ => 7.2,           // 0.45rem
+    }
+}
+
+/// Negative margin for a direct-child kbd in an inline addon (§3.4):
+/// `ml-[-0.35rem]`/`mr-[-0.35rem]` base, `ml-[-0.15rem]`/`mr-[-0.15rem]`
+/// nova. Pulls the kbd toward the container's outer edge, compensating
+/// the addon's outer padding (base inline-end kbd outer edge sits
+/// 12 − 5.6 = 6.4px from the container's content edge; nova
+/// 8 − 2.4 = 5.6px).
+///
+/// When BOTH a direct-child button and a direct-child kbd exist, the kbd
+/// margin wins (OPEN-7(a), decided): Tailwind v4 emits the kbd rule after
+/// the button rule in the utilities layer and in the `.cn-*` @apply
+/// expansion, so with equal specificity the kbd margin is the one that
+/// paints (verified by a Tailwind v4.3.5 compile test; see the channel
+/// report §2).
+fn addon_kbd_negative_margin(style: Style) -> f32 {
+    match style {
+        Style::Nova => 2.4, // 0.15rem
+        _ => 5.6,           // 0.35rem
+    }
+}
+
+/// Block addon vertical padding with the N15 conditional (§3.3): base
+/// `pt-3`/`pb-3` (12px), or `pt-2.5`/`pb-2.5` (10px) when a direct-child
+/// `input` exists; nova uniformly `pt-2`/`pb-2` (8px — the conditional
+/// is a no-op there).
+fn addon_block_padding_y_conditional(style: Style, has_input: bool) -> f32 {
+    match style {
+        Style::Nova => 8.0, // pt-2 / pb-2
+        _ => {
+            if has_input {
+                10.0 // pt-2.5 / pb-2.5
+            } else {
+                12.0 // pt-3 / pb-3
+            }
+        }
+    }
+}
+
+/// The input's `TextEdit` margins (§3.5, pure): side padding from the
+/// inline addons (`pl-2`/`pr-2` base, `pl-1.5`/`pr-1.5` nova) or the
+/// input's own padding (`px-3` base, `px-2.5` nova) with no addon on
+/// that side; top/bottom from the block addons (`pt-3`/`pb-3` = 12px,
+/// both styles). A `<textarea>` is never targeted by these rules.
+fn control_margins(
+    style: Style,
+    inline_start: bool,
+    inline_end: bool,
+    block_start: bool,
+    block_end: bool,
+) -> Margin {
+    Margin {
+        left: (if inline_start {
+            control_inline_padding(style)
+        } else {
+            control_default_padding(style)
+        }) as i8,
+        right: (if inline_end {
+            control_inline_padding(style)
+        } else {
+            control_default_padding(style)
+        }) as i8,
+        top: if block_end { 12 } else { 0 },
+        bottom: if block_start { 12 } else { 0 },
+    }
+}
+
+/// Container fade factor (mechanism (a), §4.4): under nova, a disabled
+/// descendant makes the WHOLE container render at 50%
+/// (`has-disabled:opacity-50` — element opacity, border included).
+/// Base has no container-level disabled rule, so the factor is 1.0 there.
+fn container_fade(disabled: bool, style: Style) -> f32 {
+    if disabled && style == Style::Nova {
+        0.5
+    } else {
+        1.0
+    }
+}
+
+/// Addon fade factor (mechanism (b), §4.4): each addon fades to 50% when
+/// the group carries `data-disabled="true"` (both styles).
+fn addon_fade(disabled_group: bool) -> f32 {
+    if disabled_group {
+        0.5
+    } else {
+        1.0
+    }
+}
+
+/// Pre-fade container fill rule value (mechanism (a), §4.4): the fill
+/// `bg-input/50` (light) / `bg-input/80` (dark) BEFORE the container
+/// opacity is applied. The [`container_group_fade`] precomposite needs
+/// the pre-fade fill (the fill as it appears in the container's own
+/// buffer, before the container's 50% opacity).
+fn container_fill_pre_fade(p: Palette, dark: bool) -> Color32 {
+    color_alpha(p.input, if dark { 0.8 } else { 0.5 })
+}
+
+/// Whole-element group fade for one interior slot under mechanism (a)
+/// (`has-disabled:opacity-50`, nova only; IGP-VIS-03): the slot paints
+/// OPAQUE with `0.5 * (slot over fill over backdrop) + 0.5 * backdrop`,
+/// where `fill` is the container's pre-fade fill and `backdrop` is
+/// `p.background`. Same shape as the `disabled_group_fade` in `input.rs`
+/// (INP-VIS-01) and `checkbox.rs` (CHK-VIS-01): per-slot alpha halving
+/// double-fades the overlap pixels — a halved border stroke over the
+/// halved fill read (230) nova-light where group fade requires (242),
+/// halved glyphs over the faded fill read (172) where group fade
+/// requires (185), and the placeholder did not fade at all (the hint is
+/// painted from the theme's `weak_text_color`, which the builder's
+/// `.text_color()` never reaches). The fill itself keeps halving (it
+/// paints over the backdrop alone, where halving IS the group fade);
+/// the ring and shadow keep halving for the same reason (they sit
+/// outside the rect). The backdrop approximation (exact on the gallery
+/// page, where the panel fill is `p.background`) is the same recorded
+/// limitation as the input/checkbox precedents.
+fn container_group_fade(slot: Color32, fill: Color32, backdrop: Color32) -> Color32 {
+    mix(backdrop, blend(blend(backdrop, fill), slot), 0.5)
 }
 
 /// Flags recorded by the container's children while they render. The
@@ -149,16 +437,36 @@ pub(crate) struct GroupRecord {
     inline_start: bool,
     inline_end: bool,
     block: bool,
+    /// A direct-child block-start addon is present (§3.5: the input gets
+    /// `pb-3` below it).
+    block_start: bool,
+    /// A direct-child block-end addon is present (§3.5: the input gets
+    /// `pt-3` above it).
+    block_end: bool,
     textarea: bool,
     /// The container was created with `.disabled(true)`.
     disabled_container: bool,
+    /// The group carries `data-disabled="true"` (mechanism (b), §4.4):
+    /// each addon fades to 50%.
+    disabled_group: bool,
+    /// A descendant control is disabled (mechanism (a) trigger, §4.4;
+    /// set by Input/Textarea/Button with `.disabled(true)` — OPEN-6
+    /// practical reading: any disabled form-control descendant).
+    control_disabled: bool,
+    /// A direct-child `input` exists (N15 conditional, §3.3; a
+    /// `<textarea>` does NOT set this).
+    has_input: bool,
+    /// The group's first input is disabled (addon click-to-focus on a
+    /// disabled input is a platform no-op, §7.2 rule 5).
+    input_disabled: bool,
     /// Measured content height of a column container (for the next frame's
     /// reservation).
     height: f32,
     /// Measured width of the trailing inline addon (for the next frame's
     /// input sizing).
     end_addon_width: f32,
-    /// The group's text control id, for addon click-to-focus.
+    /// The group's first input id, for addon click-to-focus (§7.2: only
+    /// `<input>` elements are focused — never `<textarea>`).
     input_id: Option<Id>,
     /// A button inside the group was clicked this frame (the addon's
     /// click-to-focus must not steal it).
@@ -193,6 +501,118 @@ fn pop_id(ui: &Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(stack_key(), stack));
 }
 
+fn addon_stack_key() -> Id {
+    Id::unique("shadcn_input_group_addon_stack")
+}
+
+fn current_addon_id(ui: &Ui) -> Option<egui::Id> {
+    ui.ctx()
+        .data_mut(|d| d.get_temp::<Vec<egui::Id>>(addon_stack_key()))
+        .and_then(|stack| stack.last().copied())
+}
+
+fn push_addon_id(ui: &Ui, id: egui::Id) {
+    let mut stack: Vec<egui::Id> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Vec<egui::Id>>(addon_stack_key()))
+        .unwrap_or_default();
+    stack.push(id);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(addon_stack_key(), stack));
+}
+
+fn pop_addon_id(ui: &Ui) {
+    let mut stack: Vec<egui::Id> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Vec<egui::Id>>(addon_stack_key()))
+        .unwrap_or_default();
+    stack.pop();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(addon_stack_key(), stack));
+}
+
+/// Records that a `Kbd` or `KbdGroup` was shown directly inside the
+/// innermost enclosing addon (kbd-line channel, IGP-VIS-04): sets the
+/// `has_kbd` flag against the addon id on top of the stack. Recording
+/// only — no rendering change. Idempotent (a plain boolean set), so a
+/// `KbdGroup`'s measure pass and real pass, and nested `Kbd` children,
+/// all set the same flag. A kbd shown outside any addon records nothing
+/// (`current_addon_id` is `None`); a kbd inside a nested addon records
+/// against the innermost addon only (same stack discipline as
+/// `has_button`).
+///
+/// Approximation (same class as `has_button`): the stack cannot tell a
+/// direct child from a kbd nested inside a non-addon container within the
+/// addon — both record. No demo composition exercises that case.
+pub(crate) fn record_kbd_in_addon(ui: &Ui) {
+    if let Some(addon_id) = current_addon_id(ui) {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(addon_id.with("has_kbd"), true);
+        });
+    }
+}
+
+/// Paints the container border with the leading edge removed for
+/// Middle/Last group members (BTG-VIS-01): members paint on the FULL
+/// layout rect and share ONE 1px border by border REMOVAL, not by
+/// shifting the draw rect — the earlier 1px draw-rect inset left the
+/// shared column painted by neither member (a backdrop seam). Mirrors
+/// `button::paint_fused_stroke` (private there): the full `Inside` ring
+/// is painted through a clip that excludes the leading 1px column
+/// (horizontal) or row (vertical), plus clipped copies for the two
+/// leading corner cells (1x1 fill rects do not rasterize in egui 0.37).
+fn paint_fused_stroke(
+    painter: &Painter,
+    rect: Rect,
+    corner: CornerRadius,
+    stroke: Stroke,
+    orientation: GroupOrientation,
+    position: GroupPosition,
+) {
+    if !matches!(position, GroupPosition::Middle | GroupPosition::Last) {
+        painter.rect_stroke(rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+        return;
+    }
+    let (clip, corners) = match orientation {
+        GroupOrientation::Horizontal => (
+            Rect::from_min_max(Pos2::new(rect.min.x + 1.0, rect.min.y), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.min.x, rect.max.y - 1.0),
+                    Pos2::new(rect.min.x + 1.0, rect.max.y),
+                ),
+            ],
+        ),
+        GroupOrientation::Vertical => (
+            Rect::from_min_max(Pos2::new(rect.min.x, rect.min.y + 1.0), rect.max),
+            [
+                Rect::from_min_max(rect.min, Pos2::new(rect.min.x + 1.0, rect.min.y + 1.0)),
+                Rect::from_min_max(
+                    Pos2::new(rect.max.x - 1.0, rect.min.y),
+                    Pos2::new(rect.max.x, rect.min.y + 1.0),
+                ),
+            ],
+        ),
+    };
+    painter.with_clip_rect(clip).rect_stroke(
+        rect,
+        corner,
+        stroke,
+        egui::epaint::StrokeKind::Inside,
+    );
+    // Corner pixels: the identical ring, clipped to each leading corner
+    // cell. See the doc comment — 1x1 fill rects do not rasterize.
+    for corner_clip in corners {
+        painter.with_clip_rect(corner_clip).rect_stroke(
+            rect,
+            corner,
+            stroke,
+            egui::epaint::StrokeKind::Inside,
+        );
+    }
+}
+
 fn read_record(ui: &Ui, group_id: egui::Id) -> GroupRecord {
     ui.ctx().data_mut(|d| {
         d.get_temp::<GroupRecord>(group_id.with("current"))
@@ -222,6 +642,7 @@ fn read_snapshot(ui: &Ui, group_id: egui::Id) -> GroupRecord {
 pub struct InputGroup {
     width: Option<f32>,
     disabled: bool,
+    group_disabled: bool,
     id_salt: Option<String>,
 }
 
@@ -237,6 +658,7 @@ impl InputGroup {
         Self {
             width: None,
             disabled: false,
+            group_disabled: false,
             id_salt: None,
         }
     }
@@ -248,9 +670,25 @@ impl InputGroup {
         self
     }
 
-    /// Marks the whole group disabled (children render at 50%).
+    /// Marks the group's control disabled (mechanism (a), §4.4: the
+    /// `has-disabled:` trigger). Under nova the container fill becomes
+    /// `bg-input/50` (light) / `bg-input/80` (dark) and the whole
+    /// container renders at 50% opacity; under base the container is
+    /// unchanged and only the inner controls' own disabled rules apply.
+    /// The inner controls are disabled too (via `disabled_in`).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Marks the GROUP `data-disabled="true"` (mechanism (b), §4.4: the
+    /// caller-set attribute). Each addon fades to 50% in both styles;
+    /// the container chrome is unchanged and the control is NOT
+    /// disabled. This is a separate flag from `disabled` — the two
+    /// mechanisms must not collapse (OPEN-3): if both fire under nova,
+    /// an addon renders at 25% (`0.5 x 0.5`).
+    pub fn group_disabled(mut self, group_disabled: bool) -> Self {
+        self.group_disabled = group_disabled;
         self
     }
 
@@ -283,20 +721,42 @@ impl InputGroup {
         let position = grp.map(|(_, pos)| pos).unwrap_or(GroupPosition::Only);
         let orientation = grp.map(|(o, _)| o).unwrap_or(GroupOrientation::Horizontal);
 
+        // FG-1: a width-`auto` member of a vertical group stretches to
+        // the widest member's width (`group::stretch_target`, the same
+        // channel `Button::show` and `input.rs` read). Horizontal targets
+        // never stretch inputs (the container has a definite `h-9`/`h-8`
+        // height). An explicit `.width()` is a definite width and
+        // exempts.
         let width = match self.width {
             Some(w) => w,
             None => {
-                if ui.layout().is_vertical() {
+                let natural = if ui.layout().is_vertical() {
                     ui.available_width()
                 } else {
                     280.0
+                };
+                if grp.is_some() {
+                    if let Some(target) = group::stretch_target(ui) {
+                        if target.orientation == GroupOrientation::Vertical {
+                            natural.max(target.cross)
+                        } else {
+                            natural
+                        }
+                    } else {
+                        natural
+                    }
+                } else {
+                    natural
                 }
             }
         };
 
-        // `has-[>textarea]:h-auto` / block addons switch to a column.
-        let column = last.block || last.textarea;
-        let hint_height = if column && last.height > 0.0 {
+        // Column iff a block addon is present; a direct-child textarea
+        // makes the height `h-auto` WITHOUT changing direction (row
+        // layout, auto height) — §3.1.
+        let column = last.block;
+        let auto_height = last.block || last.textarea;
+        let hint_height = if auto_height && last.height > 0.0 {
             last.height
         } else {
             container_height(style) // h-9 / nova h-8
@@ -304,25 +764,35 @@ impl InputGroup {
 
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, hint_height), Sense::hover());
 
+        // Mechanism (a) trigger: the container's own `.disabled(true)`
+        // or a disabled descendant last frame (§4.4; OPEN-6 practical
+        // reading: any disabled form-control descendant).
+        let disabled_trigger = self.disabled || last.control_disabled;
+        // Whole-container opacity under nova (`has-disabled:opacity-50`).
+        let fade = container_fade(disabled_trigger, style);
+
         // Background fill + shadow must be painted before the children so
-        // their text stays on top. `has-disabled:bg-input/50
-        // dark:has-disabled:bg-input/80`.
+        // their text stays on top. `shadow-xs` always paints (both
+        // styles, disabled or not); under the nova container fade it
+        // renders at 50% (element opacity).
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
             let corner = CornerRadius::same(container_radius(style, &theme.radius));
-            if !self.disabled {
-                let sh = crate::utils::shadow::shadow_xs(dark);
-                painter.add(
-                    egui::epaint::RectShape::filled(
-                        rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
-                        corner,
-                        sh.color,
-                    )
-                    .with_blur_width(2.0),
-                );
-            }
-            let fill = if self.disabled {
-                color_alpha(p.input, if dark { 0.8 } else { 0.5 })
+            let sh = crate::utils::shadow::shadow_xs(dark);
+            painter.add(
+                egui::epaint::RectShape::filled(
+                    rect.translate(egui::vec2(sh.offset[0] as f32, sh.offset[1] as f32)),
+                    corner,
+                    color_alpha(sh.color, fade),
+                )
+                .with_blur_width(2.0),
+            );
+            // Fill: nova + disabled descendant -> `has-disabled:bg-input/50`
+            // (light) / `bg-input/80` (dark), times the container opacity
+            // (effective 25% / 40%). Base has NO container-level disabled
+            // rule: the fill stays `dark:bg-input/30` / transparent.
+            let fill = if disabled_trigger && style == Style::Nova {
+                color_alpha(color_alpha(p.input, if dark { 0.8 } else { 0.5 }), fade)
             } else if dark {
                 color_alpha(p.input, 0.3)
             } else {
@@ -333,12 +803,22 @@ impl InputGroup {
             }
         }
 
+        // `items-center` in ALL modes (§3.1): row children are
+        // vertically centred; column children are horizontally centred
+        // unless they carry `w-full` (which block addons and the control
+        // do).
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(if column {
-            Layout::top_down(EguiAlign::Min)
+            Layout::top_down(EguiAlign::Center)
         } else {
             Layout::left_to_right(EguiAlign::Center)
         }));
         child.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        // The theme's `interact_size` floor is 36pt; `ui.horizontal`
+        // sizes a new row to it, which would stretch every addon (and
+        // the content rect) to 36pt under the nova `h-8` (32pt) row. Pin
+        // it to the container height — the input's scoped spacing does
+        // the same for the control.
+        child.spacing_mut().interact_size.y = container_height(style);
 
         // Fresh per-frame record for the children to update.
         write_record(
@@ -346,6 +826,7 @@ impl InputGroup {
             group_id,
             GroupRecord {
                 disabled_container: self.disabled,
+                disabled_group: self.group_disabled,
                 ..GroupRecord::default()
             },
         );
@@ -359,29 +840,42 @@ impl InputGroup {
         let mut record = read_record(ui, group_id);
         // Measure the actual content for the next frame's reservation.
         let content_rect = rect.union(child.min_rect());
-        record.height = content_rect.height();
+        // Only a frame laid out in the direction the NEXT frame will
+        // use gives a usable height. The first frame lays out as a row
+        // (no snapshot yet) while the block addons it discovers switch
+        // the next frame to a column — and in that row the textarea is
+        // squeezed behind the full-width block row to ~0 width, so its
+        // placeholder wraps into ~20 lines (~407px in the probe, 391px
+        // in the gallery). That measurement must NOT be recorded: the
+        // `rect.union(...)` above would sustain it forever, because the
+        // container keeps allocating the poisoned height and the union
+        // can never shrink below it (VIS-02: the §3 box stuck at 391px
+        // in the gallery while the content itself is ~147px nova /
+        // ~171px vega). The recorded height is therefore the CHILD
+        // content height, taken only when this frame's direction
+        // matches the next frame's (`column == record.block`); a
+        // textarea-only group stays a row in both frames, so its
+        // measurement is still recorded.
+        if column == record.block {
+            record.height = child.min_rect().height();
+        }
         write_snapshot(ui, group_id, record);
 
         if ui.is_rect_visible(content_rect) {
             let painter = ui.painter();
             let radius = container_radius(style, &theme.radius);
             let corner = fuse_radius(CornerRadius::same(radius), orientation, position);
-            let draw_rect = match orientation {
-                GroupOrientation::Horizontal
-                    if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-                {
-                    Rect::from_min_max(content_rect.min + egui::vec2(1.0, 0.0), content_rect.max)
-                }
-                GroupOrientation::Vertical
-                    if matches!(position, GroupPosition::Middle | GroupPosition::Last) =>
-                {
-                    Rect::from_min_max(content_rect.min + egui::vec2(0.0, 1.0), content_rect.max)
-                }
-                _ => content_rect,
-            };
+            // BTG-VIS-01: the draw rect is the FULL border box at every
+            // position (border-box: the stroke occupies the outermost 1px
+            // ring of the box); border removal is the stroke painter's
+            // job, not a draw-rect inset.
+            let draw_rect = content_rect;
 
             let invalid = record.invalid;
-            let stroke_color = if invalid {
+            // OPEN-2: invalid wins BOTH border and ring colour when
+            // focused+invalid (radio-group G3 + native-select OPEN-2
+            // precedent: the invalid state must remain visible).
+            let stroke_target = if invalid {
                 p.destructive
             } else if record.focus {
                 // `has-[control:focus-visible]:border-ring`
@@ -389,25 +883,94 @@ impl InputGroup {
             } else {
                 p.input
             };
-            // `has-disabled:opacity-50` fades the border too.
-            let stroke_color = if self.disabled {
-                color_alpha(stroke_color, 0.5)
+            // IGP-ANM-01: the border colour rides the COLOR spec (S8
+            // gate G2 + ruling 6 narrow reading): it eases 150ms under
+            // nova (`transition-colors`) and snaps under base
+            // (`transition-[color,box-shadow]` covers text colour +
+            // box-shadow only). Endpoint tracking (input.rs precedent):
+            // the first call returns the target settled, and a target
+            // change eases from the displayed colour. The slot never
+            // crosses the transparent boundary, so
+            // `transition_color_to`'s caveat does not apply. Disabled
+            // fade after animation (INP-VIS-01 shape).
+            let specs = container_transition_specs(style);
+            let stroke_animated = transition_color_to(
+                ui.ctx(),
+                group_id.with("border"),
+                stroke_target,
+                specs.color,
+            )
+            .color;
+            // `has-disabled:opacity-50` fades the border too (nova only;
+            // `fade` is 1.0 under base). IGP-VIS-03: the border
+            // precomposites the group fade OPAQUE instead of halving its
+            // alpha over the faded fill — a halved stroke over the halved
+            // fill read (230) nova-light where group fade requires (242)
+            // (input.rs `disabled_group_fade` shape, INP-VIS-01).
+            let stroke_color = if fade < 1.0 {
+                container_group_fade(
+                    stroke_animated,
+                    container_fill_pre_fade(p, dark),
+                    p.background,
+                )
             } else {
-                stroke_color
+                stroke_animated
             };
             let stroke = Stroke::new(1.0, stroke_color);
-            painter.rect_stroke(draw_rect, corner, stroke, egui::epaint::StrokeKind::Inside);
+            paint_fused_stroke(painter, draw_rect, corner, stroke, orientation, position);
 
-            // `has-[[data-slot=input-group-control]:focus-visible]:
-            // ring-[3px] ring-ring/50`
-            if record.focus && !self.disabled {
-                let ring = if invalid {
-                    color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
+            // Ring: 3px, adjacent to the border box — the ring rect is
+            // the UNEXPANDED content rect (`paint_ring` strokes
+            // `Outside`, so an expanded rect would leave a 1px gap).
+            // Shows when focused (`has-[control:focus-visible]:ring-3
+            // ring-ring/50`), or at rest when invalid under nova (§4.3:
+            // base has no ring width at rest, nova has `ring-3`). The
+            // focus ring is suppressed when disabled (a disabled input
+            // cannot take focus); the nova invalid rest ring paints under
+            // the container fade (§9, disabled+invalid).
+            //
+            // IGP-ANM-01: the ring is a `box-shadow` layer, so its
+            // colour AND visibility ride the SHADOW spec (input.rs
+            // precedent): they ease 150ms under base
+            // (`transition-[color,box-shadow]`) and snap under nova
+            // (`transition-colors` has no box-shadow). The colour
+            // target is resolved in every state (mirroring input.rs
+            // `c.ring`); visibility is a separate alpha leg, so a focus
+            // flip eases the ring in/out while a colour-only change (an
+            // invalid flip while focused) eases the colour.
+            let ring_target = if invalid {
+                color_alpha(p.destructive, if dark { 0.4 } else { 0.2 })
+            } else {
+                color_alpha(p.ring, 0.5)
+            };
+            let ring_shown = (record.focus && !self.disabled) || (invalid && style == Style::Nova);
+            let ring_color =
+                transition_color_to(ui.ctx(), group_id.with("ring"), ring_target, specs.shadow)
+                    .color;
+            let ring_alpha = transition_alpha(
+                ui.ctx(),
+                group_id.with("ring_alpha"),
+                0.0,
+                1.0,
+                ring_shown,
+                specs.shadow,
+            )
+            .alpha;
+            if ring_alpha > 0.0 {
+                let ring = color_alpha(color_alpha(ring_color, ring_alpha), fade);
+                let stroke = Stroke::new(3.0, ring);
+                if grp.is_some() {
+                    // FG-3: queue the ring so it paints above the
+                    // following siblings it abuts (the `z-10` rule).
+                    group::queue_ring(ui, content_rect, corner, stroke);
                 } else {
-                    color_alpha(p.ring, 0.5)
-                };
-                let ring_rect = content_rect.expand2(egui::vec2(1.0, 1.0));
-                crate::utils::focus::paint_ring(painter, ring_rect, ring, 3.0, radius as f32);
+                    painter.rect_stroke(
+                        content_rect,
+                        corner,
+                        stroke,
+                        egui::epaint::StrokeKind::Outside,
+                    );
+                }
             }
         }
 
@@ -471,9 +1034,19 @@ impl<'a> InputGroupInput<'a> {
 
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
+        // CSS `group-has-[>input]` tests DIRECT children only: an input
+        // rendered inside an addon is not a direct child of the group.
+        // Same stack approach as `has_button` (IGP-F-03).
+        if current_addon_id(ui).is_none() {
+            record.has_input = true;
+        }
         if self.invalid {
             record.invalid = true;
         }
+        if self.disabled {
+            record.control_disabled = true;
+        }
+        record.input_disabled = self.disabled || self.disabled_in(ui);
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -485,25 +1058,48 @@ impl<'a> InputGroupInput<'a> {
         let snapshot = group_id.map(|id| read_snapshot(ui, id)).unwrap_or_default();
         let width = ui.available_width() - snapshot.end_addon_width.max(0.0);
         let is_empty = self.text.is_empty();
-        let text_color = if self.disabled || self.disabled_in(ui) {
-            color_alpha(p.foreground, 0.5)
+        // Text alpha: the control's own disabled rule (50%) times the
+        // container fade (mechanism (a), nova only). Mechanism (b) does
+        // not touch the control (addons only). IGP-VIS-03: under the
+        // container fade the text precomposites the group fade OPAQUE
+        // (input.rs `disabled_group_fade` shape, INP-VIS-01) — the slot
+        // carries the control's own fade, the mix carries the
+        // container's. Halving the alpha over the faded fill
+        // double-faded the glyph cores ((175) nova-light where group
+        // fade requires (190) with both flags).
+        let fade = container_fade(
+            record.disabled_container || snapshot.control_disabled,
+            style,
+        );
+        let own_alpha = if self.disabled || self.disabled_in(ui) {
+            0.5
         } else {
-            p.foreground
+            1.0
+        };
+        let text_color = if fade < 1.0 {
+            container_group_fade(
+                color_alpha(p.foreground, own_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
+        } else {
+            color_alpha(p.foreground, own_alpha)
         };
 
         // `[&>input]:pl-2` when an inline-start addon precedes the control
         // (nova `pl-1.5`); `[&>input]:pr-2` when an inline-end addon follows
-        // (nova `pr-1.5`, detected from last frame's snapshot).
-        let left_pad = if record.inline_start {
-            control_inline_padding(style)
-        } else {
-            crate::theme::tokens::spacing::MD
-        };
-        let right_pad = if snapshot.inline_end {
-            control_inline_padding(style)
-        } else {
-            crate::theme::tokens::spacing::MD
-        };
+        // (nova `pr-1.5`, detected from last frame's snapshot). No addon on
+        // a side: the input's own padding (`px-3` base, `px-2.5` nova).
+        // `[&>input]:pb-3` when a block-start addon is present, `pt-3`
+        // when a block-end addon is present (§3.5, both styles, read from
+        // last frame's snapshot). A `<textarea>` is never targeted.
+        let margins = control_margins(
+            style,
+            record.inline_start,
+            snapshot.inline_end,
+            snapshot.block_start,
+            snapshot.block_end,
+        );
 
         let disabled = self.disabled || self.disabled_in(ui);
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
@@ -514,13 +1110,21 @@ impl<'a> InputGroupInput<'a> {
             .desired_width(width.max(1.0))
             .min_size(Vec2::new(width.max(1.0), input::input_height(style)))
             .align(Align2::LEFT_CENTER)
-            .margin(Margin {
-                left: left_pad as i8,
-                right: right_pad as i8,
-                top: 0,
-                bottom: 0,
-            })
-            .background_color(Color32::TRANSPARENT);
+            // The control is frameless: all chrome lives on the
+            // container. A theme-default frame would paint its own
+            // 1px stroke inside the container border (see the module
+            // docs: `background_color(TRANSPARENT)` clears only the
+            // fill). `Frame::NONE` removes the stroke too — but with
+            // an explicit frame the builder's `.margin()` is IGNORED
+            // (egui 0.37 `builder.rs:693-706` applies it ONLY in the
+            // `else` branch, when no frame is given), so the §3.5
+            // padding is baked into the frame's `inner_margin`
+            // instead (the `input.rs` precedent). The text inset
+            // from the rect edge is exactly the §3.5 padding.
+            .frame(Frame {
+                inner_margin: margins,
+                ..Frame::NONE
+            });
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             if is_empty {
                 edit.hint_text(placeholder.to_owned())
@@ -537,15 +1141,38 @@ impl<'a> InputGroupInput<'a> {
         };
 
         // The scoped spacing keeps the theme's `interact_size` floor (36pt)
-        // from overriding the nova `h-8` (32pt) row.
+        // from overriding the nova `h-8` (32pt) row. IGP-VIS-03: the hint
+        // is painted by egui's TextEdit from the theme's `weak_text_color`
+        // (`p.muted_foreground`), which the builder's `.text_color()`
+        // never reaches — the placeholder did not fade at all under
+        // mechanism (a). Precomposite it at the group fade (input.rs:694,
+        // INP-VIS-01) when the container fades; otherwise the theme hint
+        // applies unchanged (base has no container fade — S5: the vega
+        // placeholder stays unfaded).
+        let hint_color = if fade < 1.0 {
+            Some(container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            ))
+        } else {
+            None
+        };
         let out = ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = input::input_height(style);
+            if let Some(hint) = hint_color {
+                ui.visuals_mut().weak_text_color = Some(hint);
+            }
             edit.show(ui)
         });
         let response = out.inner.response.response;
 
         record.focus |= response.has_focus();
-        record.input_id = Some(response.id);
+        // First input wins (§7.2 rule 4: `querySelector` returns the
+        // first matching descendant in document order).
+        if record.input_id.is_none() {
+            record.input_id = Some(response.id);
+        }
         if let Some(group) = group_id {
             write_record(ui, group, record);
         }
@@ -561,8 +1188,8 @@ impl<'a> InputGroupInput<'a> {
     }
 }
 
-/// `InputGroupTextarea` — the multiline control; switches the container to
-/// auto-height column layout.
+/// `InputGroupTextarea` — the multiline control; makes the container
+/// auto-height (row layout kept, §3.1).
 #[derive(Debug)]
 pub struct InputGroupTextarea<'a> {
     text: &'a mut String,
@@ -627,6 +1254,9 @@ impl<'a> InputGroupTextarea<'a> {
         if self.invalid {
             record.invalid = true;
         }
+        if self.disabled {
+            record.control_disabled = true;
+        }
 
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
@@ -634,10 +1264,28 @@ impl<'a> InputGroupTextarea<'a> {
         };
 
         let width = ui.available_width();
-        let text_color = if self.disabled {
-            color_alpha(p.foreground, 0.5)
+        // Text alpha: the control's own disabled rule (50%) times the
+        // container fade (mechanism (a), nova only). The textarea never
+        // records `input_id`: addon clicks focus `<input>` elements
+        // only, never a textarea (§7.2 rule 3). IGP-VIS-03: same
+        // precomposite as the input (see `InputGroupInput::show`) — the
+        // slot carries the control's own fade, the mix carries the
+        // container's.
+        let snapshot = group_id.map(|id| read_snapshot(ui, id)).unwrap_or_default();
+        let fade = container_fade(
+            record.disabled_container || snapshot.control_disabled,
+            style,
+        );
+        let disabled = self.disabled || self.disabled_in(ui);
+        let own_alpha = if disabled { 0.5 } else { 1.0 };
+        let text_color = if fade < 1.0 {
+            container_group_fade(
+                color_alpha(p.foreground, own_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
         } else {
-            p.foreground
+            color_alpha(p.foreground, own_alpha)
         };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         // `px-3 py-3` base recipe; nova `.cn-input-group-textarea` `px-2.5 py-2`.
@@ -652,35 +1300,80 @@ impl<'a> InputGroupTextarea<'a> {
             .desired_width(width)
             .desired_rows(self.rows)
             .min_size(Vec2::new(width, input::input_height(style)))
-            .margin(Margin::symmetric(pad_x as i8, pad_y as i8))
-            .background_color(Color32::TRANSPARENT);
+            // IGP-INT-01: spec §7 requires Escape to be a no-op for a
+            // focused textarea. egui's `Focus::begin_pass` clears focus
+            // on unmodified Escape unless the focused widget's event
+            // filter matches the event, so claim Escape in the filter —
+            // the same shape the textarea line uses (`textarea.rs:555`,
+            // TXT-INT-01). The multiline defaults are restated in full
+            // (arrows captured, Tab NOT captured: Tab is focus
+            // traversal, never `\t`, spec §7). The TextEdit event loop
+            // has no Escape action, so the key becomes a true no-op:
+            // focus, caret, and text unchanged. (The §1 input keeps the
+            // stock filter — its Escape-clear is OBSERVED-G4, not a
+            // defect.)
+            .event_filter(EventFilter {
+                tab: false,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+            })
+            // Frameless, as above: `Frame::NONE` removes the
+            // theme-default 1px frame stroke (fill-only
+            // transparency would leave the stroke behind). With an
+            // explicit frame the builder's `.margin()` is ignored
+            // (egui 0.37 `builder.rs:693-706`), so the `px-3 py-3` /
+            // `px-2.5 py-2` padding is baked into the frame's
+            // `inner_margin` instead.
+            .frame(Frame {
+                inner_margin: Margin::symmetric(pad_x as i8, pad_y as i8),
+                ..Frame::NONE
+            });
         let edit = if let Some(placeholder) = self.placeholder.as_deref() {
             edit.hint_text(placeholder.to_owned())
         } else {
             edit
         };
-        let edit = if self.disabled {
+        let edit = if disabled {
             edit.interactive(false)
         } else {
             edit
         };
 
         // Scoped spacing: same `interact_size` floor guard as the input.
+        // IGP-VIS-03: the textarea hint precomposites the group fade
+        // like the input's (see `InputGroupInput::show`).
+        let hint_color = if fade < 1.0 {
+            Some(container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            ))
+        } else {
+            None
+        };
         let out = ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = input::input_height(style);
+            if let Some(hint) = hint_color {
+                ui.visuals_mut().weak_text_color = Some(hint);
+            }
             edit.show(ui)
         });
         let response = out.inner.response.response;
 
         record.focus |= response.has_focus();
-        if record.input_id.is_none() {
-            record.input_id = Some(response.id);
-        }
         if let Some(group) = group_id {
             write_record(ui, group, record);
         }
 
         response
+    }
+
+    fn disabled_in(&self, ui: &Ui) -> bool {
+        let Some(group_id) = current_id(ui) else {
+            return false;
+        };
+        read_record(ui, group_id).disabled_container
     }
 }
 
@@ -690,6 +1383,8 @@ impl<'a> InputGroupTextarea<'a> {
 #[derive(Debug)]
 pub struct InputGroupAddon {
     align: AddonAlign,
+    divider: bool,
+    invalid: bool,
     id_salt: Option<String>,
 }
 
@@ -698,8 +1393,28 @@ impl InputGroupAddon {
     pub fn new(align: AddonAlign) -> Self {
         Self {
             align,
+            divider: false,
+            invalid: false,
             id_salt: None,
         }
+    }
+
+    /// Adds the divider variant's opposite-side padding (§3.3: a
+    /// block-start addon carrying `border-b` additionally gets `pb-3` /
+    /// `pb-2`; a block-end addon carrying `border-t` additionally gets
+    /// `pt-3` / `pt-2`). The divider LINE itself is the caller's class,
+    /// not an input-group rule, and is not painted here. No-op for
+    /// inline addons.
+    pub fn divider(mut self, divider: bool) -> Self {
+        self.divider = divider;
+        self
+    }
+
+    /// Marks the addon `aria-invalid` (§4.3 trigger: ANY slotted
+    /// descendant with `aria-invalid` turns the container destructive).
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
     }
 
     /// Sets a stable id salt.
@@ -718,7 +1433,60 @@ impl InputGroupAddon {
         let style = theme.style;
         let group_id = current_id(ui);
         let mut record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
+        if self.invalid {
+            record.invalid = true;
+        }
 
+        // Stable id for the direct-child-button detection (§3.4): a
+        // button rendered inside this addon records itself against this
+        // id; the negative margin reads last frame's snapshot.
+        let addon_id = match self.id_salt.as_deref() {
+            Some(salt) => ui.scope_id().with(salt),
+            None => ui.auto_id_with("shadcn_input_group_addon"),
+        };
+        let has_button = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_button_prev"))
+                .unwrap_or(false)
+        });
+        let has_kbd = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_kbd_prev"))
+                .unwrap_or(false)
+        });
+        // The negative margin pulls a direct-child button or kbd toward
+        // the container's outer edge (§3.4); without either, the addon's
+        // full outer padding applies. When both are present the kbd
+        // margin wins (OPEN-7(a)): Tailwind emits the kbd rule after the
+        // button rule, so the kbd margin is the one that paints.
+        let outer_padding = addon_inline_padding(style)
+            - if has_kbd {
+                addon_kbd_negative_margin(style)
+            } else if has_button {
+                addon_button_negative_margin(style)
+            } else {
+                0.0
+            };
+        // N15: block vertical padding is 10px (base) when a direct-child
+        // `input` exists, 12px otherwise; nova uniformly 8px. Read from
+        // last frame's snapshot (a block-start addon renders before the
+        // input).
+        let has_input = group_id
+            .map(|id| read_snapshot(ui, id).has_input)
+            .unwrap_or(false);
+        let block_padding_y = addon_block_padding_y_conditional(style, has_input);
+
+        // The addon's row uses NO inter-item spacing: egui's
+        // `item_spacing` is added after EVERY widget including the
+        // last, so a `gap-2` (8px) here would inflate the addon's
+        // outer edge by 8px (the InlineEnd trailing would read 20px
+        // instead of the spec's 12px, and the InlineStart row would
+        // push the input 8px too far right, beyond the spec §3.5
+        // `pl-2`/`pl-1.5` margin). The outer padding is the explicit
+        // `add_space` below. Consequence, documented: an addon with
+        // several direct children renders them with NO gap (spec
+        // `gap-2`); single-child addons are exactly spec-correct;
+        // §6's two-button addon renders with no gap (carried
+        // limitation).
+        push_addon_id(ui, addon_id);
         let inner = match self.align {
             AddonAlign::InlineStart => {
                 record.inline_start = true;
@@ -726,84 +1494,161 @@ impl InputGroupAddon {
                     write_record(ui, group, record);
                 }
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(0.0, container_height(style)));
-                    // `pl-3 py-1.5` base recipe; nova `pl-2`.
-                    ui.add_space(addon_inline_padding(style));
+                    // `pl-3 py-1.5` base recipe; nova `pl-2` (minus the
+                    // button/kbd negative margin when a direct-child
+                    // button or kbd is present, §3.4; kbd wins when
+                    // both are present, OPEN-7(a)).
+                    ui.add_space(outer_padding);
                     content(ui)
                 })
             }
             AddonAlign::InlineEnd => {
-                record.inline_end = true;
                 let inner = ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(0.0, container_height(style)));
                     let r = content(ui);
-                    // `pr-3` base recipe; nova `pr-2`.
-                    ui.add_space(addon_inline_padding(style));
+                    // `pr-3` base recipe; nova `pr-2` (minus the
+                    // button/kbd negative margin, §3.4; kbd wins when
+                    // both are present, OPEN-7(a)).
+                    ui.add_space(outer_padding);
                     r
                 });
                 // Record the measured width so the input can reserve room
-                // (`flex-1` behavior).
-                record.end_addon_width = inner.response.rect.width();
+                // (`flex-1` behavior). Re-read the record first: the
+                // content above may have updated it (e.g. a button's
+                // click flag), and writing the pre-content copy would
+                // clobber those updates.
                 if let Some(group) = group_id {
-                    write_record(ui, group, record);
+                    let mut current = read_record(ui, group);
+                    current.inline_end = true;
+                    current.end_addon_width = inner.response.rect.width();
+                    current.invalid |= record.invalid;
+                    write_record(ui, group, current);
                 }
                 inner
             }
             AddonAlign::BlockStart => {
                 record.block = true;
+                record.block_start = true;
                 if let Some(group) = group_id {
                     write_record(ui, group, record);
                 }
-                // `px-3 pt-3` base recipe; nova `px-2.5 pt-2`.
-                ui.add_space(addon_block_padding_y(style));
+                // `px-3 pt-3` base recipe; nova `px-2.5 pt-2` (N15: 10px
+                // base when a direct-child `input` exists).
+                ui.add_space(block_padding_y);
                 let inner = ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(ui.available_width(), 0.0));
                     ui.add_space(addon_block_padding_x(style));
                     let r = content(ui);
                     ui.add_space(addon_block_padding_x(style));
                     r
                 });
+                // Divider variant (`border-b`): additionally `pb-3` /
+                // `pb-2` (§3.3).
+                if self.divider {
+                    ui.add_space(block_padding_y);
+                }
                 inner
             }
             AddonAlign::BlockEnd => {
-                record.block = true;
+                // Divider variant (`border-t`): additionally `pt-3` /
+                // `pt-2` (§3.3).
+                if self.divider {
+                    ui.add_space(block_padding_y);
+                }
                 let inner = ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = crate::theme::tokens::spacing::SM;
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     ui.set_min_size(Vec2::new(ui.available_width(), 0.0));
                     ui.add_space(addon_block_padding_x(style));
                     let r = content(ui);
                     ui.add_space(addon_block_padding_x(style));
                     r
                 });
+                // Re-read the record first (see InlineEnd above).
                 if let Some(group) = group_id {
-                    write_record(ui, group, record);
+                    let mut current = read_record(ui, group);
+                    current.block = true;
+                    current.block_end = true;
+                    current.invalid |= record.invalid;
+                    write_record(ui, group, current);
                 }
-                // `px-3 pb-3` base recipe; nova `px-2.5 pb-2`.
-                ui.add_space(addon_block_padding_y(style));
+                // `px-3 pb-3` base recipe; nova `px-2.5 pb-2` (N15).
+                ui.add_space(block_padding_y);
                 inner
             }
         };
+        pop_addon_id(ui);
+
+        // Rotate the direct-child-button detection: this frame's flag
+        // (set by `InputGroupButton` during the content above) becomes
+        // next frame's snapshot; the flag is then cleared.
+        let has_button_now = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_button"))
+                .unwrap_or(false)
+        });
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(addon_id.with("has_button_prev"), has_button_now);
+            d.insert_temp(addon_id.with("has_button"), false);
+        });
+
+        // Rotate the direct-child-kbd detection the same way: this
+        // frame's flag (set by `Kbd`/`KbdGroup` during the content above)
+        // becomes next frame's snapshot; the flag is then cleared.
+        let has_kbd_now = ui.ctx().data_mut(|d| {
+            d.get_temp::<bool>(addon_id.with("has_kbd"))
+                .unwrap_or(false)
+        });
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(addon_id.with("has_kbd_prev"), has_kbd_now);
+            d.insert_temp(addon_id.with("has_kbd"), false);
+        });
 
         // `onClick`: focus the group's control (unless the click hit a
         // button inside the addon). The click is resolved from the pointer
         // state so no click-sense interact steals hits from the buttons.
         if let Some(group) = group_id {
             let record = read_record(ui, group);
-            let focus_target = record
-                .input_id
-                .or_else(|| read_snapshot(ui, group).input_id);
+            let snapshot = read_snapshot(ui, group);
+            let focus_target = record.input_id.or(snapshot.input_id);
             if let Some(input_id) = focus_target {
-                let clicked = ui.input(|i| {
-                    i.pointer.any_click()
-                        && i.pointer
-                            .press_origin()
-                            .is_some_and(|o| inner.response.rect.contains(o))
-                });
-                if clicked && !record.disabled_container && !record.button_clicked {
-                    ui.memory_mut(|mem| mem.request_focus(input_id));
+                let (any_click, latest_pos) =
+                    ui.input(|i| (i.pointer.any_click(), i.pointer.latest_pos()));
+                // F2: the release position (`latest_pos`) is the only
+                // position input — `press_origin` is dead for click
+                // detection in egui 0.37 (cleared in `begin_pass` before
+                // `any_click()` is ever true), and egui only reports a
+                // click when the pointer stayed within `max_click_dist`
+                // of the press, so a release inside the rect means the
+                // press began inside (or within a few px of) it.
+                let clicked =
+                    any_click && latest_pos.is_some_and(|pos| inner.response.rect.contains(pos));
+                // §7.2 rule 5: focusing a disabled input is a platform
+                // no-op.
+                let disabled = record.disabled_container || snapshot.input_disabled;
+                // Deferred focus: a request made in the click frame is
+                // undone by the input's own `interact` in the same
+                // frame — egui surrenders focus when a click lands on a
+                // widget the pointer is not over
+                // (`SurrenderFocusOn::Clicks`), and the click lands on
+                // the addon, not the input. So the click only RECORDS
+                // the target; the request fires on the first click-free
+                // frame (field.rs's deferred-forward pattern).
+                let pending_key = group.with("focus_pending");
+                if !any_click {
+                    if let Some(Some(pending)) =
+                        ui.ctx().data_mut(|d| d.get_temp::<Option<Id>>(pending_key))
+                    {
+                        ui.memory_mut(|mem| mem.request_focus(pending));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(pending_key, None::<Id>));
+                    }
+                }
+                if clicked && !disabled && !record.button_clicked {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(pending_key, Some(input_id)));
                 }
             }
         }
@@ -854,10 +1699,32 @@ impl InputGroupText {
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let color = if self.disabled {
-            color_alpha(p.muted_foreground, 0.5)
+        // Text alpha: the text's own disabled rule (50%) times the
+        // container fade (mechanism (a), nova only) times the addon fade
+        // (mechanism (b), both styles) — multiplicative (`0.5^n`, §4.4).
+        // IGP-VIS-03: under the container fade the text precomposites
+        // the group fade OPAQUE (input.rs `disabled_group_fade` shape,
+        // INP-VIS-01) — the slot carries the text's own + addon fades,
+        // the mix carries the container's. Without the container fade
+        // (§8) the halving stands: the text paints over the UNfaded
+        // fill, where halving IS the addon fade.
+        let group_id = current_id(ui);
+        let record = group_id.map(|id| read_record(ui, id)).unwrap_or_default();
+        let snapshot = group_id.map(|id| read_snapshot(ui, id)).unwrap_or_default();
+        let container = container_fade(
+            record.disabled_container || snapshot.control_disabled,
+            theme.style,
+        );
+        let slot_alpha =
+            (if self.disabled { 0.5 } else { 1.0 }) * addon_fade(record.disabled_group);
+        let color = if container < 1.0 {
+            container_group_fade(
+                color_alpha(p.muted_foreground, slot_alpha),
+                container_fill_pre_fade(p, theme.mode.is_dark()),
+                p.background,
+            )
         } else {
-            p.muted_foreground
+            color_alpha(p.muted_foreground, slot_alpha)
         };
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         let icon_size = crate::theme::tokens::spacing::LG;
@@ -869,10 +1736,17 @@ impl InputGroupText {
             Some(ui.painter().layout_no_wrap(self.text.clone(), font, color))
         };
         let text_w = galley.as_ref().map_or(0.0, |g| g.size().x);
-        let gap = self
-            .icon
-            .map(|_| crate::theme::tokens::spacing::SM)
-            .unwrap_or(0.0);
+        // The `gap-2` between icon and text applies BETWEEN flex
+        // items: with an icon but NO text there is a single child,
+        // so no gap. (Before this fix the gap was unconditional, and
+        // an icon-only addon allocated 16 + 8 = 24px — the trailing
+        // 8px masqueraded as the input's §3.5 padding in §6, while
+        // the input itself sat flush. IGP-VIS-01.)
+        let gap = if self.icon.is_some() && !self.text.is_empty() {
+            crate::theme::tokens::spacing::SM
+        } else {
+            0.0
+        };
         let width = icon_size * self.icon.is_some() as i32 as f32 + gap + text_w;
         let desired = Vec2::new(width.max(1.0), container_height(theme.style));
 
@@ -913,12 +1787,28 @@ impl egui::Widget for InputGroupText {
     }
 }
 
-/// `InputGroupButton` — a ghost [`Button`] sized for the group
+/// Icon size for a button size (§3.4): `xs` icons are `size-3.5` = 14px
+/// (the `size-3.5` rule appears ONLY in the xs variant string); `sm`,
+/// `icon-xs` and `icon-sm` fall back to `Button`'s base `size-4` = 16px
+/// (the `icon-xs` strings carry NO icon-size rule — the icon is 16px in
+/// a 24px box, note (a)).
+fn icon_size_for(size: InputGroupButtonSize) -> f32 {
+    match size {
+        InputGroupButtonSize::Xs => 14.0,
+        _ => 16.0,
+    }
+}
+
+/// `InputGroupButton` — a ghost `Button` sized for the group
 /// (`xs` default, `sm`, `icon-xs`, `icon-sm`).
 #[derive(Debug)]
 pub struct InputGroupButton {
     button: Button,
     size: InputGroupButtonSize,
+    icon_start: Option<Icon>,
+    icon_end: Option<Icon>,
+    disabled: bool,
+    invalid: bool,
 }
 
 impl InputGroupButton {
@@ -929,6 +1819,10 @@ impl InputGroupButton {
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Xs),
             size: InputGroupButtonSize::Xs,
+            icon_start: None,
+            icon_end: None,
+            disabled: false,
+            invalid: false,
         }
     }
 
@@ -937,9 +1831,12 @@ impl InputGroupButton {
         Self {
             button: Button::new("")
                 .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconXs)
-                .icon_start(icon),
+                .size(ButtonSize::IconXs),
             size: InputGroupButtonSize::IconXs,
+            icon_start: Some(icon),
+            icon_end: None,
+            disabled: false,
+            invalid: false,
         }
     }
 
@@ -947,6 +1844,22 @@ impl InputGroupButton {
     pub fn size(mut self, size: InputGroupButtonSize) -> Self {
         self.size = size;
         self.button = self.button.size(size.into());
+        self
+    }
+
+    /// Shows an icon before the label with the spec size for this button
+    /// size (§3.4: 14px for `xs`, 16px otherwise). Applied in `show`
+    /// with the final size, so calling `.size()` after `.icon_start()`
+    /// cannot leave a stale icon size.
+    pub fn icon_start(mut self, icon: Icon) -> Self {
+        self.icon_start = Some(icon);
+        self
+    }
+
+    /// Shows an icon after the label with the spec size for this button
+    /// size (§3.4).
+    pub fn icon_end(mut self, icon: Icon) -> Self {
+        self.icon_end = Some(icon);
         self
     }
 
@@ -958,7 +1871,17 @@ impl InputGroupButton {
 
     /// Disables the button.
     pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self.button = self.button.disabled(disabled);
+        self
+    }
+
+    /// Marks the button `aria-invalid` (§4.3 trigger: ANY slotted
+    /// descendant with `aria-invalid` turns the container destructive).
+    /// The button paints its own invalid ring as well.
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self.button = self.button.invalid(invalid);
         self
     }
 
@@ -973,20 +1896,46 @@ impl InputGroupButton {
         // The `sm` spec (`h-8 px-2.5 gap-1.5`) is identical in both styles,
         // so the nova style maps it onto the nova `Default` size (also
         // `h-8 px-2.5`); the base recipe keeps `ButtonSize::Sm` (`h-8`).
+        // N4: `icon-sm` is `size-8` = 32x32 under BOTH styles, so under
+        // nova it maps onto `ButtonSize::Icon` (32px) rather than the
+        // 28px `ButtonSize::IconSm`; the base recipe keeps
+        // `ButtonSize::IconSm` (32px).
         let style = ShadcnTheme::of_ui(ui).style;
         let size = match self.size {
             InputGroupButtonSize::Sm if style == Style::Nova => ButtonSize::Default,
+            InputGroupButtonSize::IconSm if style == Style::Nova => ButtonSize::Icon,
             _ => self.size.into(),
         };
-        let response = self.button.size(size).show(ui);
+        let mut button = self.button.size(size);
+        if let Some(icon) = self.icon_start {
+            button = button.icon_start_sized(icon, icon_size_for(self.size));
+        }
+        if let Some(icon) = self.icon_end {
+            button = button.icon_end_sized(icon, icon_size_for(self.size));
+        }
+        let response = button.show(ui);
 
-        // Record the click so the addon's click-to-focus does not steal it.
-        if response.clicked() {
-            if let Some(group_id) = current_id(ui) {
-                let mut record = read_record(ui, group_id);
+        // Record the click so the addon's click-to-focus does not steal
+        // it, the disabled/invalid flags so the container's chrome can
+        // react (§4.3/§4.4 triggers), and the direct-child presence so
+        // the addon can apply the §3.4 negative margin.
+        if let Some(group_id) = current_id(ui) {
+            let mut record = read_record(ui, group_id);
+            if response.clicked() {
                 record.button_clicked = true;
-                write_record(ui, group_id, record);
             }
+            if self.disabled {
+                record.control_disabled = true;
+            }
+            if self.invalid {
+                record.invalid = true;
+            }
+            write_record(ui, group_id, record);
+        }
+        if let Some(addon_id) = current_addon_id(ui) {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(addon_id.with("has_button"), true);
+            });
         }
         response
     }
@@ -1001,8 +1950,10 @@ impl egui::Widget for InputGroupButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::kbd::{Kbd, KbdGroup};
     use crate::theme::{Mode, Palette, Preset};
     use egui::Pos2;
+    use std::cell::Cell;
 
     fn palette(mode: Mode) -> Palette {
         Preset::default().build(mode).palette
@@ -1114,9 +2065,10 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-        // Nova `icon-sm` is a 28pt square (`size-7`).
-        assert!((icon_btn_rect.width() - 28.0).abs() < 1.0);
-        assert!((icon_btn_rect.height() - 28.0).abs() < 1.0);
+        // N4: nova `icon-sm` is a 32pt square (`size-8`) under BOTH
+        // styles — a 28pt rendering under nova is a defect (spec §3.4).
+        assert!((icon_btn_rect.width() - 32.0).abs() < 1.0);
+        assert!((icon_btn_rect.height() - 32.0).abs() < 1.0);
         // The base recipe keeps the 32pt square (`size-8`).
         let mut base_btn_rect = Rect::NOTHING;
         {
@@ -1153,5 +2105,2400 @@ mod tests {
         let dark = palette(Mode::Dark);
         assert_eq!(color_alpha(dark.input, 0.3), color_alpha(dark.input, 0.3));
         assert_ne!(p.input, dark.input);
+    }
+
+    // ---- S1 pin helpers ----
+
+    fn test_ui(ctx: &egui::Context, salt: &'static str, width: f32) -> egui::Ui {
+        egui::Ui::new(
+            ctx.clone(),
+            egui::Id::unique(salt),
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 400.0))),
+        )
+    }
+
+    fn run_ui_capture(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        mut f: impl FnMut(&mut Ui),
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, |ctx| {
+            let mut ui = Ui::new(
+                ctx.clone(),
+                Id::unique("ig_pin_ui"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+            );
+            f(&mut ui);
+        });
+        // No renderer consumes the texture uploads in a headless test;
+        // dropping an unapplied delta panics, so clear it explicitly.
+        output.textures_delta.clear();
+        output
+    }
+
+    fn run_ui(ctx: &egui::Context, input: egui::RawInput, f: impl FnMut(&mut Ui)) {
+        let _ = run_ui_capture(ctx, input, f);
+    }
+
+    fn click_event(pos: Pos2, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn rects_match(a: Rect, b: Rect) -> bool {
+        (a.min.x - b.min.x).abs() < 0.5
+            && (a.min.y - b.min.y).abs() < 0.5
+            && (a.max.x - b.max.x).abs() < 0.5
+            && (a.max.y - b.max.y).abs() < 0.5
+    }
+
+    /// Stroked `Rect` shapes at `want` (with their clip rects).
+    fn stroked_rects_at(out: &egui::FullOutput, want: Rect) -> Vec<(Rect, Rect, Stroke)> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.stroke.width > 0.0 && rects_match(rs.rect, want) => {
+                    Some((rs.rect, clipped.clip_rect, rs.stroke))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Non-transparent filled `Rect` shapes at `want`.
+    fn filled_rects_at(out: &egui::FullOutput, want: Rect) -> Vec<Color32> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs)
+                    if rs.stroke.width == 0.0
+                        && rs.fill != Color32::TRANSPARENT
+                        && rects_match(rs.rect, want) =>
+                {
+                    Some(rs.fill)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The laid-out color of the first text shape whose job text is `text`.
+    fn text_color(out: &egui::FullOutput, text: &str) -> Option<Color32> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(ts) if ts.galley.job.text == text => {
+                ts.galley.job.sections.first().map(|s| s.format.color)
+            }
+            _ => None,
+        })
+    }
+
+    // ---- FG-1 stretch (decision 1) ----
+
+    #[test]
+    fn fg1_vertical_group_stretches_to_widest_member() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let id = egui::Id::unique("ig_fg1_vertical");
+        let mut text = String::new();
+        let mut w = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "ig_fg1_vertical_ui", 100.0);
+            let ui = &mut ui;
+            group::begin(ui, id, GroupOrientation::Vertical);
+            group::push_stretch_target(
+                ui.ctx(),
+                group::StretchTarget {
+                    orientation: GroupOrientation::Vertical,
+                    cross: 300.0,
+                },
+            );
+            InputGroup::new().id_salt("fg1").show(ui, |ui| {
+                w = InputGroupInput::new(&mut text).show(ui).rect.width();
+            });
+            group::pop_stretch_target(ui.ctx());
+            group::end(ui, id);
+        });
+        out.textures_delta.clear();
+        assert!((w - 300.0).abs() < 0.01, "stretched width {w}, want 300");
+    }
+
+    #[test]
+    fn fg1_horizontal_target_never_stretches() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let id = egui::Id::unique("ig_fg1_horizontal");
+        let mut text = String::new();
+        let mut w = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "ig_fg1_horizontal_ui", 100.0);
+            let ui = &mut ui;
+            group::begin(ui, id, GroupOrientation::Horizontal);
+            group::push_stretch_target(
+                ui.ctx(),
+                group::StretchTarget {
+                    orientation: GroupOrientation::Horizontal,
+                    cross: 300.0,
+                },
+            );
+            InputGroup::new().id_salt("fg1h").show(ui, |ui| {
+                w = InputGroupInput::new(&mut text).show(ui).rect.width();
+            });
+            group::pop_stretch_target(ui.ctx());
+            group::end(ui, id);
+        });
+        out.textures_delta.clear();
+        assert!((w - 100.0).abs() < 0.01, "width {w}, want 100");
+    }
+
+    #[test]
+    fn fg1_explicit_width_is_exempt_from_stretch() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let id = egui::Id::unique("ig_fg1_explicit");
+        let mut text = String::new();
+        let mut w = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "ig_fg1_explicit_ui", 100.0);
+            let ui = &mut ui;
+            group::begin(ui, id, GroupOrientation::Vertical);
+            group::push_stretch_target(
+                ui.ctx(),
+                group::StretchTarget {
+                    orientation: GroupOrientation::Vertical,
+                    cross: 300.0,
+                },
+            );
+            InputGroup::new()
+                .id_salt("fg1e")
+                .width(120.0)
+                .show(ui, |ui| {
+                    w = InputGroupInput::new(&mut text).show(ui).rect.width();
+                });
+            group::pop_stretch_target(ui.ctx());
+            group::end(ui, id);
+        });
+        out.textures_delta.clear();
+        assert!((w - 120.0).abs() < 0.01, "width {w}, want 120");
+    }
+
+    // ---- 1px inset removal (decision 2, BTG-VIS-01) ----
+
+    #[test]
+    fn fused_middle_member_paints_full_rect_with_clipped_leading_edge() {
+        // The InputGroup is the Middle member of a horizontal group
+        // (a dummy button first consumes index 0). Its border must
+        // paint on the FULL content box (no 1px inset) with the leading
+        // edge removed by CLIPPING, not by shifting the draw rect.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let id = egui::Id::unique("ig_fused_middle");
+        let mut text = String::new();
+        let input_rect = Cell::new(Rect::NOTHING);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let mut ui = test_ui(ctx, "ig_fused_middle_ui", 500.0);
+            let ui = &mut ui;
+            group::begin(ui, id, GroupOrientation::Horizontal);
+            Button::new("A").show(ui);
+            InputGroup::new().id_salt("fused").show(ui, |ui| {
+                input_rect.set(InputGroupInput::new(&mut text).show(ui).rect);
+            });
+            group::end(ui, id);
+        });
+        out.textures_delta.clear();
+        let want = input_rect.get();
+        assert!(want.width() > 0.0);
+        let strokes = stroked_rects_at(&out, want);
+        assert!(
+            !strokes.is_empty(),
+            "no border stroke on the full content box {want:?}"
+        );
+        assert!(
+            strokes
+                .iter()
+                .any(|(_, clip, _)| { (clip.min.x - (want.min.x + 1.0)).abs() < 0.5 }),
+            "leading edge must be removed by a clip excluding the first \
+             1px column, not by insetting the draw rect"
+        );
+    }
+
+    // ---- OPEN-3 disabled mapping (decision 3) ----
+
+    #[test]
+    fn open3_nova_disabled_fill_and_border_fade() {
+        // Nova light, container disabled: fill `bg-input/50` times the
+        // container opacity (effective 25%), border at 50%.
+        //
+        // IGP-VIS-03: the border precomposites the group fade OPAQUE
+        // (input.rs `disabled_group_fade` shape, INP-VIS-01) instead of
+        // halving its alpha over the faded fill — a halved stroke over
+        // the halved fill read (230) where group fade requires (242).
+        // The fill keeps halving (it paints over the backdrop alone).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let p = palette(Mode::Light);
+        let mut text = String::new();
+        let input_rect = Cell::new(Rect::NOTHING);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("open3nova")
+                .disabled(true)
+                .show(ui, |ui| {
+                    input_rect.set(InputGroupInput::new(&mut text).show(ui).rect);
+                });
+        });
+        let want = input_rect.get();
+        let fills = filled_rects_at(&out, want);
+        let want_fill = color_alpha(color_alpha(p.input, 0.5), 0.5);
+        assert!(
+            fills.contains(&want_fill),
+            "nova disabled fill must be bg-input/50 at 50% opacity \
+             (effective 25%), got {fills:?}"
+        );
+        let want_stroke =
+            container_group_fade(p.input, container_fill_pre_fade(p, false), p.background);
+        let strokes = stroked_rects_at(&out, want);
+        assert!(
+            strokes.iter().any(|(_, _, s)| s.color == want_stroke),
+            "nova disabled border must precomposite the 50% group fade \
+             (opaque {want_stroke:?}), got {strokes:?}"
+        );
+    }
+
+    #[test]
+    fn open3_base_disabled_container_unchanged() {
+        // Base light, container disabled: NO container-level disabled
+        // rule — the fill stays transparent and the border full alpha.
+        let ctx = egui::Context::default();
+        Preset::default().with_style(Style::Vega).install(&ctx);
+        let p = Preset::default()
+            .with_style(Style::Vega)
+            .build(Mode::Light)
+            .palette;
+        let mut text = String::new();
+        let input_rect = Cell::new(Rect::NOTHING);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("open3base")
+                .disabled(true)
+                .show(ui, |ui| {
+                    input_rect.set(InputGroupInput::new(&mut text).show(ui).rect);
+                });
+        });
+        let want = input_rect.get();
+        assert!(
+            filled_rects_at(&out, want).is_empty(),
+            "base disabled must not paint a container fill (light mode)"
+        );
+        let strokes = stroked_rects_at(&out, want);
+        assert!(
+            strokes.iter().any(|(_, _, s)| s.color == p.input),
+            "base disabled border must stay full alpha, got {strokes:?}"
+        );
+    }
+
+    #[test]
+    fn open3_group_disabled_fades_addon_text() {
+        // Mechanism (b), base style: the addon fades to 50%; the
+        // container chrome is unchanged and the control is not disabled.
+        let ctx = egui::Context::default();
+        Preset::default().with_style(Style::Vega).install(&ctx);
+        let p = Preset::default()
+            .with_style(Style::Vega)
+            .build(Mode::Light)
+            .palette;
+        let mut text = String::new();
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("open3b")
+                .group_disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text).show(ui);
+                });
+        });
+        assert_eq!(
+            text_color(&out, "https://"),
+            Some(color_alpha(p.muted_foreground, 0.5)),
+            "group-disabled addon text must fade to 50%"
+        );
+    }
+
+    #[test]
+    fn open3_double_fade_is_multiplicative() {
+        // Both mechanisms under nova: the addon renders at 25%
+        // (`0.5 x 0.5` — both rules match), not 50%.
+        //
+        // IGP-VIS-03: the 25% is the EFFECTIVE fade, rendered by the
+        // precomposite (input.rs `disabled_group_fade` shape, INP-VIS-01)
+        // — the slot carries mechanism (b)'s 50%, the mix carries
+        // mechanism (a)'s 50%. A halved 0.25-alpha shape over the faded
+        // fill double-fades (it read (201) nova-light where the 25%
+        // group fade requires (217)).
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let p = palette(Mode::Light);
+        let mut text = String::new();
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("open3d")
+                .disabled(true)
+                .group_disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text).show(ui);
+                });
+        });
+        let want = container_group_fade(
+            color_alpha(p.muted_foreground, 0.5),
+            container_fill_pre_fade(p, false),
+            p.background,
+        );
+        assert_eq!(
+            text_color(&out, "https://"),
+            Some(want),
+            "both disabled mechanisms under nova must render the addon \
+             at 25% (0.5 x 0.5)"
+        );
+    }
+
+    // ---- IGP-VIS-03 mechanism-(a) precomposite (S9 run 3) ----
+
+    /// The single 1px container-border stroke colour in `out` (the §5
+    /// composition paints exactly one: the input is frameless and the
+    /// ring is suppressed when disabled).
+    fn border_stroke_color(out: &egui::FullOutput) -> Option<Color32> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rs) if rs.stroke.width == 1.0 => Some(rs.stroke.color),
+            _ => None,
+        })
+    }
+
+    /// Renders the §5 composition (group disabled + input disabled +
+    /// "https://" addon + "Disabled" placeholder, two frames so the
+    /// last-frame snapshot is settled) under `mode` and returns the
+    /// settled output plus the palette.
+    fn render_s5(mode: Mode) -> (egui::FullOutput, Palette) {
+        let ctx = egui::Context::default();
+        Preset::default().build(mode).install(&ctx);
+        let p = palette(mode);
+        let mut text = String::new();
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new()
+                .id_salt("vis03s5")
+                .disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text)
+                        .disabled(true)
+                        .placeholder("Disabled")
+                        .show(ui);
+                });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        (out, p)
+    }
+
+    #[test]
+    fn vis03_nova_disabled_border_precomposite() {
+        // Mechanism (a), nova light + dark: the border stroke
+        // precomposites the 50% group fade OPAQUE (INP-VIS-01 shape) —
+        // light (242), dark (41). RED before the fix: the halved stroke
+        // read (230) light / (19,a19) dark.
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want =
+                container_group_fade(p.input, container_fill_pre_fade(p, dark), p.background);
+            assert_eq!(
+                border_stroke_color(&out),
+                Some(want),
+                "nova {:?} disabled border must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_placeholder_precomposite() {
+        // Mechanism (a), nova light + dark: the "Disabled" hint
+        // precomposites the 50% group fade OPAQUE — light (185), dark
+        // (86). RED before the fix: the hint was entirely unfaded
+        // ((115)/(161) — the theme `weak_text_color`).
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want = container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "Disabled"),
+                Some(want),
+                "nova {:?} disabled placeholder must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_addon_text_precomposite() {
+        // Mechanism (a), nova light + dark: the "https://" addon text
+        // precomposites the 50% group fade OPAQUE — light (185), dark
+        // (86). RED before the fix: the halved text read (172) light.
+        // (S1 §1.3: the container/group opacity applies to addon TEXT.)
+        for mode in [Mode::Light, Mode::Dark] {
+            let (out, p) = render_s5(mode);
+            let dark = mode.is_dark();
+            let want = container_group_fade(
+                p.muted_foreground,
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "https://"),
+                Some(want),
+                "nova {:?} disabled addon text must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_input_text_precomposite() {
+        // Mechanism (a) + the control's own fade, nova light + dark:
+        // typed text with BOTH flags precomposites the two 50% fades
+        // OPAQUE — light (190), dark (77). RED before the fix: the
+        // 0.25-alpha shape read (175) light.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut text = String::from("example.com");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03typed")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupInput::new(&mut text)
+                            .disabled(true)
+                            .placeholder("Disabled")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let want = container_group_fade(
+                color_alpha(p.foreground, 0.5),
+                container_fill_pre_fade(p, dark),
+                p.background,
+            );
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(want),
+                "nova {:?} disabled typed text must precomposite both 50% fades",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_container_fade_only_input_text() {
+        // Mechanism (a) alone, nova light + dark: a disabled button
+        // triggers the container fade while the input stays enabled, so
+        // the typed text carries ONLY the container's 50% — light (132),
+        // dark (130). Two frames: the button records `control_disabled`
+        // on frame 1, the input reads it from the snapshot on frame 2.
+        // RED before the fix: the halved text read (129) light.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut text = String::from("example.com");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("vis03conly").show(ui, |ui| {
+                    InputGroupInput::new(&mut text).show(ui);
+                    InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                        InputGroupButton::icon(Icon::Copy).disabled(true).show(ui);
+                    });
+                });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let want =
+                container_group_fade(p.foreground, container_fill_pre_fade(p, dark), p.background);
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(want),
+                "nova {:?} container-fade-only typed text must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_nova_disabled_textarea_precomposite() {
+        // Mechanism (a) on the textarea, nova light + dark: the typed
+        // text and the placeholder precomposite the 50% group fade
+        // OPAQUE (same shape as the input — S1 §1.3 covers
+        // "input/textarea text"). RED before the fix: the text was the
+        // 0.25-alpha shape and the hint entirely unfaded.
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let dark = mode.is_dark();
+            let mut bio = String::from("Bio line one");
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03ta")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupTextarea::new(&mut bio)
+                            .rows(3)
+                            .disabled(true)
+                            .placeholder("Tell us about yourself…")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            let fill_pre = container_fill_pre_fade(p, dark);
+            let want_text =
+                container_group_fade(color_alpha(p.foreground, 0.5), fill_pre, p.background);
+            assert_eq!(
+                text_color(&out, "Bio line one"),
+                Some(want_text),
+                "nova {:?} disabled textarea text must precomposite both 50% fades",
+                mode
+            );
+            // The placeholder only paints while the textarea is empty;
+            // render it in a second composition.
+            let mut empty = String::new();
+            let mut render_empty = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03taempty")
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupTextarea::new(&mut empty)
+                            .rows(3)
+                            .disabled(true)
+                            .placeholder("Tell us about yourself…")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render_empty);
+            let out_empty = run_ui_capture(&ctx, egui::RawInput::default(), &mut render_empty);
+            let want_hint = container_group_fade(p.muted_foreground, fill_pre, p.background);
+            assert_eq!(
+                text_color(&out_empty, "Tell us about yourself…"),
+                Some(want_hint),
+                "nova {:?} disabled textarea placeholder must precomposite the 50% group fade",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn vis03_both_flags_addon_text_multiplicative_dark() {
+        // Both mechanisms under nova DARK: the addon renders at 25%
+        // (`0.5 x 0.5`) via the precomposite — the slot carries
+        // mechanism (b)'s 50%, the mix carries mechanism (a)'s 50%.
+        // Companion to the (light) `open3_double_fade_is_multiplicative`.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Dark).install(&ctx);
+        let p = palette(Mode::Dark);
+        let mut text = String::new();
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new()
+                .id_salt("vis03bothdark")
+                .disabled(true)
+                .group_disabled(true)
+                .show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                    InputGroupInput::new(&mut text).show(ui);
+                });
+        });
+        let want = container_group_fade(
+            color_alpha(p.muted_foreground, 0.5),
+            container_fill_pre_fade(p, true),
+            p.background,
+        );
+        assert_eq!(
+            text_color(&out, "https://"),
+            Some(want),
+            "both disabled mechanisms under nova dark must render the addon at 25% (0.5 x 0.5)"
+        );
+    }
+
+    #[test]
+    fn vis03_group_disabled_addon_only() {
+        // Mechanism (b), nova light + dark: ONLY the addon fades — the
+        // border stays full alpha, the input text stays full alpha, and
+        // the placeholder stays unfaded. (§8; S5: mechanism (b) correct.)
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let p = palette(mode);
+            let mut text = String::new();
+            let mut render = |ui: &mut Ui| {
+                InputGroup::new()
+                    .id_salt("vis03b")
+                    .group_disabled(true)
+                    .show(ui, |ui| {
+                        InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new("https://").show(ui);
+                        });
+                        InputGroupInput::new(&mut text)
+                            .placeholder("example.com")
+                            .show(ui);
+                    });
+            };
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+            assert_eq!(
+                text_color(&out, "https://"),
+                Some(color_alpha(p.muted_foreground, 0.5)),
+                "nova {:?} group-disabled addon text must fade to 50%",
+                mode
+            );
+            assert_eq!(
+                border_stroke_color(&out),
+                Some(p.input),
+                "nova {:?} group-disabled border must stay full alpha (mechanism (b) is addon-only)",
+                mode
+            );
+            assert_eq!(
+                text_color(&out, "example.com"),
+                Some(p.muted_foreground),
+                "nova {:?} group-disabled placeholder must stay unfaded (mechanism (b) is addon-only)",
+                mode
+            );
+        }
+    }
+
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        ctx
+    }
+
+    // ---- N15 block-y conditional (§3.3) ----
+
+    fn measure_block_padding(style: Style, with_input: bool) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let mut ta = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let text_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("n15").show(ui, |ui| {
+                text_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Bio").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                if with_input {
+                    InputGroupInput::new(&mut text).show(ui);
+                } else {
+                    InputGroupTextarea::new(&mut ta).show(ui);
+                }
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        text_rect.get().min.y - group_rect.get().min.y
+    }
+
+    #[test]
+    fn n15_block_padding_conditional() {
+        // Base: 10px with a direct-child `input`, 12px without (a
+        // textarea does not trigger the reduction). Nova: uniformly 8px.
+        assert!((measure_block_padding(Style::Vega, true) - 10.0).abs() < 0.5);
+        assert!((measure_block_padding(Style::Vega, false) - 12.0).abs() < 0.5);
+        assert!((measure_block_padding(Style::Nova, true) - 8.0).abs() < 0.5);
+        assert!((measure_block_padding(Style::Nova, false) - 8.0).abs() < 0.5);
+    }
+
+    // ---- Negative margin (§3.4) ----
+
+    fn measure_inline_end_trailing(style: Style, with_button: bool) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let content_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("negmargin").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    if with_button {
+                        content_rect.set(InputGroupButton::icon(Icon::Copy).show(ui).rect);
+                    } else {
+                        content_rect.set(InputGroupText::new("Go").show(ui).rect);
+                    }
+                });
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        group_rect.get().max.x - content_rect.get().max.x
+    }
+
+    #[test]
+    fn negative_margin_for_direct_child_button() {
+        // Base: a direct-child button pulls the addon 7.2px toward the
+        // edge (trailing 12 − 7.2 = 4.8px); without a button the full
+        // 12px applies. Nova: 4.8px margin (trailing 8 − 4.8 = 3.2px)
+        // vs 8px.
+        assert!((measure_inline_end_trailing(Style::Vega, true) - 4.8).abs() < 0.5);
+        assert!((measure_inline_end_trailing(Style::Vega, false) - 12.0).abs() < 0.5);
+        assert!((measure_inline_end_trailing(Style::Nova, true) - 3.2).abs() < 0.5);
+        assert!((measure_inline_end_trailing(Style::Nova, false) - 8.0).abs() < 0.5);
+    }
+
+    // ---- Kbd negative margin (§3.4) + reporting channel (IGP-VIS-04) ----
+
+    /// Same harness as `measure_inline_end_trailing`, with a `KbdGroup` as
+    /// the addon's direct-child content; returns the trailing distance
+    /// (group right edge − last chip right edge).
+    fn measure_inline_end_trailing_kbd(style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let content_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("negmargin-kbd").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    let g = KbdGroup::new().show(ui, |ui| {
+                        Kbd::new("⌘").show(ui);
+                        Kbd::new("K").show(ui);
+                    });
+                    content_rect.set(g.response.rect);
+                });
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        group_rect.get().max.x - content_rect.get().max.x
+    }
+
+    /// Same harness, with BOTH a direct-child button and a direct-child
+    /// `KbdGroup` in the addon (button first, group last); returns the
+    /// trailing distance (group right edge − last chip right edge).
+    fn measure_inline_end_trailing_both(style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let content_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("negmargin-both").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    let _ = InputGroupButton::icon(Icon::Copy).show(ui);
+                    let g = KbdGroup::new().show(ui, |ui| {
+                        Kbd::new("⌘").show(ui);
+                        Kbd::new("K").show(ui);
+                    });
+                    content_rect.set(g.response.rect);
+                });
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        group_rect.get().max.x - content_rect.get().max.x
+    }
+
+    #[test]
+    fn kbd_negative_margin_applies_in_base_igp_vis04() {
+        // Base: a direct-child kbd pulls the addon 5.6px toward the edge
+        // (trailing 12 − 5.6 = 6.4px); without a kbd the full 12px
+        // applies (guarded by `negative_margin_for_direct_child_button`).
+        assert!((measure_inline_end_trailing_kbd(Style::Vega) - 6.4).abs() < 0.5);
+    }
+
+    #[test]
+    fn kbd_negative_margin_applies_in_nova_igp_vis04() {
+        // Nova: 2.4px margin (trailing 8 − 2.4 = 5.6px).
+        assert!((measure_inline_end_trailing_kbd(Style::Nova) - 5.6).abs() < 0.5);
+    }
+
+    #[test]
+    fn kbd_margin_wins_over_button_when_both_present_igp_open7a() {
+        // OPEN-7(a) DECIDED (see the channel report §2): when both a
+        // direct-child button and a direct-child kbd exist, the kbd
+        // margin wins — Tailwind v4 emits the kbd rule after the button
+        // rule in both the utilities layer and the `.cn-*` @apply
+        // expansion, so the kbd margin is the one that paints. Base
+        // trailing 6.4 (not 4.8); nova 5.6 (not 3.2).
+        assert!((measure_inline_end_trailing_both(Style::Vega) - 6.4).abs() < 0.5);
+        assert!((measure_inline_end_trailing_both(Style::Nova) - 5.6).abs() < 0.5);
+    }
+
+    /// Drives `frames` frames of a group whose InlineEnd addon (id salt
+    /// `salt`) holds `content`, then returns the addon's `has_kbd` /
+    /// `has_kbd_prev` temps after the last frame. The addon id is captured
+    /// from the group content Ui's scope id, exactly as
+    /// `InputGroupAddon::show` computes it.
+    fn has_kbd_temps<F>(salt: &str, mut content: F, frames: usize) -> (bool, bool)
+    where
+        F: FnMut(&mut Ui),
+    {
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let addon_id = Cell::new(Id::unique("kbd_temp_probe"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-temp").show(ui, |ui| {
+                addon_id.set(ui.scope_id().with(salt));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt(salt)
+                    .show(ui, |ui| {
+                        content(ui);
+                    });
+            });
+        };
+        for _ in 0..frames {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        let aid = addon_id.get();
+        ctx.data_mut(|d| {
+            (
+                d.get_temp::<bool>(aid.with("has_kbd")).unwrap_or(false),
+                d.get_temp::<bool>(aid.with("has_kbd_prev"))
+                    .unwrap_or(false),
+            )
+        })
+    }
+
+    #[test]
+    fn has_kbd_channel_records_direct_child_kbd_igp_vis04() {
+        // A direct-child Kbd sets has_kbd; after one frame the roll moves
+        // it to has_kbd_prev (and clears has_kbd).
+        let (now, prev) = has_kbd_temps(
+            "chan-direct",
+            |ui| {
+                Kbd::new("K").show(ui);
+            },
+            1,
+        );
+        assert!(
+            !now,
+            "has_kbd must be cleared by the roll at the end of the addon frame"
+        );
+        assert!(prev, "direct-child Kbd must record has_kbd");
+    }
+
+    #[test]
+    fn has_kbd_channel_records_kbd_group_igp_vis04() {
+        // A direct-child KbdGroup is itself a <kbd> element (spec §3.4):
+        // it records has_kbd. The group's double run (measure + real) is
+        // idempotent — the boolean is set, not toggled or counted — so one
+        // frame already leaves has_kbd_prev true.
+        let (now, prev) = has_kbd_temps(
+            "chan-group",
+            |ui| {
+                KbdGroup::new().show(ui, |ui| {
+                    Kbd::new("⌘").show(ui);
+                    Kbd::new("K").show(ui);
+                });
+            },
+            1,
+        );
+        assert!(
+            !now,
+            "has_kbd must be cleared by the roll at the end of the addon frame"
+        );
+        assert!(
+            prev,
+            "direct-child KbdGroup must record has_kbd (idempotent across its double run)"
+        );
+    }
+
+    #[test]
+    fn has_kbd_channel_ignores_kbd_outside_addon_igp_vis04() {
+        // A Kbd shown directly in the group (not inside any addon) must not
+        // set the addon's has_kbd: the addon's flag stays false.
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let addon_id = Cell::new(Id::unique("kbd_outside_probe"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-outside").show(ui, |ui| {
+                addon_id.set(ui.scope_id().with("chan-outside"));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt("chan-outside")
+                    .show(ui, |ui| {
+                        InputGroupText::new("Go").show(ui);
+                    });
+                Kbd::new("K").show(ui);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let aid = addon_id.get();
+        let prev = ctx.data_mut(|d| {
+            d.get_temp::<bool>(aid.with("has_kbd_prev"))
+                .unwrap_or(false)
+        });
+        assert!(
+            !prev,
+            "a Kbd outside any addon must not record has_kbd on the addon"
+        );
+    }
+
+    #[test]
+    fn has_kbd_channel_scopes_to_innermost_addon_igp_vis04() {
+        // A Kbd inside a nested (inner) addon records against the INNER
+        // addon only: the outer addon's has_kbd stays false.
+        let ctx = test_ctx();
+        let mut text = String::new();
+        let outer_id = Cell::new(Id::unique("kbd_nested_outer"));
+        let inner_id = Cell::new(Id::unique("kbd_nested_inner"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("kbd-nested").show(ui, |ui| {
+                outer_id.set(ui.scope_id().with("chan-outer"));
+                InputGroupInput::new(&mut text).show(ui);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                    .id_salt("chan-outer")
+                    .show(ui, |ui| {
+                        inner_id.set(ui.scope_id().with("chan-inner"));
+                        let _ = InputGroupAddon::new(AddonAlign::InlineEnd)
+                            .id_salt("chan-inner")
+                            .show(ui, |ui| {
+                                Kbd::new("K").show(ui);
+                            });
+                    });
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let (outer, inner) = ctx.data_mut(|d| {
+            (
+                d.get_temp::<bool>(outer_id.get().with("has_kbd_prev"))
+                    .unwrap_or(false),
+                d.get_temp::<bool>(inner_id.get().with("has_kbd_prev"))
+                    .unwrap_or(false),
+            )
+        });
+        assert!(
+            !outer,
+            "a Kbd nested inside an inner addon must not record has_kbd on the outer addon"
+        );
+        assert!(
+            inner,
+            "a Kbd inside the inner addon must record has_kbd on the inner addon"
+        );
+    }
+
+    // ---- Click-to-focus (§7.2) ----
+
+    #[test]
+    fn addon_click_focuses_input() {
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let text = RefCell::new(String::new());
+        let addon_rect = Cell::new(Rect::NOTHING);
+        let input_id = Cell::new(Id::unique("ig_click_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("click").show(ui, |ui| {
+                addon_rect.set(
+                    InputGroupAddon::new(AddonAlign::InlineStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("https://").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                input_id.set(InputGroupInput::new(&mut text.borrow_mut()).show(ui).id);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert!(addon_rect.get().width() > 0.0);
+        let at = addon_rect.get().center();
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(input_id.get()),
+            "addon click must focus the group's input"
+        );
+    }
+
+    #[test]
+    fn addon_click_on_button_does_not_focus() {
+        // §7.2 rule 1: a click whose target is inside a `<button>` does
+        // NOTHING in this handler — the button receives the click.
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let text = RefCell::new(String::new());
+        let button_rect = Cell::new(Rect::NOTHING);
+        let button_clicked = Cell::new(false);
+        let input_id = Cell::new(Id::unique("ig_btnclick_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("btnclick").show(ui, |ui| {
+                input_id.set(InputGroupInput::new(&mut text.borrow_mut()).show(ui).id);
+                let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    let r = InputGroupButton::icon(Icon::Copy).show(ui);
+                    button_rect.set(r.rect);
+                    if r.clicked() {
+                        button_clicked.set(true);
+                    }
+                });
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        let at = button_rect.get().center();
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert!(button_clicked.get(), "the button must receive the click");
+        assert_ne!(
+            ctx.memory(|mem| mem.focused()),
+            Some(input_id.get()),
+            "a click on an addon button must not focus the input"
+        );
+    }
+
+    #[test]
+    fn addon_click_never_focuses_textarea() {
+        // §7.2 rule 3: only `<input>` elements are focused — never a
+        // `<textarea>`. An addon click in a textarea-only group is a
+        // no-op for focus.
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let ta = RefCell::new(String::new());
+        let addon_rect = Cell::new(Rect::NOTHING);
+        let ta_id = Cell::new(Id::unique("ig_taclick_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("taclick").show(ui, |ui| {
+                addon_rect.set(
+                    InputGroupAddon::new(AddonAlign::InlineStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Bio").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                ta_id.set(InputGroupTextarea::new(&mut ta.borrow_mut()).show(ui).id);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        let at = addon_rect.get().center();
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            None,
+            "an addon click must never focus a textarea"
+        );
+        assert_ne!(ta_id.get(), Id::unique("ig_taclick_placeholder"));
+    }
+
+    #[test]
+    fn addon_click_focuses_first_input() {
+        // §7.2 rule 4: `querySelector` returns the FIRST input in
+        // document order.
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let text1 = RefCell::new(String::new());
+        let text2 = RefCell::new(String::new());
+        let addon_rect = Cell::new(Rect::NOTHING);
+        let first_id = Cell::new(Id::unique("ig_first_placeholder"));
+        let second_id = Cell::new(Id::unique("ig_second_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("firstwins").show(ui, |ui| {
+                addon_rect.set(
+                    InputGroupAddon::new(AddonAlign::InlineStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("https://").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                first_id.set(InputGroupInput::new(&mut text1.borrow_mut()).show(ui).id);
+                second_id.set(InputGroupInput::new(&mut text2.borrow_mut()).show(ui).id);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        let at = addon_rect.get().center();
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert_ne!(first_id.get(), second_id.get());
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(first_id.get()),
+            "addon click must focus the FIRST input"
+        );
+    }
+
+    // ---- Frameless inner control ----
+
+    #[test]
+    fn inner_control_is_frameless() {
+        // The input paints no chrome of its own: exactly one stroked
+        // rect sits on the input rect — the container's border.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut text = String::from("abc");
+        let input_rect = Cell::new(Rect::NOTHING);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            InputGroup::new().id_salt("frameless").show(ui, |ui| {
+                input_rect.set(InputGroupInput::new(&mut text).show(ui).rect);
+            });
+        });
+        let strokes = stroked_rects_at(&out, input_rect.get());
+        assert_eq!(
+            strokes.len(),
+            1,
+            "the input must add no border of its own (all chrome is on \
+             the container); found {} stroked rects at the input rect",
+            strokes.len()
+        );
+    }
+
+    // ---- Textarea row + auto-height (§3.1) ----
+
+    #[test]
+    fn textarea_keeps_row_layout_with_auto_height() {
+        // A direct-child textarea makes the height `h-auto` WITHOUT
+        // changing direction (§3.1): the textarea shares the row with
+        // the addon (same top edge) and the container grows past `h-8`.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let mut ta = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("tarow").show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                    InputGroupText::new("Bio").show(ui);
+                });
+                ta_rect.set(InputGroupTextarea::new(&mut ta).show(ui).rect);
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        assert!(
+            (ta_rect.get().min.y - group_rect.get().min.y).abs() < 1.0,
+            "textarea must share the row (same top edge), got offset {}",
+            ta_rect.get().min.y - group_rect.get().min.y
+        );
+        assert!(
+            group_rect.get().height() > 32.0,
+            "textarea group must be auto-height, got {}",
+            group_rect.get().height()
+        );
+    }
+
+    // ---- Divider (§3.3) ----
+
+    fn measure_input_offset_with_block_start(style: Style, divider: bool) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let group_rect = Cell::new(Rect::NOTHING);
+        let input_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("divider").show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::BlockStart)
+                    .divider(divider)
+                    .show(ui, |ui| {
+                        InputGroupText::new("Bio").show(ui);
+                    });
+                input_rect.set(InputGroupInput::new(&mut text).show(ui).rect);
+            });
+            group_rect.set(r.response.rect);
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        input_rect.get().min.y - group_rect.get().min.y
+    }
+
+    #[test]
+    fn divider_adds_opposite_side_padding() {
+        // Block-start + input, base: the divider adds exactly the
+        // opposite-side padding (10px here — the N15-reduced `pt-3`
+        // value, §3.3) to the input's offset. The ABSOLUTE offset is
+        // 46/56, not the spec's 30/40: the block addon's row is
+        // `interact_size`-tall (36px base) instead of content-height
+        // (~20px) — a known limitation, recorded in the report
+        // (measure-then-real is blocked: the content closure is
+        // `FnOnce`). Only the divider delta is pinned here.
+        let without = measure_input_offset_with_block_start(Style::Vega, false);
+        let with = measure_input_offset_with_block_start(Style::Vega, true);
+        assert!(
+            ((with - without) - 10.0).abs() < 0.5,
+            "a block-start divider must add 10px to the input offset, got {without} -> {with}"
+        );
+    }
+
+    // ---- Edge cases (§9) ----
+
+    #[test]
+    fn empty_and_addons_only_groups_render() {
+        // E7/E8: an empty group and a group with only addons render the
+        // 36/32px bordered box without panicking.
+        for style in [Style::Nova, Style::Vega] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let want = if style == Style::Nova { 32.0 } else { 36.0 };
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+                InputGroup::new().id_salt("empty").show(ui, |_| {});
+            });
+            let strokes: Vec<Rect> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(rs) if rs.stroke.width > 0.0 => Some(rs.rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(strokes.len(), 1, "empty group must paint one border");
+            assert!(
+                (strokes[0].height() - want).abs() < 1.0,
+                "empty group height {}, want {want}",
+                strokes[0].height()
+            );
+            let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+                InputGroup::new().id_salt("addons_only").show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                });
+            });
+            let strokes: Vec<Rect> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(rs) if rs.stroke.width > 0.0 => Some(rs.rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(strokes.len(), 1, "addons-only group must paint one border");
+            assert!(
+                (strokes[0].height() - want).abs() < 1.0,
+                "addons-only group height {}, want {want}",
+                strokes[0].height()
+            );
+        }
+    }
+
+    // ---- Icon sizes (§3.4) ----
+
+    #[test]
+    fn icon_size_for_table() {
+        // §3.4 note (a): the `size-3.5` rule appears ONLY in the xs
+        // string; `sm`, `icon-xs` and `icon-sm` fall back to Button's
+        // base `size-4` (16px).
+        assert_eq!(icon_size_for(InputGroupButtonSize::Xs), 14.0);
+        assert_eq!(icon_size_for(InputGroupButtonSize::Sm), 16.0);
+        assert_eq!(icon_size_for(InputGroupButtonSize::IconXs), 16.0);
+        assert_eq!(icon_size_for(InputGroupButtonSize::IconSm), 16.0);
+    }
+
+    #[test]
+    fn button_icon_sizes_follow_spec() {
+        // A text button's width grows by icon + gap when an icon is
+        // added — MINUS the 2px the left padding shrinks when an icon
+        // is present (Button's `padding_left`: pl-1.5/pl-2 with an
+        // icon vs px-2/px-2.5 without). Xs: 14 + 4 − 2 = 16px; Sm
+        // (mapped to Default under nova): 16 + 6 − 2 = 20px (§3.4).
+        for (size, want_diff) in [
+            (InputGroupButtonSize::Xs, 16.0),
+            (InputGroupButtonSize::Sm, 20.0),
+        ] {
+            let ctx = egui::Context::default();
+            Preset::default().install(&ctx);
+            let mut w_plain = 0.0;
+            let mut w_icon = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut test_ui(ctx, "ig_icon_size_ui", 500.0);
+                w_plain = InputGroupButton::new("Search")
+                    .size(size)
+                    .id_salt("plain")
+                    .show(ui)
+                    .rect
+                    .width();
+                w_icon = InputGroupButton::new("Search")
+                    .size(size)
+                    .icon_start(Icon::Search)
+                    .id_salt("icon")
+                    .show(ui)
+                    .rect
+                    .width();
+            });
+            out.textures_delta.clear();
+            assert!(
+                ((w_icon - w_plain) - want_diff).abs() < 1.0,
+                "{size:?}: icon must add {want_diff}px, added {}",
+                w_icon - w_plain
+            );
+        }
+    }
+
+    // ---- Control margins (§3.5) ----
+
+    #[test]
+    fn control_margins_table() {
+        // Sides from the inline addons (or the input's own px-3 /
+        // px-2.5); top/bottom from the block addons (pt-3/pb-3, both
+        // styles).
+        let nova = Style::Nova;
+        let base = Style::Vega;
+        assert_eq!(control_margins(base, false, false, false, false).left, 12);
+        assert_eq!(control_margins(nova, false, false, false, false).left, 10);
+        assert_eq!(control_margins(base, true, false, false, false).left, 8);
+        assert_eq!(control_margins(nova, true, false, false, false).left, 6);
+        assert_eq!(control_margins(base, false, true, false, false).right, 8);
+        assert_eq!(control_margins(nova, false, true, false, false).right, 6);
+        assert_eq!(control_margins(base, false, false, true, false).bottom, 12);
+        assert_eq!(control_margins(nova, false, false, true, false).bottom, 12);
+        assert_eq!(control_margins(base, false, false, false, true).top, 12);
+        assert_eq!(control_margins(nova, false, false, false, true).top, 12);
+    }
+
+    // ---- Column centring (§3.1 items-center) ----
+    //
+    // NOT PINNED (known limitation, recorded in the report): §3.1
+    // requires `items-center` in ALL modes, so a narrow inline addon
+    // in a column group should be horizontally centred. The port's
+    // `top_down(Center)` cannot centre it — the addon's `ui.horizontal`
+    // allocates the FULL available width, so the content sits
+    // left-aligned inside a full-width row. Centring it needs
+    // measure-then-real for the addon's content width, which the
+    // `FnOnce` content closure cannot support. The demo's column
+    // group (textarea section) has full-width children, so no demo
+    // composition is affected. The `top_down(Center)` declaration is
+    // kept (spec-correct as a layout declaration; harmless for
+    // full-width children).
+
+    // ---- Invalid trigger (§4.3: ANY slotted descendant) ----
+
+    #[test]
+    fn invalid_button_triggers_destructive_border() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let p = palette(Mode::Light);
+        let mut text = String::new();
+        // The container border spans the GROUP rect, not the input
+        // rect (the input starts at x=55.5 here); measure there.
+        let group_rect = Cell::new(Rect::NOTHING);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let r = InputGroup::new().id_salt("invbtn").show(ui, |ui| {
+                InputGroupInput::new(&mut text).show(ui);
+                InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                    InputGroupButton::icon(Icon::Copy).invalid(true).show(ui);
+                });
+            });
+            group_rect.set(r.response.rect);
+        });
+        let strokes = stroked_rects_at(&out, group_rect.get());
+        assert!(
+            strokes.iter().any(|(_, _, s)| s.color == p.destructive),
+            "an invalid button must turn the container border destructive, got {strokes:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_addon_triggers_destructive_border() {
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let p = palette(Mode::Light);
+        let mut text = String::new();
+        // The container border spans the GROUP rect, not the input
+        // rect; measure there.
+        let group_rect = Cell::new(Rect::NOTHING);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), |ui| {
+            let r = InputGroup::new().id_salt("invaddon").show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::InlineStart)
+                    .invalid(true)
+                    .show(ui, |ui| {
+                        InputGroupText::new("https://").show(ui);
+                    });
+                InputGroupInput::new(&mut text).show(ui);
+            });
+            group_rect.set(r.response.rect);
+        });
+        let strokes = stroked_rects_at(&out, group_rect.get());
+        assert!(
+            strokes.iter().any(|(_, _, s)| s.color == p.destructive),
+            "an invalid addon must turn the container border destructive, got {strokes:?}"
+        );
+    }
+
+    // ---- Text position (§3.5 / IGP-VIS-01) ----
+
+    /// The laid-out origin of the first text shape whose job text is `text`.
+    fn text_pos(out: &egui::FullOutput, text: &str) -> Option<Pos2> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(ts) if ts.galley.job.text == text => Some(ts.pos),
+            _ => None,
+        })
+    }
+
+    /// The inline-start addon shape for the text-position pins.
+    #[derive(Clone, Copy)]
+    enum StartAddon {
+        /// Text addon, e.g. "https://" (§1/§5).
+        Text(&'static str),
+        /// Icon-only addon (§2/§4/§6/§7).
+        Icon(Icon),
+        /// No addon.
+        None,
+    }
+
+    /// Renders one group (two frames, so the last-frame snapshot is
+    /// settled) and returns the input rect plus the origin of the text
+    /// shape for `text` (the placeholder when `typed` is empty, the
+    /// typed text otherwise).
+    fn measure_input_text_origin(
+        style: Style,
+        salt: &'static str,
+        start_addon: StartAddon,
+        end_addon: bool,
+        typed: &str,
+        placeholder: &'static str,
+    ) -> (Rect, Option<Pos2>) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::from(typed);
+        let input_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt(salt).show(ui, |ui| {
+                match start_addon {
+                    StartAddon::Text(t) => {
+                        let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new(t).show(ui);
+                        });
+                    }
+                    StartAddon::Icon(icon) => {
+                        let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                            InputGroupText::new("").icon(icon).show(ui);
+                        });
+                    }
+                    StartAddon::None => {}
+                }
+                input_rect.set(
+                    InputGroupInput::new(&mut text)
+                        .placeholder(placeholder)
+                        .show(ui)
+                        .rect,
+                );
+                if end_addon {
+                    let _ = InputGroupAddon::new(AddonAlign::InlineEnd).show(ui, |ui| {
+                        InputGroupButton::icon(Icon::Copy).show(ui);
+                    });
+                }
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        let want = if typed.is_empty() { placeholder } else { typed };
+        (input_rect.get(), text_pos(&out, want))
+    }
+
+    /// Renders the §3 shape (block addons + textarea, two frames) and
+    /// returns the textarea rect plus the origin of the placeholder text.
+    fn measure_textarea_text_origin(style: Style) -> (Rect, Option<Pos2>) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut bio = String::new();
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("ta_pos").show(ui, |ui| {
+                let _ = InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                    InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                });
+                ta_rect.set(
+                    InputGroupTextarea::new(&mut bio)
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui)
+                        .rect,
+                );
+                let _ = InputGroupAddon::new(AddonAlign::BlockEnd).show(ui, |ui| {
+                    InputGroupText::new("Markdown supported").show(ui);
+                });
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        let out = run_ui_capture(&ctx, egui::RawInput::default(), &mut render);
+        (ta_rect.get(), text_pos(&out, "Tell us about yourself…"))
+    }
+
+    /// The allocated width of one `InputGroupText` in an inline-start
+    /// addon (two frames).
+    fn measure_text_addon_width(
+        style: Style,
+        salt: &'static str,
+        text: &'static str,
+        icon: Option<Icon>,
+    ) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt(salt).show(ui, |ui| {
+                let _ = InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                    let mut t = InputGroupText::new(text);
+                    if let Some(icon) = icon {
+                        t = t.icon(icon);
+                    }
+                    rect.set(t.show(ui).rect);
+                });
+                let mut dummy = String::new();
+                let _ = InputGroupInput::new(&mut dummy).show(ui);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        run_ui(&ctx, egui::RawInput::default(), &mut render);
+        rect.get().width()
+    }
+
+    #[test]
+    fn text_position_inline_start_text_addon() {
+        // §1 shape: inline-start text addon → `pl-2` base / `pl-1.5`
+        // nova (§3.5). IGP-VIS-01: before the fix the glyph sat flush
+        // at the input rect edge (offset 0).
+        for (style, want) in [(Style::Nova, 6.0), (Style::Vega, 8.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_s1",
+                StartAddon::Text("https://"),
+                false,
+                "",
+                "example.com",
+            );
+            let pos = pos.expect("placeholder text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: placeholder must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_inline_start_icon_addon() {
+        // §6 shape: inline-start ICON addon → the same `pl-2` /
+        // `pl-1.5` as the text addon (§3.5). The §6 gap must come from
+        // the input's own padding (this pin reads the input rect edge);
+        // the addon-width pin below locks the addon gap itself, so the
+        // two cannot double up.
+        for (style, want) in [(Style::Nova, 6.0), (Style::Vega, 8.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_s6",
+                StartAddon::Icon(Icon::Search),
+                true,
+                "",
+                "Find a workspace…",
+            );
+            let pos = pos.expect("placeholder text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: placeholder must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_no_addon() {
+        // No addon on a side: the input's own padding (`px-3` base,
+        // `px-2.5` nova, §3.5).
+        for (style, want) in [(Style::Nova, 10.0), (Style::Vega, 12.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_input_text_origin(
+                style,
+                "txtpos_noaddon",
+                StartAddon::None,
+                false,
+                "abc",
+                "",
+            );
+            let pos = pos.expect("typed text shape must be painted");
+            assert!(
+                (pos.x - rect.min.x - want).abs() < 1.0,
+                "{name}: typed text must sit {want}px inside the input rect, got offset {}",
+                pos.x - rect.min.x
+            );
+        }
+    }
+
+    #[test]
+    fn text_position_textarea_block_addons() {
+        // §3 shape: block addons + textarea → `px-3 py-3` base,
+        // `px-2.5 py-2` nova (§3.5; a textarea is never targeted by the
+        // input padding rules — it carries its own). Both axes are
+        // observable here (multiline is top-aligned).
+        for (style, want_x, want_y) in [(Style::Nova, 10.0, 8.0), (Style::Vega, 12.0, 12.0)] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let (rect, pos) = measure_textarea_text_origin(style);
+            let pos = pos.expect("textarea placeholder must be painted");
+            assert!(
+                (pos.x - rect.min.x - want_x).abs() < 1.0,
+                "{name}: textarea placeholder must sit {want_x}px inside the rect (x), got offset {}",
+                pos.x - rect.min.x
+            );
+            assert!(
+                (pos.y - rect.min.y - want_y).abs() < 1.0,
+                "{name}: textarea placeholder must sit {want_y}px inside the rect (y), got offset {}",
+                pos.y - rect.min.y
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_position_equals_typed_position() {
+        // S5 oracle: the placeholder position IS the text position —
+        // the hint and the typed text share the same origin (§1 shape,
+        // nova). Locks the S5 finding so a later change cannot move one
+        // without the other.
+        let (rect_hint, pos_hint) = measure_input_text_origin(
+            Style::Nova,
+            "txtpos_oracle_hint",
+            StartAddon::Text("https://"),
+            false,
+            "",
+            "example.com",
+        );
+        let (rect_typed, pos_typed) = measure_input_text_origin(
+            Style::Nova,
+            "txtpos_oracle_typed",
+            StartAddon::Text("https://"),
+            false,
+            "example.com",
+            "",
+        );
+        let pos_hint = pos_hint.expect("placeholder text shape must be painted");
+        let pos_typed = pos_typed.expect("typed text shape must be painted");
+        assert!(
+            (pos_hint.x - pos_typed.x).abs() < 1.0 && (pos_hint.y - pos_typed.y).abs() < 1.0,
+            "placeholder origin {pos_hint:?} must equal typed origin {pos_typed:?}"
+        );
+        assert!(
+            (rect_hint.min.x - rect_typed.min.x).abs() < 1.0,
+            "both compositions must give the input the same rect"
+        );
+    }
+
+    #[test]
+    fn icon_only_text_addon_has_no_trailing_gap() {
+        // §6 exception (IGP-VIS-01): an icon-only addon must allocate
+        // exactly the 16px icon — the `gap-2` between icon and text
+        // applies BETWEEN flex items, and a single child gets no gap.
+        // Before the fix the addon allocated 16 + 8 = 24px, and the
+        // trailing 8px masqueraded as the input's §3.5 padding.
+        for style in [Style::Nova, Style::Vega] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let w = measure_text_addon_width(style, "txtpos_gap", "", Some(Icon::Search));
+            assert!(
+                (w - 16.0).abs() < 0.5,
+                "{name}: icon-only addon must be 16px wide, got {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn icon_and_text_addon_keeps_gap() {
+        // Guard: with BOTH icon and text the 8px `gap-2` stays (§3
+        // "Bio" + User icon).
+        for style in [Style::Nova, Style::Vega] {
+            let name = if style == Style::Nova { "nova" } else { "base" };
+            let icon_text = measure_text_addon_width(style, "txtpos_gap2", "Bio", Some(Icon::User));
+            let text_only = measure_text_addon_width(style, "txtpos_gap3", "Bio", None);
+            assert!(
+                ((icon_text - text_only) - 24.0).abs() < 0.5,
+                "{name}: icon + gap must add 16 + 8px over text alone, got {}",
+                icon_text - text_only
+            );
+        }
+    }
+
+    #[test]
+    fn control_margins_match_section_35() {
+        // §3.5, pure: inline-start/end addon → `pl-2`/`pr-2` base,
+        // `pl-1.5`/`pr-1.5` nova; no addon → the input's own `px-3` /
+        // `px-2.5`; block addons → `pb-3`/`pt-3` (12px, both styles).
+        let m = control_margins(Style::Nova, true, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (6, 10, 0, 0));
+        let m = control_margins(Style::Vega, true, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (8, 12, 0, 0));
+        let m = control_margins(Style::Nova, false, true, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 6, 0, 0));
+        let m = control_margins(Style::Vega, false, true, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 8, 0, 0));
+        let m = control_margins(Style::Nova, false, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 10, 0, 0));
+        let m = control_margins(Style::Vega, false, false, false, false);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 12, 0, 0));
+        let m = control_margins(Style::Nova, false, false, true, true);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (10, 10, 12, 12));
+        let m = control_margins(Style::Vega, false, false, true, true);
+        assert_eq!((m.left, m.right, m.top, m.bottom), (12, 12, 12, 12));
+    }
+
+    // ---- S9 run 2 pins (VIS-02 + F-03) ----
+
+    /// Renders the §3 demo composition (BlockStart + textarea rows(3) +
+    /// BlockEnd) for 5 frames and returns the settled rects:
+    /// (outer Ui height — the space the group actually occupies in its
+    /// parent — textarea rect, block-start rect, block-end rect, group
+    /// response rect).
+    fn s3_column_rects(style: Style) -> (f32, Rect, Rect, Rect, Rect) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut bio = String::new();
+        let outer_h = Cell::new(0.0f32);
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let bs_rect = Cell::new(Rect::NOTHING);
+        let be_rect = Cell::new(Rect::NOTHING);
+        let group_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("s3col").show(ui, |ui| {
+                bs_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockStart)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+                ta_rect.set(
+                    InputGroupTextarea::new(&mut bio)
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui)
+                        .rect,
+                );
+                be_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockEnd)
+                        .show(ui, |ui| {
+                            InputGroupText::new("Markdown supported").show(ui);
+                        })
+                        .response
+                        .rect,
+                );
+            });
+            group_rect.set(r.response.rect);
+            outer_h.set(ui.min_rect().height());
+        };
+        for _ in 0..5 {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        (
+            outer_h.get(),
+            ta_rect.get(),
+            bs_rect.get(),
+            be_rect.get(),
+            group_rect.get(),
+        )
+    }
+
+    #[test]
+    fn column_group_box_height_matches_content_igp_vis02() {
+        // VIS-02: the §3 box must be the sum of its parts (BlockStart
+        // row + textarea + BlockEnd row + pads), not the ~391px the
+        // feedback loop produced (the first-frame row-layout measurement
+        // was poisoned by the textarea wrapping to ~407px, and the
+        // `rect.union(...)` recording sustained it forever).
+        // Nova: 8 + 32 + 66.8 + 32 + 8 = 146.8; Vega: 12 + 36 + 74.8 +
+        // 36 + 12 = 170.8 (block rows are the `interact_size`-pinned
+        // container height; the textarea is 3 rows + py).
+        for (style, expected_h, expected_ta_h, pad) in [
+            (Style::Nova, 146.8, 66.8, 8.0),
+            (Style::Vega, 170.8, 74.8, 12.0),
+        ] {
+            let (outer_h, ta, bs, be, group) = s3_column_rects(style);
+            assert!(
+                (outer_h - expected_h).abs() < 1.5,
+                "{style:?} §3 box height must be ~{expected_h}, got {outer_h}"
+            );
+            assert!(
+                outer_h < 200.0,
+                "{style:?} §3 box must not carry the ~391px feedback-loop height, got {outer_h}"
+            );
+            assert!(
+                (ta.height() - expected_ta_h).abs() < 1.5,
+                "{style:?} textarea height must be ~{expected_ta_h}, got {}",
+                ta.height()
+            );
+            // No gap between the textarea and the BlockEnd row...
+            assert!(
+                (ta.max.y - be.min.y).abs() < 1.0,
+                "{style:?} textarea must abut the BlockEnd row, gap {}",
+                be.min.y - ta.max.y
+            );
+            // ...and no empty fill below the last row: the box ends one
+            // pad below the BlockEnd row.
+            assert!(
+                (group.max.y - be.max.y - pad).abs() < 1.0,
+                "{style:?} box must end {pad}px below the BlockEnd row, got {}",
+                group.max.y - be.max.y
+            );
+            // The box top is the BlockStart pad.
+            assert!(
+                (bs.min.y - group.min.y - pad).abs() < 1.0,
+                "{style:?} BlockStart row must sit {pad}px below the box top, got {}",
+                bs.min.y - group.min.y
+            );
+        }
+    }
+
+    #[test]
+    fn s3_lower_area_click_focuses_textarea_igp_vis02() {
+        // S6 corollary: the §3 lower area is the textarea itself (not
+        // ~280px of empty container fill), so a click in the textarea's
+        // lower area focuses it. Guard pin: the textarea was focusable
+        // from its own rect before the fix too — what the fix changes is
+        // that the box no longer extends ~280px past it.
+        use std::cell::RefCell;
+        let ctx = test_ctx();
+        let bio = RefCell::new(String::new());
+        let ta_rect = Cell::new(Rect::NOTHING);
+        let ta_id = Cell::new(Id::unique("ig_s3click_placeholder"));
+        let render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("s3click").show(ui, |ui| {
+                InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                    InputGroupText::new("Bio").icon(Icon::User).show(ui);
+                });
+                let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                    .rows(3)
+                    .placeholder("Tell us about yourself…")
+                    .show(ui);
+                ta_rect.set(r.rect);
+                ta_id.set(r.id);
+            });
+        };
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        let at = Pos2::new(ta_rect.get().center().x, ta_rect.get().max.y - 5.0);
+        run_ui(&ctx, click_event(at, true), &render);
+        run_ui(&ctx, click_event(at, false), &render);
+        run_ui(&ctx, egui::RawInput::default(), &render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(ta_id.get()),
+            "click in the textarea's lower area must focus it"
+        );
+    }
+
+    fn key_event(key: egui::Key, pressed: bool) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn escape_is_noop_for_group_textarea_igp_int01() {
+        // IGP-INT-01 regression pin: spec §7 requires Escape to be a
+        // no-op for a focused textarea — focus, caret, AND text
+        // unchanged. The group's textarea is a raw TextEdit; before the
+        // fix it carried the stock filter (`escape: false`), so egui's
+        // `Focus::begin_pass` cleared focus on unmodified Escape. The
+        // fix mirrors the textarea line's filter (`textarea.rs:555`,
+        // TXT-INT-01). Frame sequence mirrors the TXT-INT-01 pin: the
+        // filter installs on the frame after focus is granted, so
+        // Escape is judged on the frame after that.
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let bio = RefCell::new(String::from("hello"));
+            let ta_id = Cell::new(Id::unique("ig_int01_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01").show(ui, |ui| {
+                    InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
+                        InputGroupText::new("Bio").show(ui);
+                    });
+                    let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                        .rows(3)
+                        .placeholder("Tell us about yourself…")
+                        .show(ui);
+                    ta_id.set(r.id);
+                });
+                let _ = ui.button("tab-target");
+            };
+            // Frame A: unfocused. Capture the textarea id.
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                None,
+                "unfocused at rest {style:?}"
+            );
+            // Focus the textarea; frame B installs the filter.
+            ctx.memory_mut(|m| m.request_focus(ta_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "focused after request {style:?}"
+            );
+            let caret_before =
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range());
+            assert!(
+                caret_before.is_some(),
+                "caret state exists once focused {style:?}"
+            );
+            // Frame C: unmodified Escape press. Focus, caret, text unchanged.
+            run_ui(&ctx, key_event(egui::Key::Escape, true), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "Escape must not clear focus {style:?}"
+            );
+            assert_eq!(
+                *bio.borrow(),
+                "hello",
+                "Escape must not change text {style:?}"
+            );
+            assert_eq!(
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range()),
+                caret_before,
+                "Escape must not move the caret {style:?}"
+            );
+            // Frame D: the Escape release changes nothing either.
+            run_ui(&ctx, key_event(egui::Key::Escape, false), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "Escape release must not clear focus {style:?}"
+            );
+            assert_eq!(
+                TextEdit::load_state(&ctx, ta_id.get()).and_then(|s| s.cursor.char_range()),
+                caret_before,
+                "Escape release must not move the caret {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_moves_focus_away_from_group_textarea_igp_int01() {
+        // IGP-INT-01 guard: the filter claims Escape but NOT Tab
+        // (`tab: false`) — Tab is focus traversal, never `\t`
+        // (spec §7). Focus moves at end-of-pass, so the move is
+        // observed in the following frame (same shape as the
+        // TXT-INT-01 pin).
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let bio = RefCell::new(String::from("hello"));
+            let ta_id = Cell::new(Id::unique("ig_int01_tab_placeholder"));
+            let target_id = Cell::new(Id::unique("ig_int01_tab_target_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01tab").show(ui, |ui| {
+                    let r = InputGroupTextarea::new(&mut bio.borrow_mut())
+                        .rows(3)
+                        .show(ui);
+                    ta_id.set(r.id);
+                });
+                target_id.set(ui.button("tab-target").id);
+            };
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            ctx.memory_mut(|m| m.request_focus(ta_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(ta_id.get()),
+                "focused after request {style:?}"
+            );
+            // Frame C: Tab press. Frame D: observe the move.
+            run_ui(&ctx, key_event(egui::Key::Tab, true), &render);
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(target_id.get()),
+                "Tab must move focus to the next stop {style:?} (filter keeps tab: false)"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_clears_focus_for_group_input_igp_int01() {
+        // IGP-INT-01 guard (OBSERVED-G4, NOT a defect): the §1 input
+        // keeps the stock filter, so unmodified Escape still clears
+        // its focus — the fix must not touch it (input gate G4:
+        // Escape/Enter focus-clearing stays OBSERVATION, not defect).
+        // This pin passes before AND after the fix; it fails if a
+        // future change claims Escape for the input.
+        use std::cell::RefCell;
+        for style in [Style::Vega, Style::Nova] {
+            let ctx = egui::Context::default();
+            if style == Style::Vega {
+                Preset::default().with_style(Style::Vega).install(&ctx);
+            } else {
+                Preset::default().install(&ctx);
+            }
+            let text = RefCell::new(String::from("hello"));
+            let input_id = Cell::new(Id::unique("ig_int01_input_placeholder"));
+            let render = |ui: &mut Ui| {
+                InputGroup::new().id_salt("int01input").show(ui, |ui| {
+                    let r = InputGroupInput::new(&mut text.borrow_mut()).show(ui);
+                    input_id.set(r.id);
+                });
+                let _ = ui.button("tab-target");
+            };
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            ctx.memory_mut(|m| m.request_focus(input_id.get()));
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                Some(input_id.get()),
+                "focused after request {style:?}"
+            );
+            // Escape press, then an empty frame: focus must be gone.
+            run_ui(&ctx, key_event(egui::Key::Escape, true), &render);
+            run_ui(&ctx, egui::RawInput::default(), &render);
+            assert_eq!(
+                ctx.memory(|mem| mem.focused()),
+                None,
+                "Escape still clears focus for the §1 input {style:?} (OBSERVED-G4)"
+            );
+            assert_eq!(
+                *text.borrow(),
+                "hello",
+                "Escape must not change text {style:?}"
+            );
+        }
+    }
+
+    /// Renders BlockStart + a direct-child control and returns the
+    /// BlockStart row's top offset (== the block padding) after 4
+    /// frames. `nested_input`: when true the only input is nested
+    /// INSIDE the BlockStart addon (not a direct child); when false
+    /// the input is a direct child of the group.
+    fn block_start_offset(nested_input: bool, style: Style) -> f32 {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let mut bio = String::new();
+        let bs_rect = Cell::new(Rect::NOTHING);
+        let group_rect = Cell::new(Rect::NOTHING);
+        let mut render = |ui: &mut Ui| {
+            let r = InputGroup::new().id_salt("f03").show(ui, |ui| {
+                bs_rect.set(
+                    InputGroupAddon::new(AddonAlign::BlockStart)
+                        .show(ui, |ui| {
+                            if nested_input {
+                                InputGroupInput::new(&mut text).show(ui);
+                            } else {
+                                InputGroupText::new("Bio").show(ui);
+                            }
+                        })
+                        .response
+                        .rect,
+                );
+                if nested_input {
+                    InputGroupTextarea::new(&mut bio).rows(3).show(ui);
+                } else {
+                    InputGroupInput::new(&mut text).show(ui);
+                }
+            });
+            group_rect.set(r.response.rect);
+        };
+        for _ in 0..4 {
+            run_ui(&ctx, egui::RawInput::default(), &mut render);
+        }
+        bs_rect.get().min.y - group_rect.get().min.y
+    }
+
+    #[test]
+    fn has_input_ignores_input_inside_addon_igp_f03() {
+        // IGP-F-03 (base only — nova's block padding is uniformly 8px):
+        // CSS `group-has-[>input]` tests DIRECT children. An input
+        // nested inside a BlockStart addon must NOT set `has_input`, so
+        // the N15 conditional keeps the 12px base padding.
+        let offset = block_start_offset(true, Style::Vega);
+        assert!(
+            (offset - 12.0).abs() < 0.5,
+            "nested input must not trigger the N15 reduction: block offset must be 12px, got {offset}"
+        );
+    }
+
+    #[test]
+    fn has_input_counts_direct_input_igp_f03() {
+        // Guard: a direct-child input still sets `has_input` (N15 10px
+        // base padding). Passes before and after.
+        let offset = block_start_offset(false, Style::Vega);
+        assert!(
+            (offset - 10.0).abs() < 0.5,
+            "direct input must trigger the N15 reduction: block offset must be 10px, got {offset}"
+        );
+    }
+
+    // ---- IGP-ANM-01 per-property transition wiring (S9 run 6) ----
+
+    /// The single 3px container-ring stroke colour in `out` (the §1
+    /// composition paints exactly one ring; the border is 1px).
+    fn ring_stroke_color(out: &egui::FullOutput) -> Option<Color32> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rs) if rs.stroke.width == 3.0 => Some(rs.stroke.color),
+            _ => None,
+        })
+    }
+
+    /// Drives the §1 composition (group + input) through a focus leg
+    /// at controlled times and returns the painted (border, ring)
+    /// colours at the flip frame (t=0.0), mid-flight (t=0.075) and
+    /// settled (t=0.30). Frame A (t=0) is unfocused; `request_focus`
+    /// then frame B is the flip frame. The animator follows
+    /// `input.time` (egui 0.37 `animate_value_with_time`).
+    fn focus_leg_colors(
+        style: Style,
+    ) -> (
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+    ) {
+        let ctx = egui::Context::default();
+        if style == Style::Vega {
+            Preset::default().with_style(Style::Vega).install(&ctx);
+        } else {
+            Preset::default().install(&ctx);
+        }
+        let mut text = String::new();
+        let input_id = Cell::new(Id::unique("ig_anm01_placeholder"));
+        let mut render = |ui: &mut Ui| {
+            InputGroup::new().id_salt("anm01").show(ui, |ui| {
+                let r = InputGroupInput::new(&mut text).show(ui);
+                input_id.set(r.id);
+            });
+        };
+        let at = |t: f64| egui::RawInput {
+            time: Some(t),
+            ..Default::default()
+        };
+        // Frame A (t=0): unfocused; capture the input id.
+        run_ui(&ctx, at(0.0), &mut render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            None,
+            "unfocused at rest {style:?}"
+        );
+        // Focus the input; frame B (t=0) is the flip frame.
+        ctx.memory_mut(|m| m.request_focus(input_id.get()));
+        let out_b = run_ui_capture(&ctx, at(0.0), &mut render);
+        assert_eq!(
+            ctx.memory(|mem| mem.focused()),
+            Some(input_id.get()),
+            "focused after request {style:?}"
+        );
+        // Frame C (t=0.075): mid-flight. Frame D (t=0.30): settled.
+        let out_c = run_ui_capture(&ctx, at(0.075), &mut render);
+        let out_d = run_ui_capture(&ctx, at(0.30), &mut render);
+        (
+            border_stroke_color(&out_b),
+            ring_stroke_color(&out_b),
+            border_stroke_color(&out_c),
+            ring_stroke_color(&out_c),
+            border_stroke_color(&out_d),
+            ring_stroke_color(&out_d),
+        )
+    }
+
+    #[test]
+    fn container_transition_specs_follow_ruling_6_igp_anm01() {
+        // IGP-ANM-01 spec table (S8 gate G2 + ruling 6 narrow reading;
+        // input.rs precedent): the border colour rides the COLOR spec
+        // and the ring rides the SHADOW spec. Base
+        // `transition-[color,box-shadow]`: ring eases, border snaps.
+        // Nova `transition-colors`: border-colour eases, ring snaps.
+        let base = container_transition_specs(Style::Vega);
+        assert_eq!(base.color.duration_secs, 0.0);
+        assert_eq!(base.color.easing, Easing::EaseInOut);
+        assert_eq!(base.shadow.duration_secs, 0.15);
+        assert_eq!(base.shadow.easing, Easing::EaseInOut);
+        let nova = container_transition_specs(Style::Nova);
+        assert_eq!(nova.color.duration_secs, 0.15);
+        assert_eq!(nova.color.easing, Easing::EaseInOut);
+        assert_eq!(nova.shadow.duration_secs, 0.0);
+        assert_eq!(nova.shadow.easing, Easing::EaseInOut);
+    }
+
+    #[test]
+    fn base_ring_eases_150ms_igp_anm01() {
+        // IGP-ANM-01 (a): under base the ring is a `box-shadow` layer,
+        // so it eases 150ms on focus. Mid-flight (t=0.075) its alpha
+        // is strictly between 0 and settled (`ring/50`, alpha 128);
+        // settled (t=0.30) it is exactly `ring/50`. RED before the
+        // fix: the ring snaps — mid-flight alpha already equals
+        // settled.
+        let (_bb, _rb, _bc, ring_c, _bd, ring_d) = focus_leg_colors(Style::Vega);
+        let settled = ring_d.expect("base ring settled once focused");
+        assert_eq!(settled.a(), 128, "settled base ring is ring/50");
+        let mid = ring_c.expect("base ring present mid-flight");
+        assert!(
+            mid.a() > 0 && mid.a() < settled.a(),
+            "base ring must ease, not snap: mid alpha {} vs settled {}",
+            mid.a(),
+            settled.a()
+        );
+    }
+
+    #[test]
+    fn nova_border_colour_eases_150ms_igp_anm01() {
+        // IGP-ANM-01 (b): under nova the border colour rides
+        // `transition-colors`, so it eases 150ms on focus. Mid-flight
+        // (t=0.075) it is a mid-OKLab mix — neither the rest colour
+        // (`input`) nor the focus colour (`ring`); settled (t=0.30)
+        // it is exactly `ring`. RED before the fix: the border snaps
+        // — mid-flight it already equals `ring`.
+        let p = palette(Mode::Light);
+        let (_bb, _rb, border_c, _rc, border_d, _rd) = focus_leg_colors(Style::Nova);
+        let mid = border_c.expect("border present mid-flight");
+        assert_ne!(
+            mid, p.input,
+            "nova border must move off the rest colour mid-flight"
+        );
+        assert_ne!(
+            mid, p.ring,
+            "nova border must not snap to the focus colour mid-flight"
+        );
+        assert_eq!(
+            border_d,
+            Some(p.ring),
+            "nova border settles on the focus colour"
+        );
+    }
+
+    #[test]
+    fn nova_ring_snaps_igp_anm01() {
+        // IGP-ANM-01 (c) guard: under nova the ring is a `box-shadow`
+        // layer, which `transition-colors` does NOT cover — it snaps.
+        // The ring is fully shown on the flip frame already (the
+        // zero-duration shadow spec returns the target immediately).
+        // Passes before and after the fix.
+        let (_bb, ring_b, _bc, _rc, _bd, ring_d) = focus_leg_colors(Style::Nova);
+        let settled = ring_d.expect("nova ring settled once focused");
+        assert_eq!(
+            ring_b,
+            Some(settled),
+            "nova ring must snap: flip-frame ring == settled ring"
+        );
+    }
+
+    #[test]
+    fn base_border_snaps_igp_anm01() {
+        // IGP-ANM-01 (c) guard: under base the border colour is NOT in
+        // `transition-[color,box-shadow]` (narrow reading, ruling 6) —
+        // it snaps to the focus colour on the flip frame already.
+        // Passes before and after the fix.
+        let p = palette(Mode::Light);
+        let (border_b, _rb, _bc, _rc, border_d, _rd) = focus_leg_colors(Style::Vega);
+        assert_eq!(
+            border_b,
+            Some(p.ring),
+            "base border must snap to the focus colour on the flip frame"
+        );
+        assert_eq!(
+            border_d,
+            Some(p.ring),
+            "base border settles on the focus colour"
+        );
     }
 }

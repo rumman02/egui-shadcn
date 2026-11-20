@@ -7846,7 +7846,11 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
         .ctx()
         .data_mut(|d| d.get_temp(invalid_store).unwrap_or_default());
 
-    ui.label("Inline start text addon + inline end icon button");
+    // Header: recipe position for S5 captures (spec §§2–4).
+    ui.label("Container 36px base / 32px nova (border-box), radius 8/10px; inner controls frameless — all chrome on the container.");
+    ui.add_space(12.0);
+
+    ui.label("§1 — Inline-start text addon + inline-end icon button (Copy, IconXs)");
     ui.add_space(4.0);
     InputGroup::new().id_salt("ig_demo_url").show(ui, |ui| {
         InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
@@ -7862,7 +7866,7 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
     ui.small(format!("url: {url:?}"));
 
     ui.add_space(12.0);
-    ui.label("Icon addon and kbd hint");
+    ui.label("§2 — Icon addon + KbdGroup (⌘K) — KBD-VIS-02 centred-parent composition");
     ui.add_space(4.0);
     InputGroup::new().id_salt("ig_demo_search").show(ui, |ui| {
         InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
@@ -7880,7 +7884,11 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Textarea control (auto-height column layout)");
+    // Label fix (S1 report §9.3): the column comes from the block addons,
+    // not the textarea — the textarea gives auto height, row kept (§3.1).
+    ui.label(
+        "§3 — Block addons + textarea (column from block addons; textarea auto-height, row kept)",
+    );
     ui.add_space(4.0);
     InputGroup::new().id_salt("ig_demo_bio").show(ui, |ui| {
         InputGroupAddon::new(AddonAlign::BlockStart).show(ui, |ui| {
@@ -7896,7 +7904,7 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Invalid control (container border turns destructive)");
+    ui.label("§4 — Invalid input (destructive border; nova 3px ring at rest) — click to focus for the combined state (OPEN-2: invalid wins)");
     ui.add_space(4.0);
     InputGroup::new().id_salt("ig_demo_invalid").show(ui, |ui| {
         InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
@@ -7909,7 +7917,7 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Disabled");
+    ui.label("§5 — Disabled group, mechanism (a) — whole-container 50% fade (nova)");
     ui.add_space(4.0);
     InputGroup::new()
         .id_salt("ig_demo_disabled")
@@ -7926,7 +7934,7 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
-    ui.label("Button sizes (xs chip and sm action)");
+    ui.label("§6 — Button sizes (Sm “Search” + IconXs Copy)");
     ui.add_space(4.0);
     InputGroup::new().id_salt("ig_demo_sizes").show(ui, |ui| {
         InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
@@ -7942,9 +7950,14 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
             InputGroupButton::icon(Icon::Copy).show(ui);
         });
     });
+    // Carried S1 limitation (§8.6): this addon holds TWO direct children,
+    // so the spec `gap-2` (8px) between the buttons is NOT rendered
+    // (`item_spacing.x = 0` on the addon row). Judge the button SIZES here;
+    // the missing inter-button gap is a recorded limitation, not a defect.
+    ui.small("§6 note: the two buttons render with no gap between them (carried S1 limitation, S1 report §8.6).");
 
     ui.add_space(12.0);
-    ui.label("Fused inside a ButtonGroup");
+    ui.label("§7 — Fused inside a ButtonGroup (InputGroup First + Button “Go”)");
     ui.add_space(4.0);
     ButtonGroup::new().show(ui, |ui| {
         InputGroup::new()
@@ -7958,6 +7971,22 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
             });
         Button::new("Go").show(ui);
     });
+
+    ui.add_space(12.0);
+    ui.label("§8 — Group-disabled flag (addons fade 50%; container chrome unchanged)");
+    ui.add_space(4.0);
+    InputGroup::new()
+        .id_salt("ig_demo_group_disabled")
+        .group_disabled(true)
+        .show(ui, |ui| {
+            InputGroupAddon::new(AddonAlign::InlineStart).show(ui, |ui| {
+                InputGroupText::new("https://").show(ui);
+            });
+            InputGroupInput::new(&mut url)
+                .placeholder("example.com")
+                .show(ui);
+        });
+    ui.small("§8 note: group flag only (OPEN-3 mechanism (b)) — the control stays enabled; only the addon fades. Compare §5, where the disabled control fades the whole container (mechanism (a), nova).");
 
     ui.ctx().data_mut(|d| {
         d.insert_temp(url_store, url);
