@@ -8363,28 +8363,36 @@ pub fn progress_demo(ui: &mut egui::Ui) {
 }
 
 pub fn table_demo(ui: &mut egui::Ui) {
-    ui.label("Invoices table (hover rows, one selected row, footer totals)");
+    ui.label("Table primitive — header / body / footer, rows, cells, caption. This is the shadcn Table primitive, NOT data-table (Batch G): no sorting, pagination, or filtering here.");
+    ui.label("Honest notes: expanded rows render bg-muted/50 but the trigger placement is OPEN-2 (consumer-owned state); checkbox cells use the additive .checkbox_cell builders (N8); row recolour is instant, not the 150ms transition-colors fade (limitation D2, easing OPEN-4); the caption's mt-4 is caller-spaced here because the TableCaption slot is Batch A's (D3).");
+    ui.add_space(8.0);
+
+    ui.label("§1 Invoices table (hover rows, one selected row, footer totals)");
     ui.add_space(4.0);
+    let mut head_h = 0.0;
+    let mut body_row_h = 0.0;
     Table::new().show(ui, |ui| {
         TableHeader::new().show(ui, |ui| {
             TableRow::new().show(ui, |ui| {
-                TableHead::new("Invoice").show(ui);
+                let head_resp = TableHead::new("Invoice").width(220.0).show(ui);
+                head_h = head_resp.rect.height();
                 TableHead::new("Status").width(110.0).show(ui);
                 TableHead::new("Method").width(130.0).show(ui);
                 TableHead::new("Amount").width(90.0).show(ui);
             });
         });
         TableBody::new().show(ui, |ui| {
-            TableRow::new().show(ui, |ui| {
-                TableCell::text("INV-0041").show_text(ui);
+            let first_row = TableRow::new().show(ui, |ui| {
+                TableCell::text("INV-0041").width(220.0).show_text(ui);
                 TableCell::new().width(110.0).show(ui, |ui| {
                     Badge::new("Paid").show(ui);
                 });
                 TableCell::text("Credit Card").width(130.0).show_text(ui);
                 TableCell::text("$250.00").width(90.0).show_text(ui);
             });
+            body_row_h = first_row.response.rect.height();
             TableRow::new().show(ui, |ui| {
-                TableCell::text("INV-0042").show_text(ui);
+                TableCell::text("INV-0042").width(220.0).show_text(ui);
                 TableCell::new().width(110.0).show(ui, |ui| {
                     Badge::new("Pending")
                         .variant(BadgeVariant::Secondary)
@@ -8394,7 +8402,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
                 TableCell::text("$150.00").width(90.0).show_text(ui);
             });
             TableRow::new().selected(true).show(ui, |ui| {
-                TableCell::text("INV-0043").show_text(ui);
+                TableCell::text("INV-0043").width(220.0).show_text(ui);
                 TableCell::new().width(110.0).show(ui, |ui| {
                     Badge::new("Unpaid").variant(BadgeVariant::Outline).show(ui);
                 });
@@ -8402,7 +8410,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
                 TableCell::text("$300.00").width(90.0).show_text(ui);
             });
             TableRow::new().show(ui, |ui| {
-                TableCell::text("INV-0044").show_text(ui);
+                TableCell::text("INV-0044").width(220.0).show_text(ui);
                 TableCell::new().width(110.0).show(ui, |ui| {
                     Badge::new("Paid").show(ui);
                 });
@@ -8412,7 +8420,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
         });
         TableFooter::new().show(ui, |ui| {
             TableRow::new().show(ui, |ui| {
-                TableCell::text("Total").show_text(ui);
+                TableCell::text("Total").width(220.0).show_text(ui);
                 TableCell::text("").width(110.0).show_text(ui);
                 TableCell::text("").width(130.0).show_text(ui);
                 TableCell::text("$825.00").width(90.0).show_text(ui);
@@ -8423,16 +8431,126 @@ pub fn table_demo(ui: &mut egui::Ui) {
     // the default item spacing, so the demo adds the space explicitly.
     ui.add_space(16.0);
     TableCaption::new("A list of your recent invoices.").show(ui);
+    ui.small(format!(
+        "measured: head height {head_h:.1} px (h-10 = 40); first body row height {body_row_h:.1} px (tallest cell is the Status badge — see §3 for the plain-text row height); caption gap 16.0 px (mt-4, caller-spaced per D3)"
+    ));
 
     ui.add_space(12.0);
-    ui.label("Selection state demo (click rows)");
+    ui.label("§2 Checkbox cells (N8) — select-all header checkbox + row selection checkboxes");
+    ui.add_space(4.0);
+    let cb_store = egui::Id::unique("table_demo_checkbox_rows");
+    let mut cb_rows: [bool; 3] = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(cb_store).unwrap_or([false; 3]));
+    let mut cb_all = cb_rows.iter().all(|r| *r);
+    let cb_all_before = cb_all;
+    let mut cb_head_rect = egui::Rect::ZERO;
+    let mut cb_body_rect = egui::Rect::ZERO;
+    let mut cb_body_row_h = 0.0;
+    Table::new().show(ui, |ui| {
+        TableHeader::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                let head = TableHead::new("")
+                    .width(40.0)
+                    .checkbox_cell(true)
+                    .show_with(ui, |ui| {
+                        Checkbox::new(&mut cb_all)
+                            .id_salt("table_demo_select_all")
+                            .show(ui)
+                    });
+                cb_head_rect = head.response.rect;
+                TableHead::new("Name").width(220.0).show(ui);
+                TableHead::new("Role").width(140.0).show(ui);
+            });
+        });
+        TableBody::new().show(ui, |ui| {
+            for (i, (name, role)) in [
+                ("Ada Lovelace", "Engineer"),
+                ("Grace Hopper", "Admiral"),
+                ("Katherine Johnson", "Mathematician"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let selected_row = cb_rows[i];
+                let cb_row = TableRow::new().selected(selected_row).show(ui, |ui| {
+                    let cell = TableCell::new()
+                        .width(40.0)
+                        .checkbox_cell(true)
+                        .show(ui, |ui| {
+                            Checkbox::new(&mut cb_rows[i])
+                                .id_salt(format!("table_demo_cb_{i}"))
+                                .show(ui)
+                        });
+                    if i == 0 {
+                        cb_body_rect = cell.response.rect;
+                    }
+                    TableCell::text(name).width(220.0).show_text(ui);
+                    TableCell::text(role).width(140.0).show_text(ui);
+                });
+                if i == 0 {
+                    cb_body_row_h = cb_row.response.rect.height();
+                }
+            }
+        });
+    });
+    if cb_all != cb_all_before {
+        cb_rows = [cb_all; 3];
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(cb_store, cb_rows));
+    ui.small(format!(
+        "measured: checkbox head cell {:.1} x {:.1} px (h-10 = 40, pr-0); checkbox body cell {:.1} x {:.1} px; checkbox body row height {:.1} px (the checkbox does not grow the row); checkbox content shifts 2px down (translate-y-[2px])",
+        cb_head_rect.width(),
+        cb_head_rect.height(),
+        cb_body_rect.width(),
+        cb_body_rect.height(),
+        cb_body_row_h
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§3 Expanded row (N7) — rendering case only; trigger placement is OPEN-2");
+    ui.add_space(4.0);
+    let mut plain_row_h = 0.0;
+    Table::new().show(ui, |ui| {
+        TableHeader::new().show(ui, |ui| {
+            TableRow::new().show(ui, |ui| {
+                TableHead::new("Invoice").width(220.0).show(ui);
+                TableHead::new("Status").width(110.0).show(ui);
+            });
+        });
+        TableBody::new().show(ui, |ui| {
+            let plain_row = TableRow::new().show(ui, |ui| {
+                TableCell::text("INV-0051").width(220.0).show_text(ui);
+                TableCell::text("Paid").width(110.0).show_text(ui);
+            });
+            plain_row_h = plain_row.response.rect.height();
+            TableRow::new().expanded(true).show(ui, |ui| {
+                TableCell::text("INV-0052 (expanded)")
+                    .width(220.0)
+                    .show_text(ui);
+                TableCell::text("Pending").width(110.0).show_text(ui);
+            });
+            TableRow::new().selected(true).show(ui, |ui| {
+                TableCell::text("INV-0053 (selected)")
+                    .width(220.0)
+                    .show_text(ui);
+                TableCell::text("Unpaid").width(110.0).show_text(ui);
+            });
+        });
+    });
+    ui.small(format!(
+        "measured: plain-text body row height {plain_row_h:.1} px (14px text + 8px padding top/bottom). Expanded row fill: bg-muted/50 (same value as hover); selected wins over expanded (opaque bg-muted). No expander control is shown — the expanded state is consumer-owned (OPEN-2/OPEN-5)."
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§4 Selection state demo (click rows)");
     ui.add_space(4.0);
     let sel_store = egui::Id::unique("table_demo_selected");
     let mut selected: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(sel_store).unwrap_or(None));
     Table::new().show(ui, |ui| {
         TableHeader::new().show(ui, |ui| {
             TableRow::new().show(ui, |ui| {
-                TableHead::new("Name").show(ui);
+                TableHead::new("Name").width(220.0).show(ui);
                 TableHead::new("Role").width(140.0).show(ui);
             });
         });
@@ -8451,7 +8569,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
                     .interactive(true)
                     .id_salt(format!("table_demo_row_{i}"))
                     .show(ui, |ui| {
-                        TableCell::text(name).show_text(ui);
+                        TableCell::text(name).width(220.0).show_text(ui);
                         TableCell::text(role).width(140.0).show_text(ui);
                     });
                 if resp.response.clicked() {
