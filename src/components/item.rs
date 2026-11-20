@@ -11,6 +11,14 @@
 //! full-width rows, [`ItemGroup`] (vertical list with a per-size gap) and
 //! [`ItemSeparator`].
 //!
+//! Rebuilt (Batch C S1) to the frozen S0 spec: the item root wraps
+//! (`flex flex-wrap`, N13), the media shifts down 2px and top-aligns when
+//! a description is present (N12), the title wraps at the content width
+//! and is `font-medium` (N11), description links underline with a 4px
+//! offset and recolour to primary on hover (N10), descriptions clamp to
+//! two lines with an ellipsis (D9), and the nova group gap keys off the
+//! contained items' sizes (§2.4).
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -39,6 +47,253 @@ use egui::{
 const TITLE_LINE_HEIGHT: f32 = 1.375;
 /// Description line-height multiplier (`leading-normal`).
 const DESCRIPTION_LINE_HEIGHT: f32 = 1.5;
+/// Link underline offset (`underline-offset-4`): the underline sits 4px
+/// below the link baseline (N10).
+const LINK_UNDERLINE_OFFSET: f32 = 4.0;
+/// Minimum content width before the wrapping row moves the content to the
+/// next line instead of squeezing it (N13). Below this the content asks
+/// for the full-line width, which the wrapping layout places on a fresh
+/// line.
+const MIN_CONTENT_WIDTH: f32 = 48.0;
+
+/// One inline segment of an [`ItemDescription`].
+///
+/// The description is `text-muted-foreground`; a direct `<a>` child of the
+/// description renders underlined with a 4px offset and `hover:text-primary`
+/// (`item.tsx:138`, N10). The builder API is [`ItemDescription::link`] for
+/// a link segment and [`ItemDescription::text`] for plain text; `new(text)`
+/// stays a single plain segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DescriptionSegment {
+    /// Plain description text (`text-muted-foreground`).
+    Text(String),
+    /// A direct-child link: underlined, 4px offset, `text-primary` on hover.
+    Link(String),
+}
+
+impl DescriptionSegment {
+    fn text(&self) -> &str {
+        match self {
+            DescriptionSegment::Text(text) | DescriptionSegment::Link(text) => text,
+        }
+    }
+
+    fn is_link(&self) -> bool {
+        matches!(self, DescriptionSegment::Link(_))
+    }
+
+    fn with_text(&self, text: String) -> Self {
+        match self {
+            DescriptionSegment::Text(_) => DescriptionSegment::Text(text),
+            DescriptionSegment::Link(_) => DescriptionSegment::Link(text),
+        }
+    }
+}
+
+/// One underlined link run inside a laid-out description galley: the
+/// underline segment (`from` → `to`, in galley coordinates) and the
+/// hover hit rect (the run's x-extent, 2px wider on each side and as tall
+/// as the row — the same shape the empty component uses).
+#[derive(Clone, Copy, Debug)]
+struct LinkRun {
+    from: Pos2,
+    to: Pos2,
+    hit: Rect,
+}
+
+fn make_link_run(x0: f32, x1: f32, baseline: f32, row_top: f32, row_height: f32) -> LinkRun {
+    let y = baseline + LINK_UNDERLINE_OFFSET;
+    LinkRun {
+        from: Pos2::new(x0, y),
+        to: Pos2::new(x1, y),
+        hit: Rect::from_min_max(
+            Pos2::new(x0 - 2.0, row_top),
+            Pos2::new(x1 + 2.0, row_top + row_height),
+        ),
+    }
+}
+
+/// Scans the laid-out galley against the expected segment text and returns
+/// one [`LinkRun`] per link segment per visual row (a link that wraps
+/// produces one run per row). Returns no runs when the galley and the
+/// segments disagree (truncated, mixed-direction or font-substituted text),
+/// so the description degrades to plain text instead of mis-underlining.
+fn link_runs(galley: &egui::Galley, segments: &[DescriptionSegment]) -> Vec<LinkRun> {
+    let mut expected: Vec<(char, bool)> = Vec::new();
+    for segment in segments {
+        expected.extend(segment.text().chars().map(|c| (c, segment.is_link())));
+    }
+    let mut runs = Vec::new();
+    let mut idx = 0usize;
+    for placed in &galley.rows {
+        let row = &placed.row;
+        let mut run: Option<(f32, f32)> = None;
+        let mut run_end_x = 0.0;
+        for glyph in &row.glyphs {
+            let Some(&(ch, is_link)) = expected.get(idx) else {
+                return Vec::new();
+            };
+            if glyph.chr != ch {
+                return Vec::new();
+            }
+            idx += 1;
+            if is_link {
+                let baseline = placed.pos.y + glyph.pos.y;
+                let x0 = placed.pos.x + glyph.pos.x;
+                let x1 = x0 + glyph.advance_width;
+                if run.is_none() {
+                    run = Some((x0, baseline));
+                }
+                run_end_x = x1;
+            } else if let Some((x0, baseline)) = run.take() {
+                runs.push(make_link_run(
+                    x0,
+                    run_end_x,
+                    baseline,
+                    placed.pos.y,
+                    row.size.y,
+                ));
+            }
+        }
+        if let Some((x0, baseline)) = run.take() {
+            runs.push(make_link_run(
+                x0,
+                run_end_x,
+                baseline,
+                placed.pos.y,
+                row.size.y,
+            ));
+        }
+    }
+    runs
+}
+
+/// Counts the visual lines of a laid-out galley, ignoring a trailing empty
+/// row (e.g. from a trailing newline) so the `line-clamp-2` check counts
+/// rendered lines only.
+fn effective_rows(galley: &egui::Galley) -> usize {
+    galley
+        .rows
+        .iter()
+        .filter(|placed| !placed.row.glyphs.is_empty())
+        .count()
+}
+
+/// Builds the description layout job for the given segments. Link segments
+/// take `link_color`; plain segments take `base_color`.
+fn description_job(
+    segments: &[DescriptionSegment],
+    size: f32,
+    base_color: Color32,
+    link_color: Color32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for segment in segments {
+        let color = if segment.is_link() {
+            link_color
+        } else {
+            base_color
+        };
+        job.append(
+            segment.text(),
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::proportional(size),
+                color,
+                line_height: Some(size * DESCRIPTION_LINE_HEIGHT),
+                ..egui::TextFormat::default()
+            },
+        );
+    }
+    job
+}
+
+/// Takes the first `n` chars of the segments, preserving segment
+/// boundaries, and appends "…" to the last taken segment (inheriting its
+/// style, so an ellipsis ending a link is underlined like the link).
+fn take_prefix_segments(segments: &[DescriptionSegment], n: usize) -> Vec<DescriptionSegment> {
+    let mut out: Vec<DescriptionSegment> = Vec::new();
+    let mut remaining = n;
+    for segment in segments {
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(segment.text().chars().count());
+        let prefix: String = segment.text().chars().take(take).collect();
+        out.push(segment.with_text(prefix));
+        remaining -= take;
+    }
+    match out.last_mut() {
+        Some(DescriptionSegment::Text(text)) | Some(DescriptionSegment::Link(text)) => {
+            text.push('…')
+        }
+        None => out.push(DescriptionSegment::Text("…".to_string())),
+    }
+    out
+}
+
+/// Truncates the segments to at most `max_rows` visual lines with a
+/// trailing "…" (`line-clamp-2`, spec §2.9 / D9). Returns the original
+/// segments unchanged when they already fit. Binary-searches the longest
+/// char prefix whose layout (with the "…" appended) fits in `max_rows`.
+fn truncate_segments(
+    segments: &[DescriptionSegment],
+    size: f32,
+    width: f32,
+    max_rows: usize,
+    ui: &Ui,
+    base_color: Color32,
+    link_color: Color32,
+) -> Vec<DescriptionSegment> {
+    let fits = |candidate: &[DescriptionSegment]| -> bool {
+        let mut job = description_job(candidate, size, base_color, link_color);
+        job.wrap.max_width = width;
+        let galley = ui.painter().layout_job(job);
+        effective_rows(&galley) <= max_rows
+    };
+    if fits(segments) {
+        return segments.to_vec();
+    }
+    let total: usize = segments.iter().map(|s| s.text().chars().count()).sum();
+    // Prefix length 0 ("…" alone) always fits in one row.
+    let mut lo = 0usize;
+    let mut hi = total;
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if fits(&take_prefix_segments(segments, mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    take_prefix_segments(segments, lo)
+}
+
+/// Resolves the nova group gap from the contained items' sizes (spec
+/// §2.4): 16px by default, 10px if any descendant item is `sm`, 8px if any
+/// is `xs` (xs wins on mixed sizes — equal-specificity cascade, source
+/// order). `member_sizes` is the set recorded last frame; when empty (first
+/// frame, or a group with no items yet) the group's own size hint is used.
+/// Base styles have no group gap (0).
+pub(crate) fn resolve_group_gap(
+    style: Style,
+    group_size: ItemSize,
+    member_sizes: &[ItemSize],
+) -> f32 {
+    if style != Style::Nova {
+        return 0.0;
+    }
+    if member_sizes.contains(&ItemSize::Xs) {
+        return 8.0;
+    }
+    if member_sizes.contains(&ItemSize::Sm) {
+        return 10.0;
+    }
+    if !member_sizes.is_empty() {
+        return 16.0;
+    }
+    group_gap(style, group_size)
+}
 
 /// Item variants, mirroring the source `itemVariants.variant`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -130,6 +385,10 @@ pub const ITEM_MEDIA_ICON: f32 = 16.0;
 struct ItemCtx {
     id: egui::Id,
     size: ItemSize,
+    /// Whether the item had an [`ItemDescription`] descendant last frame
+    /// (N12: the media is laid out before the description, so it reads
+    /// last frame's flag).
+    has_desc_prev: bool,
 }
 
 fn item_stack_id() -> egui::Id {
@@ -197,10 +456,13 @@ fn current_row(ui: &Ui) -> Option<RowCtx> {
         .and_then(|s| s.last().copied())
 }
 
-/// Group membership for [`ItemGroup`] size inheritance.
+/// Group membership for [`ItemGroup`] size inheritance, plus the group's
+/// id (so items can record their resolved size into it for the §2.4
+/// group-gap rule).
 #[derive(Clone, Copy, Debug)]
 struct GroupCtx {
     size: ItemSize,
+    id: egui::Id,
 }
 
 fn group_stack_id() -> egui::Id {
@@ -231,6 +493,15 @@ fn current_group(ui: &Ui) -> Option<GroupCtx> {
     ui.ctx()
         .data_mut(|d| d.get_temp::<Vec<GroupCtx>>(group_stack_id()))
         .and_then(|s| s.last().copied())
+}
+
+/// All groups enclosing the current position (outermost first), for the
+/// §2.4 group-gap recording (an item records its resolved size into every
+/// enclosing group).
+fn group_stack(ui: &Ui) -> Vec<GroupCtx> {
+    ui.ctx()
+        .data_mut(|d| d.get_temp::<Vec<GroupCtx>>(group_stack_id()))
+        .unwrap_or_default()
 }
 
 /// A shadcn item. See the [module docs](self) for an example.
@@ -302,7 +573,37 @@ impl Item {
             None => ui.auto_id_with("shadcn_item"),
         };
 
-        push_item(ui, ItemCtx { id, size });
+        // N12: capture last frame's description flag, then clear it for
+        // this frame's recording (the description sets it while the content
+        // runs, and the media — laid out first — reads it next frame).
+        let has_desc_prev: bool = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(id.with("has_desc")))
+            .unwrap_or(false);
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(id.with("has_desc"), false));
+
+        push_item(
+            ui,
+            ItemCtx {
+                id,
+                size,
+                has_desc_prev,
+            },
+        );
+
+        // §2.4: the nova group gap keys off the contained items' sizes, so
+        // record this item's resolved size into every enclosing group (the
+        // group reads it next frame to pick its gap).
+        for g in group_stack(ui) {
+            let key = g.id.with("member_sizes");
+            let mut sizes: Vec<ItemSize> =
+                ui.ctx().data_mut(|d| d.get_temp(key)).unwrap_or_default();
+            if !sizes.contains(&size) {
+                sizes.push(size);
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(key, sizes));
+        }
 
         // `[a]:hover:bg-accent/50` (nova `bg-muted`): the hover fill
         // *replaces* the base fill, read from the previous frame's response
@@ -331,8 +632,13 @@ impl Item {
                 bottom: pad_y as i8,
             })
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
+                // N13: the item root is `flex flex-wrap` — the wrapping row
+                // lets media, content and actions wrap onto new lines in
+                // document order, and header/footer take full lines. The
+                // same gap applies between slots on a line and between
+                // wrapped lines (CSS `gap` covers both axes).
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
                     content(ui)
                 })
                 .inner
@@ -420,10 +726,12 @@ impl ItemMedia {
         let p = theme.palette;
         // `rounded-sm` = 0.6 × --radius (no sm_u8 helper on RadiusTokens).
         let radius = theme.radius.sm().round() as u8;
+        // N12: when the enclosing item has a description (flag from last
+        // frame), the media shifts 2px down and top-aligns (`self-start`).
+        let shifted = current_item(ui).map(|c| c.has_desc_prev).unwrap_or(false);
 
         if let Some(icon) = self.icon {
-            let (rect, response) =
-                ui.allocate_exact_size(Vec2::splat(ITEM_MEDIA_ICON_BOX), Sense::hover());
+            let (rect, response) = Self::allocate_media_box(ui, ITEM_MEDIA_ICON_BOX, shifted);
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter();
                 painter.rect_filled(rect, radius, p.muted);
@@ -450,7 +758,7 @@ impl ItemMedia {
                 ItemSize::Sm => 32.0, // nova sm size-8
                 ItemSize::Default => ITEM_MEDIA_IMAGE_SIZE,
             };
-            let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+            let (rect, response) = Self::allocate_media_box(ui, size, shifted);
             if ui.is_rect_visible(rect) {
                 let painter = ui.painter();
                 painter.rect_filled(rect, radius, p.muted);
@@ -467,6 +775,35 @@ impl ItemMedia {
 
         // Transparent media slot: no intrinsic size.
         ui.allocate_exact_size(Vec2::ZERO, Sense::hover()).1
+    }
+
+    /// Allocates the media box and returns the rect to paint plus the
+    /// response. When `shifted` (N12) the box is positioned at the current
+    /// line's top plus 2px (`self-start` + `translate-y-0.5`); the
+    /// allocated rect IS the painted box, so the returned response matches
+    /// the visual position. Otherwise the box is allocated (and vertically
+    /// centred) by the row layout, as before.
+    fn allocate_media_box(ui: &mut Ui, size: f32, shifted: bool) -> (Rect, egui::Response) {
+        if !shifted {
+            return ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+        }
+        // `self-start`: the row centres children, so position the box
+        // explicitly at the current line's top, translated 2px down. If
+        // too little room is left on this line, move to a fresh line first
+        // (the wrapping row's `end_row`).
+        let line_w = ui.available_width();
+        if ui.available_rect_before_wrap().width() < size
+            && ui.available_rect_before_wrap().width() < line_w
+        {
+            ui.end_row();
+        }
+        let cursor = ui.cursor();
+        let rect = Rect::from_min_size(
+            Pos2::new(cursor.left(), cursor.top() + 2.0),
+            Vec2::splat(size),
+        );
+        let response = ui.allocate_rect(rect, Sense::hover());
+        (rect, response)
     }
 }
 
@@ -493,24 +830,40 @@ impl ItemContent {
     /// Renders the content slot.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         // Reserve the width measured for trailing actions (two-frame).
-        let reserved: f32 = current_item(ui)
-            .map(|c| {
-                ui.ctx()
-                    .data_mut(|d| d.get_temp(c.id.with("actions_w")))
-                    .unwrap_or(0.0)
-            })
-            .unwrap_or(0.0);
-        let gap = current_item(ui)
+        let (reserved, gap, size) = current_item(ui)
             .map(|c| {
                 let theme = ShadcnTheme::of_ui(ui);
-                let size = c.size;
-                item_geometry(theme.style, size).2
+                let actions_w: f32 = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp(c.id.with("actions_w")))
+                    .unwrap_or(0.0);
+                (actions_w, item_geometry(theme.style, c.size).2, c.size)
             })
-            .unwrap_or(10.0);
-        let w = (ui.available_width() - reserved - gap).max(0.0);
+            .unwrap_or((0.0, 10.0, ItemSize::default()));
+        // N13: in the wrapping item row `available_width()` is the FULL
+        // line width while `available_rect_before_wrap()` is what is left
+        // on the current line. Size the content to the remaining space
+        // (leaving the actions reservation); if too little room is left,
+        // ask for the full-line width so the wrapping layout moves the
+        // content to the next line instead of squeezing it. In a
+        // non-wrapping parent both widths are the remaining width, so this
+        // reduces to the old behaviour.
+        let line_w = ui.available_width();
+        let remaining = ui.available_rect_before_wrap().width();
+        let mut w = (remaining - reserved - gap).max(0.0);
+        if w < MIN_CONTENT_WIDTH && remaining < line_w {
+            w = (line_w - reserved - gap).max(0.0);
+        }
+        // §2.7: the content gap is `gap-1` (4px), except 0 at `xs` under
+        // nova.
+        let content_gap = if size == ItemSize::Xs && ShadcnTheme::of_ui(ui).style == Style::Nova {
+            0.0
+        } else {
+            4.0
+        };
         let inner = ui.allocate_ui(Vec2::new(w, 0.0), |ui| {
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0; // gap-1
+                ui.spacing_mut().item_spacing.y = content_gap;
                 content(ui)
             })
             .inner
@@ -533,6 +886,12 @@ impl ItemTitle {
         Self { text: text.into() }
     }
 
+    /// The title font: `font-medium` (500) at `text-sm` (14px) — the
+    /// embedded Inter Medium face.
+    pub(crate) fn font() -> FontId {
+        crate::theme::fonts::medium(crate::theme::tokens::type_scale::SM)
+    }
+
     /// Renders the title.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         self.show_with(ui, |_| {}).response
@@ -540,11 +899,19 @@ impl ItemTitle {
 
     /// Renders the title with extra content beside the text (the source's
     /// `flex w-fit items-center gap-2` allows e.g. an icon or badge).
+    ///
+    /// N11: the title is `flex w-fit` — it wraps when the content column
+    /// is narrower than the text's max-content width, and the hosted
+    /// content stays on the same flex line, vertically centred. The wrap
+    /// budget is the available width minus the hosted content's measured
+    /// width (two-frame, same pattern as the actions-width reservation);
+    /// frame 1 uses the full width and self-corrects.
     pub fn show_with<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let size = crate::theme::tokens::type_scale::SM;
-        let font = FontId::proportional(size);
+        // `font-medium` (500): the embedded Inter Medium face.
+        let font = Self::font();
         // `leading-snug` is set explicitly through the TextFormat.
         let format = egui::TextFormat {
             font_id: font,
@@ -552,37 +919,74 @@ impl ItemTitle {
             line_height: Some(size * TITLE_LINE_HEIGHT),
             ..egui::TextFormat::default()
         };
+        let icon_key = ui.auto_id_with("shadcn_item_title_icon_w");
+        let icon_w: f32 = ui.ctx().data_mut(|d| d.get_temp(icon_key)).unwrap_or(0.0);
+        let avail = ui.available_width();
+        let gap = 8.0; // gap-2
+        let text_wrap = if icon_w > 0.0 {
+            (avail - icon_w - gap).max(0.0)
+        } else {
+            avail
+        };
         let mut job = egui::text::LayoutJob::default();
         job.append(&self.text, 0.0, format);
-        job.wrap.max_width = f32::INFINITY;
+        job.wrap.max_width = text_wrap;
         let galley = ui.painter().layout_job(job);
         let inner = ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0; // gap-2
+            ui.spacing_mut().item_spacing.x = gap;
             let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
             if ui.is_rect_visible(rect) {
-                ui.painter().galley(rect.min, galley, p.foreground);
+                ui.painter().galley(rect.min, galley.clone(), p.foreground);
             }
             content(ui)
         });
+        // Measure the hosted content's width for next frame's wrap budget.
+        let row_w = inner.response.rect.width();
+        let measured = (row_w - galley.size().x - gap).max(0.0);
+        ui.ctx().data_mut(|d| d.insert_temp(icon_key, measured));
         InnerResponse::new(inner.inner, inner.response)
     }
 }
 
 /// `ItemDescription` — `text-sm leading-normal text-muted-foreground`
-/// (nova `group-data-[size=xs]/item:text-xs`), wraps.
-#[derive(Clone, Debug)]
+/// (nova `group-data-[size=xs]/item:text-xs`), wraps, and clamps to two
+/// lines with an ellipsis (`line-clamp-2`). A link segment
+/// ([`ItemDescription::link`]) renders underlined with a 4px offset and
+/// recolours to `text-primary` on hover (N10).
+#[derive(Clone, Debug, Default)]
 pub struct ItemDescription {
-    text: String,
+    segments: Vec<DescriptionSegment>,
 }
 
 impl ItemDescription {
-    /// Creates an item description.
+    /// Creates an item description (a single plain-text segment).
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            segments: vec![DescriptionSegment::Text(text.into())],
+        }
+    }
+
+    /// Appends a link segment: a direct `<a>` child of the description,
+    /// underlined with a 4px offset, `text-primary` on hover (N10).
+    pub fn link(mut self, text: impl Into<String>) -> Self {
+        self.segments.push(DescriptionSegment::Link(text.into()));
+        self
+    }
+
+    /// Appends a plain-text segment.
+    pub fn text(mut self, text: impl Into<String>) -> Self {
+        self.segments.push(DescriptionSegment::Text(text.into()));
+        self
     }
 
     /// Renders the description.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
+        // N12: record that this item has a description descendant (the
+        // media reads it next frame to apply its shift).
+        if let Some(ctx) = current_item(ui) {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(ctx.id.with("has_desc"), true));
+        }
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         // nova shrinks the description to `text-xs` inside xs items.
@@ -592,21 +996,52 @@ impl ItemDescription {
             }
             _ => crate::theme::tokens::type_scale::SM,
         };
-        let font = FontId::proportional(size);
-        // `leading-normal` is set explicitly through the TextFormat.
-        let format = egui::TextFormat {
-            font_id: font,
-            color: p.muted_foreground,
-            line_height: Some(size * DESCRIPTION_LINE_HEIGHT),
-            ..egui::TextFormat::default()
-        };
-        let mut job = egui::text::LayoutJob::default();
-        job.append(&self.text, 0.0, format);
-        job.wrap.max_width = ui.available_width().max(0.0);
+        let width = ui.available_width().max(0.0);
+        // D9: clamp to two lines with a trailing "…" when the text
+        // overflows.
+        let segments = truncate_segments(
+            &self.segments,
+            size,
+            width,
+            2,
+            ui,
+            p.muted_foreground,
+            p.muted_foreground,
+        );
+        // Pass 1: resting colours, to learn the link geometry.
+        let mut job = description_job(&segments, size, p.muted_foreground, p.muted_foreground);
+        job.wrap.max_width = width;
         let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+        let runs = link_runs(&galley, &segments);
+        let hovered = response.hover_pos().is_some_and(|pos| {
+            runs.iter()
+                .any(|run| run.hit.translate(rect.min.to_vec2()).contains(pos))
+        });
+        // Pass 2 (only when a link is hovered): recolour the links to
+        // `text-primary`. Geometry is identical — only colours changed.
+        let (galley, runs) = if hovered {
+            let mut job = description_job(&segments, size, p.muted_foreground, p.primary);
+            job.wrap.max_width = width;
+            let galley = ui.painter().layout_job(job);
+            let runs = link_runs(&galley, &segments);
+            (galley, runs)
+        } else {
+            (galley, runs)
+        };
         if ui.is_rect_visible(rect) {
             ui.painter().galley(rect.min, galley, p.muted_foreground);
+            let link_color = if hovered {
+                p.primary
+            } else {
+                p.muted_foreground
+            };
+            for run in &runs {
+                ui.painter().line_segment(
+                    [rect.min + run.from.to_vec2(), rect.min + run.to.to_vec2()],
+                    Stroke::new(1.0, link_color),
+                );
+            }
         }
         response
     }
@@ -684,13 +1119,23 @@ impl ItemHeader {
 
     /// Renders the header row.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+        // N13: header/footer are `basis-full` full lines. In the wrapping
+        // item row `available_width()` is the full line width; if we are
+        // mid-line (less than that remains), move to a fresh line first so
+        // the row occupies a full line instead of the remaining width. In a
+        // non-wrapping parent both widths are the remaining width, so this
+        // is a no-op there.
+        let full_w = ui.available_width();
+        if ui.available_rect_before_wrap().width() < full_w {
+            ui.end_row();
+        }
         let cursor = ui.cursor();
         push_row(
             ui,
             RowCtx {
                 left: cursor.left(),
                 top: cursor.top(),
-                right: cursor.left() + ui.available_width(),
+                right: cursor.left() + full_w,
             },
         );
         let inner = ui.horizontal(|ui| {
@@ -724,13 +1169,18 @@ impl ItemFooter {
 
     /// Renders the footer row.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+        // N13: same full-line rule as the header (see above).
+        let full_w = ui.available_width();
+        if ui.available_rect_before_wrap().width() < full_w {
+            ui.end_row();
+        }
         let cursor = ui.cursor();
         push_row(
             ui,
             RowCtx {
                 left: cursor.left(),
                 top: cursor.top(),
-                right: cursor.left() + ui.available_width(),
+                right: cursor.left() + full_w,
             },
         );
         let inner = ui.horizontal(|ui| {
@@ -775,8 +1225,25 @@ impl ItemGroup {
     /// Renders the group around its items.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
-        let g = group_gap(theme.style, self.size);
-        push_group(ui, GroupCtx { size: self.size });
+        // §2.4: the nova group gap keys off the contained items' sizes
+        // (recorded last frame); fall back to the group's size hint on the
+        // first frame or when the group has no items yet. The recording is
+        // cleared here so this frame's items repopulate it.
+        let id = ui.auto_id_with("shadcn_item_group");
+        let recorded: Vec<ItemSize> = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(id.with("member_sizes")))
+            .unwrap_or_default();
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(id.with("member_sizes"), Vec::<ItemSize>::new()));
+        let g = resolve_group_gap(theme.style, self.size, &recorded);
+        push_group(
+            ui,
+            GroupCtx {
+                size: self.size,
+                id,
+            },
+        );
         let inner = ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = g;
             content(ui)
@@ -963,5 +1430,507 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn title_uses_medium_face() {
+        assert_eq!(ItemTitle::font(), crate::theme::fonts::medium(14.0));
+        assert_eq!(
+            ItemTitle::font().family,
+            crate::theme::fonts::medium_family()
+        );
+    }
+
+    #[test]
+    fn group_gap_resolves_from_member_sizes() {
+        // §2.4: the nova gap keys off the contained items' sizes (xs wins).
+        assert_eq!(
+            resolve_group_gap(Style::Nova, ItemSize::Default, &[ItemSize::Default]),
+            16.0
+        );
+        assert_eq!(
+            resolve_group_gap(Style::Nova, ItemSize::Default, &[ItemSize::Sm]),
+            10.0
+        );
+        assert_eq!(
+            resolve_group_gap(Style::Nova, ItemSize::Default, &[ItemSize::Xs]),
+            8.0
+        );
+        // xs wins on mixed sizes, even when the group hint is Default.
+        assert_eq!(
+            resolve_group_gap(
+                Style::Nova,
+                ItemSize::Default,
+                &[ItemSize::Sm, ItemSize::Xs]
+            ),
+            8.0
+        );
+        assert_eq!(
+            resolve_group_gap(
+                Style::Nova,
+                ItemSize::Default,
+                &[ItemSize::Default, ItemSize::Sm]
+            ),
+            10.0
+        );
+        // First frame / empty group falls back to the group's own size hint.
+        assert_eq!(resolve_group_gap(Style::Nova, ItemSize::Sm, &[]), 10.0);
+        assert_eq!(resolve_group_gap(Style::Nova, ItemSize::Xs, &[]), 8.0);
+        // Base styles have no group gap.
+        assert_eq!(
+            resolve_group_gap(Style::Vega, ItemSize::Default, &[ItemSize::Xs]),
+            0.0
+        );
+    }
+
+    /// Renders `build` in a root Ui of the given size twice on the same
+    /// context (so two-frame values — the description flag, the icon-width
+    /// reservation, the group-gap recording — settle) and returns the
+    /// (first, second) outputs.
+    fn render_twice<T>(width: f32, height: f32, build: impl Fn(&mut Ui) -> T) -> (T, T) {
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let run = |build: &dyn Fn(&mut Ui) -> T| -> T {
+            let mut out_val: Option<T> = None;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("item_test_root"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height))),
+                );
+                out_val = Some(build(ui));
+            });
+            out.textures_delta.clear();
+            out_val.expect("render produced a value")
+        };
+        let first = run(&build);
+        let second = run(&build);
+        (first, second)
+    }
+
+    #[test]
+    fn title_wraps_at_content_width() {
+        // N11: a long title in a narrow content column wraps instead of
+        // overflowing it.
+        let title_rect = render_twice(200.0, 400.0, |ui| {
+            let mut title = Rect::NOTHING;
+            Item::new().id_salt("wrap_title").show(ui, |ui| {
+                ItemMedia::icon(Icon::User).show(ui);
+                ItemContent::new().show(ui, |ui| {
+                    title = ItemTitle::new(
+                        "Supercalifragilisticexpialidocious and more words here for wrapping",
+                    )
+                    .show(ui)
+                    .rect;
+                    ItemDescription::new("Short.").show(ui);
+                });
+            });
+            title
+        })
+        .1;
+        // Content width: 200 - 2×12 pad - 32 media - 2×10 gap = 124.
+        assert!(
+            title_rect.width() <= 124.5,
+            "title must not overflow the content column, got width {}",
+            title_rect.width()
+        );
+        // More than one line: the row is taller than the 36px one-line
+        // minimum.
+        assert!(
+            title_rect.height() > 36.5,
+            "title must wrap to more than one line, got height {}",
+            title_rect.height()
+        );
+    }
+
+    #[test]
+    fn title_icon_stays_centred_on_row() {
+        // N11: the hosted content stays on the title's flex line,
+        // vertically centred (`items-center`). Run twice so the icon-width
+        // reservation settles.
+        let (title_rect, icon_rect) = render_twice(200.0, 400.0, |ui| {
+            let mut title = Rect::NOTHING;
+            let mut icon = Rect::NOTHING;
+            Item::new().id_salt("icon_title").show(ui, |ui| {
+                ItemMedia::icon(Icon::User).show(ui);
+                ItemContent::new().show(ui, |ui| {
+                    let r = ItemTitle::new(
+                        "Supercalifragilisticexpialidocious and more words here for wrapping",
+                    )
+                    .show_with(ui, |ui| {
+                        icon = ui.label("NEW").rect;
+                    });
+                    title = r.response.rect;
+                });
+            });
+            (title, icon)
+        })
+        .1;
+        assert!(
+            title_rect.height() > 36.5,
+            "title must wrap, got height {}",
+            title_rect.height()
+        );
+        assert!(
+            (icon_rect.center().y - title_rect.center().y).abs() < 1.0,
+            "icon must be vertically centred on the title row"
+        );
+        // The icon stays inside the content column (right edge = 200 - 12).
+        assert!(
+            icon_rect.right() <= 188.5,
+            "icon must stay inside the content column, got right {}",
+            icon_rect.right()
+        );
+    }
+
+    #[test]
+    fn media_shifts_with_description() {
+        // N12: image media (40px) + icon media (32px) + title +
+        // description. Frame 1 the medias are centred in the row; frame 2
+        // (flag set) both sit at the line top + 2px (`translate-y-0.5` +
+        // `self-start`).
+        let (first, second) = render_twice(400.0, 600.0, |ui| {
+            let tex = ui.ctx().load_texture(
+                "item_test_texture",
+                egui::ColorImage::example(),
+                egui::TextureOptions::default(),
+            );
+            let source = egui::ImageSource::Texture(egui::load::SizedTexture::new(
+                tex.id(),
+                Vec2::splat(ITEM_MEDIA_IMAGE_SIZE),
+            ));
+            let mut image = Rect::NOTHING;
+            let mut icon = Rect::NOTHING;
+            let r = Item::new().id_salt("shift_item").show(ui, |ui| {
+                image = ItemMedia::image(source).show(ui).rect;
+                icon = ItemMedia::icon(Icon::User).show(ui).rect;
+                ItemContent::new().show(ui, |ui| {
+                    ItemTitle::new("Ada Lovelace").show(ui);
+                    ItemDescription::new("Engineer").show(ui);
+                });
+            });
+            (image, icon, r.response.rect)
+        });
+        let (_, pad_y, _) = item_geometry(Style::Nova, ItemSize::Default);
+        // Frame 2: both medias at the line top + 2px.
+        assert!(
+            (second.0.top() - (second.2.top() + pad_y + 2.0)).abs() < 0.5,
+            "image media top must be item top + pad_y + 2, got {} vs {}",
+            second.0.top(),
+            second.2.top() + pad_y + 2.0
+        );
+        assert!(
+            (second.1.top() - (second.2.top() + pad_y + 2.0)).abs() < 0.5,
+            "icon media top must be item top + pad_y + 2, got {} vs {}",
+            second.1.top(),
+            second.2.top() + pad_y + 2.0
+        );
+        // The image moves down 2px from its centred position; the icon
+        // moves up from its centred position to the line top.
+        assert!(
+            (second.0.top() - first.0.top() - 2.0).abs() < 0.5,
+            "image media must shift down 2px, {} -> {}",
+            first.0.top(),
+            second.0.top()
+        );
+        assert!(
+            second.1.top() < first.1.top(),
+            "icon media must move up to the line top, {} -> {}",
+            first.1.top(),
+            second.1.top()
+        );
+    }
+
+    #[test]
+    fn media_does_not_shift_without_description() {
+        // N12: with no description the media stays where the row layout
+        // puts it (no shift on either frame).
+        let (first, second) = render_twice(400.0, 600.0, |ui| {
+            let mut media = Rect::NOTHING;
+            Item::new().id_salt("noshift_item").show(ui, |ui| {
+                media = ItemMedia::icon(Icon::User).show(ui).rect;
+                ItemContent::new().show(ui, |ui| {
+                    ItemTitle::new("Ada Lovelace").show(ui);
+                });
+            });
+            media
+        });
+        assert!(
+            (second.top() - first.top()).abs() < 0.5,
+            "media must not move without a description, {} -> {}",
+            first.top(),
+            second.top()
+        );
+    }
+
+    #[test]
+    fn root_wraps_header_content_footer() {
+        // N13: header and footer are full lines; the content sits on its
+        // own line between them (the old `ui.horizontal` gave the content
+        // ~0 width and a 600px-tall one-char-per-line description).
+        let (header, content, desc, footer, item) = render_twice(400.0, 600.0, |ui| {
+            let mut header = Rect::NOTHING;
+            let mut content = Rect::NOTHING;
+            let mut desc = Rect::NOTHING;
+            let mut footer = Rect::NOTHING;
+            let r = Item::new().id_salt("wrap_hcf").show(ui, |ui| {
+                let h = ItemHeader::new().show(ui, |ui| {
+                    ItemTitle::new("Team settings").show(ui);
+                });
+                header = h.response.rect;
+                let c = ItemContent::new().show(ui, |ui| {
+                    desc = ItemDescription::new("Invite members, manage roles.")
+                        .show(ui)
+                        .rect;
+                });
+                content = c.response.rect;
+                let f = ItemFooter::new().show(ui, |ui| {
+                    ui.label("footer");
+                });
+                footer = f.response.rect;
+            });
+            (header, content, desc, footer, r.response.rect)
+        })
+        .1;
+        // Header and footer are full lines (400 - 2×12 pad = 376).
+        assert!(
+            (header.width() - 376.0).abs() < 0.5,
+            "header width {}",
+            header.width()
+        );
+        assert!(
+            (footer.width() - 376.0).abs() < 0.5,
+            "footer width {}",
+            footer.width()
+        );
+        // The content starts at the line left, below the header, and its
+        // description is one line (21px) — not squeezed to ~0 width.
+        assert!(
+            (content.left() - header.left()).abs() < 0.5,
+            "content left {}",
+            content.left()
+        );
+        assert!(
+            content.top() > header.bottom() + 5.0,
+            "content below header"
+        );
+        assert!(
+            (desc.height() - 21.0).abs() < 0.5,
+            "desc height {}",
+            desc.height()
+        );
+        assert!(
+            footer.top() > content.bottom() + 5.0,
+            "footer below content"
+        );
+        assert!(item.height() < 200.0, "item height {}", item.height());
+    }
+
+    #[test]
+    fn group_gap_uses_member_sizes() {
+        // §2.4 end-to-end: the nova group gap is 16/10/8 by the contained
+        // items' sizes. The mixed group (Default group, one Sm member)
+        // must take the Sm gap (10), not the group's own hint (16).
+        let (g_default, g_sm, g_xs, g_mix) = render_twice(400.0, 600.0, |ui| {
+            let mut out = (0.0, 0.0, 0.0, 0.0);
+            ItemGroup::new().show(ui, |ui| {
+                let a = Item::new().id_salt("g_default_1").show(ui, |ui| {
+                    ItemTitle::new("One").show(ui);
+                });
+                let b = Item::new().id_salt("g_default_2").show(ui, |ui| {
+                    ItemTitle::new("Two").show(ui);
+                });
+                out.0 = b.response.rect.top() - a.response.rect.bottom();
+            });
+            ItemGroup::new().size(ItemSize::Sm).show(ui, |ui| {
+                let a = Item::new().id_salt("g_sm_1").show(ui, |ui| {
+                    ItemTitle::new("One").show(ui);
+                });
+                let b = Item::new().id_salt("g_sm_2").show(ui, |ui| {
+                    ItemTitle::new("Two").show(ui);
+                });
+                out.1 = b.response.rect.top() - a.response.rect.bottom();
+            });
+            ItemGroup::new().size(ItemSize::Xs).show(ui, |ui| {
+                let a = Item::new().id_salt("g_xs_1").show(ui, |ui| {
+                    ItemTitle::new("One").show(ui);
+                });
+                let b = Item::new().id_salt("g_xs_2").show(ui, |ui| {
+                    ItemTitle::new("Two").show(ui);
+                });
+                out.2 = b.response.rect.top() - a.response.rect.bottom();
+            });
+            ItemGroup::new().show(ui, |ui| {
+                let a = Item::new()
+                    .size(ItemSize::Sm)
+                    .id_salt("g_mix_1")
+                    .show(ui, |ui| {
+                        ItemTitle::new("One").show(ui);
+                    });
+                let b = Item::new().id_salt("g_mix_2").show(ui, |ui| {
+                    ItemTitle::new("Two").show(ui);
+                });
+                out.3 = b.response.rect.top() - a.response.rect.bottom();
+            });
+            out
+        })
+        .1;
+        assert!((g_default - 16.0).abs() < 0.5, "default gap {g_default}");
+        assert!((g_sm - 10.0).abs() < 0.5, "sm gap {g_sm}");
+        assert!((g_xs - 8.0).abs() < 0.5, "xs gap {g_xs}");
+        assert!((g_mix - 10.0).abs() < 0.5, "mixed gap {g_mix}");
+    }
+
+    #[test]
+    fn content_gap_is_zero_at_xs_nova() {
+        // §2.7: the content gap is 4px, except 0 at xs under nova.
+        let (gap_default, gap_xs) = render_twice(400.0, 600.0, |ui| {
+            let mut gap_default = 0.0;
+            let mut gap_xs = 0.0;
+            Item::new().id_salt("gap_default").show(ui, |ui| {
+                ItemContent::new().show(ui, |ui| {
+                    let t = ItemTitle::new("T").show(ui);
+                    let d = ItemDescription::new("D").show(ui);
+                    gap_default = d.rect.top() - t.rect.bottom();
+                });
+            });
+            Item::new()
+                .size(ItemSize::Xs)
+                .id_salt("gap_xs")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        let t = ItemTitle::new("T").show(ui);
+                        let d = ItemDescription::new("D").show(ui);
+                        gap_xs = d.rect.top() - t.rect.bottom();
+                    });
+                });
+            (gap_default, gap_xs)
+        })
+        .1;
+        assert!(
+            (gap_default - 4.0).abs() < 0.5,
+            "default content gap {gap_default}"
+        );
+        assert!((gap_xs - 0.0).abs() < 0.5, "xs-nova content gap {gap_xs}");
+    }
+
+    #[test]
+    fn description_clamps_to_two_lines() {
+        // D9 (pure): `truncate_segments` clamps a long description to two
+        // lines with a trailing "…" and leaves a short one unchanged.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("item_clamp_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 600.0))),
+            );
+            let long = "This is a very long description that will certainly wrap to more \
+                        than two lines when laid out in a narrow column.";
+            let segments = vec![DescriptionSegment::Text(long.to_string())];
+            let truncated = truncate_segments(
+                &segments,
+                14.0,
+                120.0,
+                2,
+                ui,
+                Color32::BLACK,
+                Color32::BLACK,
+            );
+            let text: String = truncated.iter().map(|s| s.text()).collect();
+            assert!(
+                text.ends_with('…'),
+                "clamped text ends with an ellipsis: {text}"
+            );
+            assert!(text.len() < long.len(), "clamped text is shorter");
+            let mut job = description_job(&truncated, 14.0, Color32::BLACK, Color32::BLACK);
+            job.wrap.max_width = 120.0;
+            let galley = ui.painter().layout_job(job);
+            assert!(
+                effective_rows(&galley) <= 2,
+                "clamped galley is at most 2 rows, got {}",
+                effective_rows(&galley)
+            );
+            let short = vec![DescriptionSegment::Text("Short.".to_string())];
+            assert_eq!(
+                truncate_segments(&short, 14.0, 120.0, 2, ui, Color32::BLACK, Color32::BLACK),
+                short,
+                "short text is unchanged"
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn description_renders_at_most_two_lines() {
+        // D9 (end-to-end): a long description in a narrow content column
+        // renders as exactly two lines (42px), not the full wrapped height.
+        let height = render_twice(200.0, 400.0, |ui| {
+            let mut h = 0.0;
+            Item::new().id_salt("clamp_render").show(ui, |ui| {
+                ItemContent::new().show(ui, |ui| {
+                    ItemTitle::new("T").show(ui);
+                    let r = ItemDescription::new(
+                        "This is a very long description that will certainly wrap to more \
+                         than two lines when laid out in a narrow column.",
+                    )
+                    .show(ui);
+                    h = r.rect.height();
+                });
+            });
+            h
+        })
+        .1;
+        assert!(
+            (height - 42.0).abs() < 0.5,
+            "description height is 2 lines, got {height}"
+        );
+    }
+
+    #[test]
+    fn description_link_runs_underlined_with_offset() {
+        // N10 (pure): a link segment produces one underline run, 4px below
+        // the link glyphs' baseline, with a hit rect 2px wider each side.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("item_link_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 600.0))),
+            );
+            let segments = vec![
+                DescriptionSegment::Text("See ".into()),
+                DescriptionSegment::Link("docs".into()),
+                DescriptionSegment::Text(" for details.".into()),
+            ];
+            let job = description_job(&segments, 14.0, Color32::BLACK, Color32::BLACK);
+            let galley = ui.painter().layout_job(job);
+            let runs = link_runs(&galley, &segments);
+            assert_eq!(runs.len(), 1, "one underline run for the link segment");
+            let run = runs[0];
+            assert!(run.from.x < run.to.x, "run has width");
+            assert_eq!(run.from.y, run.to.y, "run is horizontal");
+            let baseline = galley.rows[0]
+                .row
+                .glyphs
+                .iter()
+                .find(|g| g.chr == 'd')
+                .map(|g| galley.rows[0].pos.y + g.pos.y)
+                .expect("link glyph present");
+            assert!(
+                (run.from.y - (baseline + 4.0)).abs() < 0.01,
+                "underline offset is 4px below the baseline"
+            );
+            assert!(
+                (run.hit.width() - ((run.to.x - run.from.x) + 4.0)).abs() < 0.01,
+                "hit rect is 2px wider each side"
+            );
+        });
+        out.textures_delta.clear();
     }
 }
