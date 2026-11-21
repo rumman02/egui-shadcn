@@ -147,7 +147,12 @@ jobs:
         run: cargo build --example gallery
 
   snapshot-diff:
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: the goldens in tests/golden were rendered on
+    # Ubuntu 24.04 / Mesa 25.2.8. ubuntu-latest moved to 26.04 (Mesa 26),
+    # whose rasterization drifts past the harness's +-1 LSB tolerance
+    # (73 mismatches on run 44853108442). Revisit when the goldens are
+    # regenerated on a newer runner.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
