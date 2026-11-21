@@ -1816,8 +1816,10 @@ mod tests {
         length: usize,
         numeric: bool,
     ) -> egui::FullOutput {
-        let mut input = egui::RawInput::default();
-        input.time = Some(time);
+        let input = egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        };
         let mut output = OtpOutput {
             changed: false,
             focused: false,
@@ -1931,8 +1933,10 @@ mod tests {
         length: usize,
         numeric: bool,
     ) -> egui::FullOutput {
-        let mut input = egui::RawInput::default();
-        input.time = Some(time);
+        let input = egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(ctx, value, input, name, salt, length, numeric);
         out.textures_delta.clear();
         out
@@ -2120,8 +2124,10 @@ mod tests {
         let _out = run_frame_at(&ctx, &mut value, 0.0, "otp_anm01_content", "otp", 6, false);
         assert_eq!(test_sel(&ctx, "otp_anm01_content", "otp"), (3, 3));
         // Type "4" at t=0.075.
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.075);
+        let mut input = egui::RawInput {
+            time: Some(0.075),
+            ..Default::default()
+        };
         input.events.push(Event::Text("4".to_owned()));
         let (mut out, _) = run_frame(
             &ctx,
@@ -2304,16 +2310,20 @@ mod tests {
         ctx.memory_mut(|mem| mem.request_focus(control));
         // Settle frame at time 0.0: focus-gain puts the caret at the
         // first empty slot (3, 3) — the caret is live.
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.0);
+        let input = egui::RawInput {
+            time: Some(0.0),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
         out.textures_delta.clear();
         assert_eq!(test_sel(&ctx, "otp_f0304_driver", "otp"), (3, 3));
         // Observe frame at time 0.1 (fade-out leg): exactly one scheduled
         // repaint, one 50ms step out.
         delays.lock().unwrap().clear();
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.1);
+        let input = egui::RawInput {
+            time: Some(0.1),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
         out.textures_delta.clear();
         assert_eq!(
@@ -2329,8 +2339,10 @@ mod tests {
     fn caret_blink_no_repaint_when_unfocused_otp_f0304() {
         let (ctx, delays) = repaint_observer_ctx();
         let mut value = "123".to_owned();
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.1);
+        let input = egui::RawInput {
+            time: Some(0.1),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
         out.textures_delta.clear();
         assert!(
@@ -2359,8 +2371,10 @@ mod tests {
         );
         out.textures_delta.clear();
         ctx.memory_mut(|mem| mem.request_focus(control));
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.1);
+        let input = egui::RawInput {
+            time: Some(0.1),
+            ..Default::default()
+        };
         let mut out = ctx.run_ui(input, |ctx| {
             let ui = &mut egui::Ui::new(
                 ctx.clone(),
@@ -2401,8 +2415,10 @@ mod tests {
         );
         out.textures_delta.clear();
         ctx.memory_mut(|mem| mem.request_focus(control));
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.1);
+        let input = egui::RawInput {
+            time: Some(0.1),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_f0304_driver", "otp", 6, false);
         out.textures_delta.clear();
         assert_eq!(test_sel(&ctx, "otp_f0304_driver", "otp"), (5, 6));
@@ -3277,8 +3293,10 @@ mod tests {
 
         // Time 0.0: the 1.25s keyframe blink is at the start of its
         // visible phase (opacity 1 at t=0).
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.0);
+        let input = egui::RawInput {
+            time: Some(0.0),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_caret_test", "otp", 4, false);
         // The caret is the only 1x16 filled rect: centred in the first
         // slot's content box (derived from the actual slot rect, so the
@@ -3303,14 +3321,18 @@ mod tests {
         );
         // Type "1": the caret advances to slot 1 (a middle slot), and the
         // filled slot 0 shows its char, never a caret.
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.0);
+        let mut input = egui::RawInput {
+            time: Some(0.0),
+            ..Default::default()
+        };
         input.events.push(Event::Text("1".to_owned()));
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_caret_test", "otp", 4, false);
         out.textures_delta.clear();
         assert_eq!(value, "1");
-        let mut input = egui::RawInput::default();
-        input.time = Some(0.0);
+        let input = egui::RawInput {
+            time: Some(0.0),
+            ..Default::default()
+        };
         let (mut out, _) = run_frame(&ctx, &mut value, input, "otp_caret_test", "otp", 4, false);
         let carets: Vec<Rect> = out
             .shapes
@@ -3426,7 +3448,7 @@ mod tests {
                 Id::unique("otp_tab_test"),
                 egui::UiBuilder::new().max_rect(ui_rect()),
             );
-            ui.button("before");
+            let _ = ui.button("before");
             InputOTP::new(&mut value).length(4).id_salt("otp").show(ui);
             let _ = ui.button("after");
         });
@@ -3438,7 +3460,7 @@ mod tests {
                 Id::unique("otp_tab_test"),
                 egui::UiBuilder::new().max_rect(ui_rect()),
             );
-            ui.button("before");
+            let _ = ui.button("before");
             InputOTP::new(&mut value).length(4).id_salt("otp").show(ui);
             let _ = ui.button("after");
         });
@@ -3450,7 +3472,7 @@ mod tests {
                 Id::unique("otp_tab_test"),
                 egui::UiBuilder::new().max_rect(ui_rect()),
             );
-            ui.button("before");
+            let _ = ui.button("before");
             InputOTP::new(&mut value).length(4).id_salt("otp").show(ui);
             let _ = ui.button("after");
         });

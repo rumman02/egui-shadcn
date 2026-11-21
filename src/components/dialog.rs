@@ -1668,9 +1668,13 @@ mod tests {
         assert!(a.center().x < b.center().x, "A left of B: {a:?} {b:?}");
         // The appended Close button sits right of B: A is not at the right
         // edge of the 800px flow (the old right_to_left order put A
-        // rightmost).
+        // rightmost). The bound is font-metric-coupled: with the bundled
+        // Inter the buttons are wider (A ends well left of 700), with
+        // fonts off the fallback font narrows them and the right-aligned
+        // row shifts right (A ends at 701.3). 750 still catches the old
+        // bug, which put A rightmost near 800.
         assert!(
-            a.right() < 700.0,
+            a.right() < 750.0,
             "Close button is right of the content: {a:?} {b:?}"
         );
     }

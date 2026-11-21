@@ -1631,7 +1631,7 @@ mod tests {
                 let response = Textarea::new(text).id_salt("escape-pin").show(ui);
                 id = response.id;
                 focused = response.has_focus();
-                ui.button("tab-target");
+                let _ = ui.button("tab-target");
             });
             out.textures_delta.clear();
             (id, focused)

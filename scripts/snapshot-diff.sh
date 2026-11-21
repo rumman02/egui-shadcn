@@ -239,7 +239,24 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 [ -n "$WIN" ] || die "gallery window did not appear within 60s"
-xdotool windowfocus "$WIN" || die "could not focus gallery window $WIN"
+# The window may exist before it is viewable, and X_SetInputFocus on a
+# not-yet-viewable window fails with BadMatch (seen in CI: "could not
+# focus gallery window 2097154"). Wait until the window is visible,
+# then retry the focus until it actually lands (verified via
+# getwindowfocus); only die once retries are exhausted.
+for _ in $(seq 1 30); do
+    VISIBLE="$(xdotool search --onlyvisible --name "$GALLERY_TITLE" 2>/dev/null | head -1)" || true
+    [ "$VISIBLE" = "$WIN" ] && break
+    sleep 1
+done
+FOCUSED=""
+for _ in $(seq 1 10); do
+    xdotool windowfocus "$WIN" 2>/dev/null || true
+    sleep 1
+    FOCUSED="$(xdotool getwindowfocus 2>/dev/null)" || true
+    [ "$FOCUSED" = "$WIN" ] && break
+done
+[ "$FOCUSED" = "$WIN" ] || die "could not focus gallery window $WIN after retries (focus is ${FOCUSED:-none}; window may not have become viewable)"
 xdotool windowsize "$WIN" "$WIN_W" "$WIN_H" || die "could not resize gallery window"
 sleep "$RESIZE_SETTLE"
 GEOM="$(xdotool getwindowgeometry --shell "$WIN" | tr '\n' ' ')"

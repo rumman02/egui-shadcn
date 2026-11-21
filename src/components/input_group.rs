@@ -3983,25 +3983,32 @@ mod tests {
         // feedback loop produced (the first-frame row-layout measurement
         // was poisoned by the textarea wrapping to ~407px, and the
         // `rect.union(...)` recording sustained it forever).
-        // Nova: 8 + 32 + 66.8 + 32 + 8 = 146.8; Vega: 12 + 36 + 74.8 +
-        // 36 + 12 = 170.8 (block rows are the `interact_size`-pinned
-        // container height; the textarea is 3 rows + py).
-        for (style, expected_h, expected_ta_h, pad) in [
-            (Style::Nova, 146.8, 66.8, 8.0),
-            (Style::Vega, 170.8, 74.8, 12.0),
-        ] {
+        // The expected sum is computed from the measured part rects,
+        // NOT hardcoded: the old literals (Nova 146.8 = 8+32+66.8+32+8,
+        // Vega 170.8) embed the bundled Inter metrics and fail with
+        // fonts off (Nova measured 144.375 — the 3-row textarea is
+        // 64.375 under the fallback font vs 66.8 under Inter). Every
+        // part is measured from the same layout, so the sum holds under
+        // either font; the block rows are the `interact_size`-pinned
+        // container height and the textarea is 3 rows + py.
+        for (style, pad) in [(Style::Nova, 8.0), (Style::Vega, 12.0)] {
             let (outer_h, ta, bs, be, group) = s3_column_rects(style);
+            let expected_h = bs.height() + ta.height() + be.height() + 2.0 * pad;
             assert!(
                 (outer_h - expected_h).abs() < 1.5,
-                "{style:?} §3 box height must be ~{expected_h}, got {outer_h}"
+                "{style:?} §3 box height must equal the sum of its parts ({expected_h}), got {outer_h}"
             );
             assert!(
                 outer_h < 200.0,
                 "{style:?} §3 box must not carry the ~391px feedback-loop height, got {outer_h}"
             );
+            // The textarea is 3 rows tall: well above a single row under
+            // any font (64.4 fallback, 66.8 Inter), so a collapse to one
+            // row (~20px) still fails even though the absolute height is
+            // font-coupled and no longer asserted exactly.
             assert!(
-                (ta.height() - expected_ta_h).abs() < 1.5,
-                "{style:?} textarea height must be ~{expected_ta_h}, got {}",
+                ta.height() > 40.0,
+                "{style:?} 3-row textarea must be taller than one row, got {}",
                 ta.height()
             );
             // No gap between the textarea and the BlockEnd row...
@@ -4339,22 +4346,26 @@ mod tests {
         })
     }
 
+    /// The six painted colours returned by `focus_leg_colors`: the
+    /// (border, ring) pair at the flip frame, mid-flight, and settled.
+    /// A named alias keeps the 6-tuple under clippy's `type_complexity`
+    /// threshold; callers still destructure it as a plain 6-tuple.
+    type FocusLegColors = (
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+        Option<Color32>,
+    );
+
     /// Drives the §1 composition (group + input) through a focus leg
     /// at controlled times and returns the painted (border, ring)
     /// colours at the flip frame (t=0.0), mid-flight (t=0.075) and
     /// settled (t=0.30). Frame A (t=0) is unfocused; `request_focus`
     /// then frame B is the flip frame. The animator follows
     /// `input.time` (egui 0.37 `animate_value_with_time`).
-    fn focus_leg_colors(
-        style: Style,
-    ) -> (
-        Option<Color32>,
-        Option<Color32>,
-        Option<Color32>,
-        Option<Color32>,
-        Option<Color32>,
-        Option<Color32>,
-    ) {
+    fn focus_leg_colors(style: Style) -> FocusLegColors {
         let ctx = egui::Context::default();
         if style == Style::Vega {
             Preset::default().with_style(Style::Vega).install(&ctx);
