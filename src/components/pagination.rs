@@ -39,8 +39,19 @@ use crate::icons::Icon;
 use crate::theme::{color_alpha, ShadcnTheme, Style};
 use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Ui, Vec2};
 
-/// Ellipsis box size (nova `size-8` = 32px).
+/// Ellipsis box size under nova (`size-8` = 32px). The base recipe uses
+/// `size-9` = 36px; see [`ellipsis_size`].
 pub const PAGINATION_ELLIPSIS_SIZE: f32 = 32.0;
+
+/// Ellipsis box size for the active style: `size-8` = 32px under nova,
+/// `size-9` = 36px under the base recipe (spec §2.5, N2).
+pub(crate) fn ellipsis_size(style: Style) -> f32 {
+    if style == Style::Nova {
+        PAGINATION_ELLIPSIS_SIZE
+    } else {
+        36.0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pagination (nav wrapper)
@@ -108,27 +119,40 @@ impl Pagination {
 /// The `<ul>` row: `flex flex-row items-center gap-1` (nova `gap-0.5`).
 #[derive(Clone, Debug, Default)]
 pub struct PaginationContent {
-    gap: f32,
+    /// Explicit gap override from [`.gap()`](PaginationContent::gap);
+    /// `None` means the active style's default (see [`content_gap`]).
+    gap: Option<f32>,
+}
+
+/// Default content-row gap for the active style: `gap-0.5` = 2px under
+/// nova, `gap-1` = 4px under the base recipe (spec §2.2).
+pub(crate) fn content_gap(style: Style) -> f32 {
+    if style == Style::Nova {
+        crate::theme::tokens::spacing::HALF
+    } else {
+        crate::theme::tokens::spacing::XS
+    }
 }
 
 impl PaginationContent {
-    /// Creates a pagination content row with the nova `gap-0.5`.
+    /// Creates a pagination content row with the active style's default
+    /// gap (2px nova / 4px base).
     pub fn new() -> Self {
-        Self {
-            gap: crate::theme::tokens::spacing::HALF,
-        }
+        Self { gap: None }
     }
 
     /// Overrides the gap between items.
     pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap;
+        self.gap = Some(gap);
         self
     }
 
     /// Lays out the pagination items in a centered row.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) {
+        let theme = ShadcnTheme::of_ui(ui);
+        let gap = self.gap.unwrap_or_else(|| content_gap(theme.style));
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = self.gap;
+            ui.spacing_mut().item_spacing.x = gap;
             content(ui);
         });
     }
@@ -197,7 +221,9 @@ impl PaginationLink {
         self
     }
 
-    /// Disables the link (`disabled:opacity-50`).
+    /// Disables the link (`disabled:opacity-50` +
+    /// `disabled:pointer-events-none` on the rendered button; spec §4.6,
+    /// N1).
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -222,7 +248,8 @@ impl PaginationLink {
     pub fn show(self, ui: &mut Ui) -> Response {
         let mut button = Button::new(self.label.clone())
             .variant(self.resolved_variant())
-            .size(self.size);
+            .size(self.size)
+            .disabled(self.disabled);
         if let Some(salt) = self.id_salt.as_deref() {
             button = button.id_salt(salt);
         }
@@ -541,7 +568,7 @@ impl PaginationEllipsis {
     /// ellipsis, whose ancestors set `text-muted-foreground`).
     pub fn show(self, ui: &mut Ui) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
-        let size = PAGINATION_ELLIPSIS_SIZE;
+        let size = ellipsis_size(theme.style);
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
         if ui.is_rect_visible(rect) {
             let icon_size = crate::theme::tokens::spacing::LG; // `size-4` glyph
@@ -603,8 +630,192 @@ mod tests {
     }
 
     #[test]
-    fn ellipsis_matches_nova_size() {
+    fn ellipsis_size_branches_on_style() {
+        // N2 (spec §2.5): the ellipsis is `size-8` = 32px under nova,
+        // `size-9` = 36px under the base recipe. (Replaces
+        // `ellipsis_matches_nova_size`, which pinned the old
+        // unconditional 32px.)
+        assert_eq!(ellipsis_size(Style::Nova), 32.0);
+        assert_eq!(ellipsis_size(Style::Vega), 36.0);
         assert_eq!(PAGINATION_ELLIPSIS_SIZE, 32.0);
+    }
+
+    #[test]
+    fn content_gap_branches_on_style() {
+        // Spec §2.2: `gap-0.5` = 2px under nova, `gap-1` = 4px under the
+        // base recipe.
+        assert_eq!(content_gap(Style::Nova), 2.0);
+        assert_eq!(content_gap(Style::Vega), 4.0);
+    }
+
+    #[test]
+    fn rendered_content_gap_follows_style() {
+        // Spec §2.2, rendered: the gap between two links in the row is
+        // the style default — 2px nova, 4px base — unless `.gap()`
+        // overrides it.
+        for (preset, expected) in [
+            (Preset::default(), 2.0),
+            (
+                Preset {
+                    style: Style::Vega,
+                    ..Default::default()
+                },
+                4.0,
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            preset.install(&ctx);
+            let mut first = Rect::NOTHING;
+            let mut second = Rect::NOTHING;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("pagination_gap_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0))),
+                );
+                PaginationContent::new().show(ui, |ui| {
+                    PaginationItem::new().show(ui, |ui| {
+                        first = PaginationLink::new("1").show(ui).rect;
+                    });
+                    PaginationItem::new().show(ui, |ui| {
+                        second = PaginationLink::new("2").show(ui).rect;
+                    });
+                });
+            });
+            out.textures_delta.clear();
+            let gap = second.min.x - first.max.x;
+            assert!(
+                (gap - expected).abs() < 0.01,
+                "rendered content gap = {gap}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_link_is_inert_and_half_opacity() {
+        // N1 (spec §4.6): a disabled link is non-interactive (no hover, no
+        // click, no focus) and renders at 50% opacity. The stored-field
+        // assertion in `builders_keep_fields` cannot catch a dead builder,
+        // so this test renders the link, settles the disabled fade, and
+        // inspects the painted label colour; then it press+releases on the
+        // link and asserts no click comes through.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx); // light, nova
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0));
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("pagination_disabled_test_ui"),
+                egui::UiBuilder::new().max_rect(screen),
+            )
+        };
+        // Render both links for several frames with a controlled clock so
+        // the Button disabled fade (150ms) settles at 0.5 alpha.
+        let mut disabled_rect = Rect::NOTHING;
+        let mut disabled_id = egui::Id::NULL;
+        for i in 0..11 {
+            let time = i as f64 * 0.05;
+            let input = egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut make_ui(ctx);
+                let enabled = PaginationLink::new("8").show(ui);
+                assert!(enabled.enabled());
+                let disabled = PaginationLink::new("7")
+                    .disabled(true)
+                    .id_salt("p7")
+                    .show(ui);
+                assert!(!disabled.enabled());
+                disabled_rect = disabled.rect;
+                disabled_id = disabled.id;
+            });
+            out.textures_delta.clear();
+        }
+        // One more frame at the settled time; capture its shapes.
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                time: Some(0.55),
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| {
+                let ui = &mut make_ui(ctx);
+                let _ = PaginationLink::new("8").show(ui);
+                let _ = PaginationLink::new("7")
+                    .disabled(true)
+                    .id_salt("p7")
+                    .show(ui);
+            },
+        );
+        // The painted label colours: enabled at full opacity, disabled at
+        // 50% (the Button `disabled:opacity-50` fade, settled).
+        let mut alphas = std::collections::HashMap::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Text(ts) = &clipped.shape {
+                alphas.insert(ts.galley.job.text.clone(), ts.fallback_color.a());
+            }
+        }
+        out.textures_delta.clear();
+        assert_eq!(
+            alphas.get("8"),
+            Some(&255),
+            "enabled label must be full opacity, got {alphas:?}"
+        );
+        let disabled_alpha = alphas
+            .get("7")
+            .copied()
+            .unwrap_or_else(|| panic!("disabled label TextShape not found in {alphas:?}"));
+        assert!(
+            (120..=135).contains(&disabled_alpha),
+            "disabled label alpha = {disabled_alpha}, expected ~127 (50%)"
+        );
+        // Press + release on the disabled link: no click, no hover, no
+        // focus.
+        let center = disabled_rect.center();
+        let click_event = |pos: Pos2, pressed: bool, time: f64| egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(click_event(center, true, 0.55), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _ = PaginationLink::new("7")
+                .disabled(true)
+                .id_salt("p7")
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = true;
+        let mut hovered = true;
+        let mut out = ctx.run_ui(click_event(center, false, 0.6), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = PaginationLink::new("7")
+                .disabled(true)
+                .id_salt("p7")
+                .show(ui);
+            clicked = r.clicked();
+            hovered = r.hovered();
+        });
+        out.textures_delta.clear();
+        assert!(
+            !clicked,
+            "press + release on a disabled link must not click"
+        );
+        assert!(!hovered, "a disabled link must never report hovered");
+        assert!(
+            !ctx.memory(|m| m.has_focus(disabled_id)),
+            "a disabled link must never take focus"
+        );
     }
 
     #[test]
