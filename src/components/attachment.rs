@@ -49,10 +49,6 @@ use egui::{
 /// post-layout slot detection and is not used).
 pub(crate) const VERTICAL_CHIP_WIDTH: f32 = 120.0;
 
-/// Content column cap so `w-fit` chips don't stretch to the panel width
-/// (long titles/descriptions truncate here).
-pub(crate) const CONTENT_MAX_WIDTH: f32 = 240.0;
-
 /// The upload lifecycle states, mirroring the source `state` prop
 /// (`data-state`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -121,6 +117,16 @@ impl AttachmentSize {
         }
     }
 
+    /// Chip padding when only an `AttachmentMedia` slot is present
+    /// (`has-data-[slot=attachment-media]:p-2` etc.): uniform on all sides.
+    pub fn media_pad(self) -> f32 {
+        match self {
+            AttachmentSize::Default => 8.0,
+            AttachmentSize::Sm => 6.0,
+            AttachmentSize::Xs => 4.0,
+        }
+    }
+
     /// Gap between slots (`gap-2` / `gap-2.5` / `gap-1.5`).
     pub fn gap(self) -> f32 {
         match self {
@@ -137,6 +143,49 @@ impl AttachmentSize {
             AttachmentSize::Sm | AttachmentSize::Xs => crate::theme::tokens::type_scale::XS,
         }
     }
+}
+
+/// Vertical media side (border-box, spec §8.3): the chip is 120px wide, so
+/// the media box is the chip width minus the horizontal padding on both
+/// sides minus the 1px border on each side — 98px / 102px / 106px for
+/// default / sm / xs. The audit's 100/104/108 omitted the border. Pure and
+/// testable.
+pub(crate) fn vertical_media_side(size: AttachmentSize) -> f32 {
+    VERTICAL_CHIP_WIDTH - 2.0 * size.pad().x - 2.0
+}
+
+/// Media corner radius: `rounded-md` for xs in both orientations
+/// (`rounded-md!` overrides the `rounded-lg` base), `rounded-lg` otherwise.
+/// Pure and testable.
+fn media_radius(size: AttachmentSize, md: u8, lg: u8) -> u8 {
+    if size == AttachmentSize::Xs {
+        md
+    } else {
+        lg
+    }
+}
+
+/// Chip padding for a size given the slots present
+/// (`has-data-[slot=attachment-content]` / `has-data-[slot=attachment-media]`
+/// rules, N5): the content pad when content is present, the media pad when
+/// only media is present, no padding when neither slot is present. Pure and
+/// testable.
+pub(crate) fn chip_pad(size: AttachmentSize, has_content: bool, has_media: bool) -> Vec2 {
+    if has_content {
+        size.pad()
+    } else if has_media {
+        Vec2::splat(size.media_pad())
+    } else {
+        Vec2::ZERO
+    }
+}
+
+/// `has-[>a,>button]:hover:bg-muted/50` — the hover fill applies only when
+/// the chip itself is a trigger (a direct-child `<button>`); buttons nested
+/// inside `AttachmentActions` (a `<div>`) do NOT enable it. Pure and
+/// testable.
+pub(crate) fn hover_fill_applies(trigger: bool, hovered: bool) -> bool {
+    trigger && hovered
 }
 
 /// Layout orientation, mirroring the source `orientation` prop.
@@ -167,7 +216,10 @@ pub(crate) struct ScopeState {
     pub size: AttachmentSize,
     pub state: AttachmentState,
     pub media_rect: Option<Rect>,
-    pub has_actions: bool,
+    /// A content slot (`AttachmentContent`) rendered inside this chip.
+    pub has_content: bool,
+    /// A media slot (`AttachmentMedia`) rendered inside this chip.
+    pub has_media: bool,
     pub focus_within: bool,
 }
 
@@ -281,29 +333,32 @@ impl<'a> AttachmentMedia<'a> {
         let state = scope.map(|s| s.state).unwrap_or_default();
         let (side, radius, icon_size) = match scope.map(|s| (s.size, s.orientation)) {
             Some((_, AttachmentOrientation::Vertical)) => {
-                // `w-full` inside the chip's inner width (per-size padding).
+                // `w-full` inside the chip's inner width (per-size padding,
+                // border-box: the 1px border on each side, spec §8.3).
                 let size = scope.map(|s| s.size).unwrap_or_default();
                 (
-                    VERTICAL_CHIP_WIDTH - 2.0 * size.pad().x,
-                    theme.radius.lg_u8(),
+                    vertical_media_side(size),
+                    media_radius(size, theme.radius.md_u8(), theme.radius.lg_u8()),
                     24.0, // `size-6`
                 )
             }
             _ => {
                 let size = scope.map(|s| s.size).unwrap_or_default();
-                let radius = if size == AttachmentSize::Xs {
-                    theme.radius.md_u8()
-                } else {
-                    theme.radius.lg_u8()
-                };
-                (size.media_side(), radius, size.media_icon())
+                (
+                    size.media_side(),
+                    media_radius(size, theme.radius.md_u8(), theme.radius.lg_u8()),
+                    size.media_icon(),
+                )
             }
         };
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
         if !ui.is_rect_visible(rect) {
             return response;
         }
-        scope::update(ui, |s| s.media_rect = Some(rect));
+        scope::update(ui, |s| {
+            s.media_rect = Some(rect);
+            s.has_media = true;
+        });
 
         let painter = ui.painter();
         // `bg-muted`; `error` → `bg-destructive/10 text-destructive`.
@@ -316,10 +371,14 @@ impl<'a> AttachmentMedia<'a> {
 
         if self.spinner {
             // Animated loader arc (lucide `LoaderCircle`, `animate-spin`).
+            // OPEN-6: the source sizes the spinner only for the vertical
+            // orientation (`size-6!` = 24px); 24px is used by analogy in the
+            // horizontal orientation too, independent of the icon size.
+            let spinner_size = 24.0;
             ui.ctx().request_repaint();
             let elapsed = ui.input(|i| i.time);
             let angle = angle_at(elapsed);
-            let scale = icon_size / 24.0;
+            let scale = spinner_size / 24.0;
             let stroke = Stroke::new(2.0 * scale, fg);
             let points: Vec<Pos2> = arc_points(angle, 24)
                 .iter()
@@ -362,7 +421,7 @@ impl Widget for AttachmentMedia<'_> {
 
 /// `AttachmentContent` — the flexible text column (`flex-1 min-w-0
 /// leading-tight`); title and description stack vertically and truncate at
-/// [`CONTENT_MAX_WIDTH`] unless raised with [`AttachmentContent::max_width`].
+/// the container edge unless capped with [`AttachmentContent::max_width`].
 #[derive(Clone, Debug)]
 pub struct AttachmentContent {
     max_width: f32,
@@ -376,10 +435,12 @@ impl Default for AttachmentContent {
 }
 
 impl AttachmentContent {
-    /// Creates an empty content column.
+    /// Creates an empty content column. The column is uncapped by default
+    /// (N9): the source `w-fit` chip grows with its content up to the
+    /// container width; the old 240px cap is gone.
     pub fn new() -> Self {
         Self {
-            max_width: CONTENT_MAX_WIDTH,
+            max_width: f32::INFINITY,
             id_salt: None,
         }
     }
@@ -403,10 +464,15 @@ impl AttachmentContent {
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
         let max_width = self.max_width;
+        scope::update(ui, |s| s.has_content = true);
         let vertical =
             scope::current(ui).map(|s| s.orientation) == Some(AttachmentOrientation::Vertical);
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_max_width(max_width);
+            // N9: only cap the column when the caller set an explicit finite
+            // width; the default is unbounded (container edge).
+            if max_width.is_finite() {
+                ui.set_max_width(max_width);
+            }
             ui.spacing_mut().item_spacing.y = 2.0; // `mt-0.5` between slots
             if vertical {
                 // Vertical chips pin the column to the chip's inner width.
@@ -539,22 +605,38 @@ impl AttachmentActions {
         content: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<R> {
         let scope = scope::current(ui);
-        scope::update(ui, |s| s.has_actions = true);
-        let (orientation, media_rect, chip_id) = match scope {
-            Some(s) => (s.orientation, s.media_rect, s.chip_id),
+        let (orientation, media_rect, chip_id, size) = match scope {
+            Some(s) => (s.orientation, s.media_rect, s.chip_id, s.size),
             None => (
                 AttachmentOrientation::Horizontal,
                 None,
                 Id::unique("attachment_orphan_actions"),
+                AttachmentSize::default(),
             ),
         };
         // Vertical: overlay the row on the media's top-right corner.
         if orientation == AttachmentOrientation::Vertical {
             if let Some(media) = media_rect {
-                let pos = Pos2::new(media.right() - 12.0 - 24.0, media.top() + 12.0);
+                // `absolute top-3 right-3`: the row's RIGHT edge sits 12px
+                // from the chip's right edge and the row grows leftward
+                // regardless of how many actions it holds (N2). The chip's
+                // right edge in screen coordinates is
+                // `media.left - pad.x + VERTICAL_CHIP_WIDTH`; pin the
+                // overlay there with a RIGHT_TOP anchor against the content
+                // rect (the rect `Area` resolves anchors against — an
+                // `Area::fixed_pos` left edge cannot express a right-edge pin
+                // for an opaque closure of unknown width).
+                let overlay_right = media.left() + VERTICAL_CHIP_WIDTH - size.pad().x - 12.0;
+                let content_rect = ui.ctx().content_rect();
                 let area_id = chip_id.with("attachment_actions_overlay");
                 let inner = egui::Area::new(area_id)
-                    .fixed_pos(pos)
+                    .anchor(
+                        egui::Align2::RIGHT_TOP,
+                        egui::Vec2::new(
+                            overlay_right - content_rect.right(),
+                            media.top() + 12.0 - content_rect.top(),
+                        ),
+                    )
                     .order(egui::Order::Middle)
                     .show(ui.ctx(), |ui| {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -574,7 +656,10 @@ impl AttachmentActions {
             }
         }
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0; // vertical overlay `gap-1`
+            // No inter-action gap in the horizontal orientation: the source
+            // row is a bare flex row (`gap-1` applies to the vertical
+            // overlay only, N3).
+            ui.spacing_mut().item_spacing.x = 0.0;
             content(ui)
         })
     }
@@ -719,7 +804,11 @@ impl Attachment {
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        let pad = self.size.pad();
+        // Layout pad: the vertical `set_min_width` below is computed before
+        // layout (slot presence is unknowable there — D5), so it stays
+        // content-pad-based; the painted chip rect uses the slot-conditional
+        // pad (N5) instead.
+        let layout_pad = self.size.pad();
         let radius = if self.size == AttachmentSize::Xs {
             theme.radius.lg_u8()
         } else {
@@ -739,7 +828,8 @@ impl Attachment {
                 size: self.size,
                 state: self.state,
                 media_rect: None,
-                has_actions: false,
+                has_content: false,
+                has_media: false,
                 focus_within: false,
             },
         );
@@ -758,7 +848,7 @@ impl Attachment {
             }
             AttachmentOrientation::Vertical => {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.set_min_width(VERTICAL_CHIP_WIDTH - 2.0 * pad.x);
+                    ui.set_min_width(VERTICAL_CHIP_WIDTH - 2.0 * layout_pad.x);
                     ui.spacing_mut().item_spacing.y = self.size.gap();
                     content(ui)
                 })
@@ -766,17 +856,25 @@ impl Attachment {
         };
         let _inner = laid_out.inner;
 
+        // Slot-conditional padding (N5): read the scope after layout, when
+        // the slots have recorded their presence.
+        let scope_now = scope::current(ui);
+        let (has_content, has_media) = scope_now
+            .map(|s| (s.has_content, s.has_media))
+            .unwrap_or((false, false));
+        let rect_pad = chip_pad(self.size, has_content, has_media);
+
         let chip_rect = match self.orientation {
             AttachmentOrientation::Horizontal => {
                 // Row + padding; `min-w-40` keeps tiny chips usable.
-                let mut rect = laid_out.response.rect.expand2(Vec2::new(pad.x, pad.y));
+                let mut rect = laid_out.response.rect.expand2(rect_pad);
                 if rect.width() < 160.0 {
                     rect.set_width(160.0);
                 }
                 rect
             }
             AttachmentOrientation::Vertical => {
-                let mut rect = laid_out.response.rect.expand2(Vec2::new(pad.x, pad.y));
+                let mut rect = laid_out.response.rect.expand2(rect_pad);
                 rect.set_width(VERTICAL_CHIP_WIDTH);
                 rect
             }
@@ -788,11 +886,10 @@ impl Attachment {
             Sense::hover()
         };
         let response = ui.interact(chip_rect, id, sense);
-        // `has-[>a,>button]:hover:bg-muted/50` — hover highlight only when
-        // the chip carries buttons/links (or is itself a trigger).
-        let scope_now = scope::current(ui);
-        let has_actions = self.trigger || scope_now.map(|s| s.has_actions).unwrap_or(false);
-        let hovered = has_actions && response.hovered();
+        // `has-[>a,>button]:hover:bg-muted/50` — the hover fill applies only
+        // when the chip itself is a trigger (a direct-child `<button>`);
+        // buttons nested inside `AttachmentActions` do NOT enable it.
+        let hovered = hover_fill_applies(self.trigger, response.hovered());
 
         // Border: destructive/30 in the error state, dashed while idle.
         let border_color = if self.state == AttachmentState::Error {
@@ -1057,6 +1154,10 @@ mod tests {
         assert_eq!(AttachmentSize::Default.pad(), Vec2::new(10.0, 8.0));
         assert_eq!(AttachmentSize::Sm.pad(), Vec2::new(8.0, 6.0));
         assert_eq!(AttachmentSize::Xs.pad(), Vec2::new(6.0, 4.0));
+        // Media-only chip pad (p-2 / p-1.5 / p-1): uniform, equals pad().y.
+        assert_eq!(AttachmentSize::Default.media_pad(), 8.0);
+        assert_eq!(AttachmentSize::Sm.media_pad(), 6.0);
+        assert_eq!(AttachmentSize::Xs.media_pad(), 4.0);
         // text-sm / text-xs.
         assert_eq!(AttachmentSize::Default.text_size(), 14.0);
         assert_eq!(AttachmentSize::Xs.text_size(), 12.0);
@@ -1154,18 +1255,215 @@ mod tests {
 
     #[test]
     fn vertical_media_side_follows_chip_size() {
-        // `w-full` inside the chip's inner width: 120 − 2·px.
+        // Border-box: 120 − 2·px − 2·1px border = 98 / 102 / 106.
+        assert_eq!(vertical_media_side(AttachmentSize::Default), 98.0);
+        assert_eq!(vertical_media_side(AttachmentSize::Sm), 102.0);
+        assert_eq!(vertical_media_side(AttachmentSize::Xs), 106.0);
+    }
+
+    #[test]
+    fn media_radius_selects_md_for_xs() {
+        // `rounded-md!` overrides `rounded-lg` for xs in both orientations.
+        assert_eq!(media_radius(AttachmentSize::Xs, 8, 10), 8);
+        assert_eq!(media_radius(AttachmentSize::Default, 8, 10), 10);
+        assert_eq!(media_radius(AttachmentSize::Sm, 8, 10), 10);
+    }
+
+    #[test]
+    fn chip_pad_is_slot_conditional() {
+        // N5: content pad / media-only pad / no pad.
         assert_eq!(
-            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Default.pad().x,
-            100.0
+            chip_pad(AttachmentSize::Default, true, true),
+            Vec2::new(10.0, 8.0)
         );
         assert_eq!(
-            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Sm.pad().x,
-            104.0
+            chip_pad(AttachmentSize::Default, false, true),
+            Vec2::splat(8.0)
         );
-        assert_eq!(
-            VERTICAL_CHIP_WIDTH - 2.0 * AttachmentSize::Xs.pad().x,
-            108.0
+        assert_eq!(chip_pad(AttachmentSize::Default, false, false), Vec2::ZERO);
+        assert_eq!(chip_pad(AttachmentSize::Xs, false, true), Vec2::splat(4.0));
+    }
+
+    #[test]
+    fn hover_fill_needs_direct_child_trigger() {
+        // The hover fill applies only when the chip itself is a trigger.
+        assert!(hover_fill_applies(true, true));
+        assert!(!hover_fill_applies(true, false));
+        assert!(!hover_fill_applies(false, true));
+        assert!(!hover_fill_applies(false, false));
+    }
+
+    /// Renders into a fresh light-mode context; the `show` closure captures
+    /// the response rects the test asserts on. Runs two frames: an `Area`
+    /// (the vertical actions overlay) needs a sizing pass on frame 1 and
+    /// only lands on its anchored position from frame 2, so the captured
+    /// rects come from the second frame.
+    fn render_once(width: f32, height: f32, mut show: impl FnMut(&mut Ui)) {
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("attachment_s1_render_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height))),
+                );
+                show(ui);
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn vertical_actions_overlay_pins_right_edge() {
+        // N2: two actions on a vertical default chip — the row's right edge
+        // sits 12px from the chip's right edge (108px from the chip's left),
+        // the actions keep their 4px gap, and the media is 98px wide.
+        let mut captured: Option<(Rect, Rect, Rect, Rect)> = None;
+        render_once(500.0, 700.0, |ui| {
+            let mut a1 = Rect::NOTHING;
+            let mut a2 = Rect::NOTHING;
+            let mut media = Rect::NOTHING;
+            let chip = Attachment::new()
+                .orientation(AttachmentOrientation::Vertical)
+                .show(ui, |ui| {
+                    media = AttachmentMedia::new().icon(Icon::FileText).show(ui).rect;
+                    AttachmentContent::new().show(ui, |ui| {
+                        AttachmentTitle::new("clip.mp4").show(ui);
+                    });
+                    AttachmentActions::new().show(ui, |ui| {
+                        a1 = AttachmentAction::new(Icon::RefreshCw).show(ui).rect;
+                        a2 = AttachmentAction::new(Icon::X).show(ui).rect;
+                    });
+                })
+                .rect;
+            captured = Some((a1, a2, media, chip));
+        });
+        let (a1, a2, media, chip) = captured.expect("chip rendered");
+        assert_eq!(media.width(), 98.0, "vertical media side {media:?}");
+        assert!(
+            (a2.right() - chip.left() - 108.0).abs() < 1.0,
+            "overlay right edge: a2 {a2:?} chip {chip:?}"
+        );
+        assert!(
+            (a2.left() - a1.right() - 4.0).abs() < 1.0,
+            "overlay gap: a1 {a1:?} a2 {a2:?}"
+        );
+        // The row floats over the media, not below it.
+        assert!(a1.top() >= media.top() && a1.bottom() <= media.bottom());
+    }
+
+    #[test]
+    fn horizontal_actions_have_no_gap() {
+        // N3: `gap-1` is vertical-overlay-only; the horizontal row has no
+        // inter-action gap.
+        let mut captured: Option<(Rect, Rect)> = None;
+        render_once(500.0, 700.0, |ui| {
+            let mut a1 = Rect::NOTHING;
+            let mut a2 = Rect::NOTHING;
+            Attachment::new().show(ui, |ui| {
+                AttachmentMedia::new().icon(Icon::FileText).show(ui);
+                AttachmentContent::new().show(ui, |ui| {
+                    AttachmentTitle::new("file.pdf").show(ui);
+                });
+                AttachmentActions::new().show(ui, |ui| {
+                    a1 = AttachmentAction::new(Icon::RefreshCw).show(ui).rect;
+                    a2 = AttachmentAction::new(Icon::X).show(ui).rect;
+                });
+            });
+            captured = Some((a1, a2));
+        });
+        let (a1, a2) = captured.expect("chip rendered");
+        assert!(
+            (a2.left() - a1.right()).abs() < 1.0,
+            "horizontal gap: a1 {a1:?} a2 {a2:?}"
+        );
+    }
+
+    #[test]
+    fn chip_padding_is_slot_conditional() {
+        // N5: media-only chips use the media pad (8px default), chips with
+        // content use the content pad (10px default) — in both orientations.
+        // Each chip renders in its own Ui: a horizontal chip's laid-out rect
+        // spans the full available height (pre-existing), so stacking chips
+        // in one Ui would push the later ones below the visible rect and
+        // their media would early-return before recording `has_media`.
+        fn pad_for(horizontal: bool, with_content: bool) -> f32 {
+            let mut captured: Option<f32> = None;
+            render_once(500.0, 700.0, |ui| {
+                let mut m_left = 0.0;
+                let chip = if horizontal {
+                    Attachment::new().show(ui, |ui| {
+                        m_left = AttachmentMedia::new()
+                            .icon(Icon::FileText)
+                            .show(ui)
+                            .rect
+                            .left();
+                        if with_content {
+                            AttachmentContent::new().show(ui, |ui| {
+                                AttachmentTitle::new("file.pdf").show(ui);
+                            });
+                        }
+                    })
+                } else {
+                    Attachment::new()
+                        .orientation(AttachmentOrientation::Vertical)
+                        .show(ui, |ui| {
+                            m_left = AttachmentMedia::new()
+                                .icon(Icon::FileText)
+                                .show(ui)
+                                .rect
+                                .left();
+                            if with_content {
+                                AttachmentContent::new().show(ui, |ui| {
+                                    AttachmentTitle::new("clip.mp4").show(ui);
+                                });
+                            }
+                        })
+                };
+                captured = Some(m_left - chip.rect.left());
+            });
+            captured.expect("chip rendered")
+        }
+        assert!(
+            (pad_for(true, false) - 8.0).abs() < 1.0,
+            "horizontal media-only pad"
+        );
+        assert!(
+            (pad_for(true, true) - 10.0).abs() < 1.0,
+            "horizontal content pad"
+        );
+        assert!(
+            (pad_for(false, false) - 8.0).abs() < 1.0,
+            "vertical media-only pad"
+        );
+        assert!(
+            (pad_for(false, true) - 10.0).abs() < 1.0,
+            "vertical content pad"
+        );
+    }
+
+    #[test]
+    fn content_grows_past_240() {
+        // N9: no 240px cap — a long title in a 500px-wide Ui grows the
+        // content column past 240px.
+        let mut captured: Option<f32> = None;
+        render_once(500.0, 700.0, |ui| {
+            let mut content_w = 0.0;
+            Attachment::new().show(ui, |ui| {
+                AttachmentMedia::new().icon(Icon::FileText).show(ui);
+                let content = AttachmentContent::new().show(ui, |ui| {
+                    AttachmentTitle::new("a".repeat(120)).show(ui);
+                });
+                content_w = content.response.rect.width();
+            });
+            captured = Some(content_w);
+        });
+        let w = captured.expect("chip rendered");
+        assert!(
+            w > 240.0,
+            "content width {w} should exceed the removed 240px cap"
         );
     }
 
