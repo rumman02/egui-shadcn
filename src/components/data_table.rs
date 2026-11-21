@@ -241,6 +241,95 @@ pub(crate) fn sort_indices<T>(
     v
 }
 
+/// Resolved per-frame column geometry for one table.
+struct ColumnLayout {
+    /// The (finite, non-negative) table width actually laid out.
+    total: f32,
+    /// One width per visible slot (selection + columns + actions, in display
+    /// order). Every entry is finite and non-negative.
+    widths: Vec<f32>,
+    /// Data-index -> widths index (`usize::MAX` = hidden).
+    display_of_column: Vec<usize>,
+}
+
+/// Resolve column widths from the available width, the columns' explicit
+/// widths, and visibility.
+///
+/// Every returned entry is finite and non-negative, even when the parent
+/// offers an unbounded (infinite) or NaN available width — e.g. a table
+/// inside a horizontal scroll area. In that case the table sizes to its
+/// intrinsic minimum (fixed widths + the 40 px floor per flexible column)
+/// instead of exploding to infinity. Non-finite or negative explicit column
+/// widths are treated as flexible (they carry no usable size).
+///
+/// This is the hardening half of the P0 fix for gallery page 61
+/// (`frame_rect is NaN`): the footer used to anchor a rect at the
+/// right-to-left cursor's left edge, which is -infinity by construction in
+/// egui, poisoning the parent cursor so the *next* table's
+/// `available_width()` came back infinite and the flexible widths with it.
+/// The footer rect is fixed at its source (see `footer_controls`); this
+/// guard keeps the widths finite regardless of what the parent reports.
+fn column_widths<T>(
+    total: f32,
+    columns: &[DataTableColumn<'_, T>],
+    visible: &[bool],
+    has_selection: bool,
+    has_actions: bool,
+) -> ColumnLayout {
+    let selection_w = if has_selection { 40.0 } else { 0.0 };
+    let actions_w = if has_actions { 56.0 } else { 0.0 };
+    let visible = |ci: usize| visible.get(ci).copied().unwrap_or(true);
+    // Explicit widths, sanitized: only finite, non-negative widths count as
+    // fixed; anything else is flexible.
+    let width_of = |c: &DataTableColumn<'_, T>| -> Option<f32> {
+        c.width.filter(|w| w.is_finite() && *w >= 0.0)
+    };
+    let fixed: f32 = columns
+        .iter()
+        .enumerate()
+        .filter(|(ci, _)| visible(*ci))
+        .filter_map(|(_, c)| width_of(c))
+        .sum::<f32>()
+        + selection_w
+        + actions_w;
+    let flexible = columns
+        .iter()
+        .enumerate()
+        .filter(|(ci, c)| visible(*ci) && width_of(c).is_none())
+        .count()
+        .max(1);
+    // Guard: a non-finite available width must not propagate into the
+    // widths. Size to the intrinsic minimum instead.
+    let total = if total.is_finite() {
+        total.max(0.0)
+    } else {
+        (fixed + flexible as f32 * 40.0).max(0.0)
+    };
+    let flex_w = ((total - fixed) / flexible as f32).max(40.0);
+
+    let mut widths: Vec<f32> = Vec::with_capacity(columns.len() + 2);
+    if has_selection {
+        widths.push(selection_w);
+    }
+    let mut display_of_column: Vec<usize> = Vec::with_capacity(columns.len());
+    for (ci, c) in columns.iter().enumerate() {
+        if !visible(ci) {
+            display_of_column.push(usize::MAX);
+            continue;
+        }
+        display_of_column.push(widths.len());
+        widths.push(width_of(c).unwrap_or(flex_w).min(total).max(0.0));
+    }
+    if has_actions {
+        widths.push(actions_w);
+    }
+    ColumnLayout {
+        total,
+        widths,
+        display_of_column,
+    }
+}
+
 /// Page count for a total row count, unit-testable.
 pub(crate) fn page_count(total: usize, page_size: usize) -> usize {
     if page_size == 0 {
@@ -507,43 +596,19 @@ impl<'a, T> DataTable<'a, T> {
         vis.resize(columns.len(), true);
 
         // --- column widths -----------------------------------------------------
-        let total = ui.available_width();
-        let selection_w = if selection.is_some() { 40.0 } else { 0.0 };
-        let actions_w = if actions.is_some() { 56.0 } else { 0.0 };
-        let visible = |ci: usize| vis.get(ci).copied().unwrap_or(true);
-        let fixed: f32 = columns
-            .iter()
-            .enumerate()
-            .filter(|(ci, _)| visible(*ci))
-            .filter_map(|(_, c)| c.width)
-            .sum::<f32>()
-            + selection_w
-            + actions_w;
-        let flexible = columns
-            .iter()
-            .enumerate()
-            .filter(|(ci, c)| visible(*ci) && c.width.is_none())
-            .count()
-            .max(1);
-        let flex_w = ((total - fixed) / flexible as f32).max(40.0);
-
-        let mut widths: Vec<f32> = Vec::with_capacity(columns.len() + 2);
-        if selection.is_some() {
-            widths.push(selection_w);
-        }
-        // Data-index -> widths index (`usize::MAX` = hidden).
-        let mut display_of_column: Vec<usize> = Vec::with_capacity(columns.len());
-        for (ci, c) in columns.iter().enumerate() {
-            if !visible(ci) {
-                display_of_column.push(usize::MAX);
-                continue;
-            }
-            display_of_column.push(widths.len());
-            widths.push(c.width.unwrap_or(flex_w).min(total));
-        }
-        if actions.is_some() {
-            widths.push(actions_w);
-        }
+        // Resolved by `column_widths` (pure helper): every entry is finite
+        // and non-negative, even for an unbounded parent width.
+        let ColumnLayout {
+            total,
+            widths,
+            display_of_column,
+        } = column_widths(
+            ui.available_width(),
+            &columns,
+            &vis,
+            selection.is_some(),
+            actions.is_some(),
+        );
         let actions_w_idx = widths.len().saturating_sub(1);
 
         // --- toolbar ---------------------------------------------------------
@@ -1066,7 +1131,16 @@ fn footer_controls(
     let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
     let pages_text = format!("Page {} of {}", state.page + 1, pages);
     let galley = ui.painter().layout_no_wrap(pages_text, font, p.foreground);
-    let text_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(100.0, 32.0));
+    // This runs in a right-to-left layout, where the cursor's *left* edge is
+    // -infinity by construction (egui `Layout::initial_cursor`), so the box
+    // must be anchored at the cursor's *right* edge. Anchoring at
+    // `ui.cursor().min` used to poison the parent cursor with -inf, making
+    // the next table's `available_width()` infinite and its flexible widths
+    // infinite — the P0 `frame_rect is NaN` panic on gallery page 61.
+    let text_rect = Rect::from_min_size(
+        Pos2::new(ui.cursor().max.x - 100.0, ui.cursor().top()),
+        Vec2::new(100.0, 32.0),
+    );
     ui.painter().galley(
         Pos2::new(
             text_rect.left() + (text_rect.width() - galley.size().x) * 0.5,
@@ -1077,11 +1151,13 @@ fn footer_controls(
     );
     ui.advance_cursor_after_rect(text_rect);
 
-    // Rows-per-page select (h-8 w-[70px] sm trigger + label).
+    // Rows-per-page select (h-8 w-[70px] default trigger + label): the
+    // default size renders h-8 (32 px) under nova, the default style
+    // (`SelectSize::Default`, `trigger_height`); `Sm` renders h-7 (28 px).
     let mut page_size_value = Some(state.page_size.to_string());
     let sel = crate::components::select::Select::new(&mut page_size_value)
         .options(options.iter().map(|o| o.to_string()))
-        .size(crate::components::select::SelectSize::Sm)
+        .size(crate::components::select::SelectSize::Default)
         .width(70.0)
         .id_salt(format!("{}_pagesize", table_id.value()))
         .show_seeded(ui);
@@ -1360,5 +1436,172 @@ mod tests {
         assert_eq!(capitalize("status"), "Status");
         assert_eq!(capitalize("amountUSD"), "AmountUSD");
         assert_eq!(capitalize(""), "");
+    }
+
+    #[test]
+    fn gallery_page_two_tables_render_without_panic() {
+        // Regression test for the P0 panic on gallery page 61
+        // (`frame_rect is NaN`, egui `layout.rs` debug_assert): a paginated
+        // table's footer used to anchor a rect at the right-to-left
+        // cursor's left edge (-inf by construction in egui), poisoning the
+        // parent cursor so the *next* table's `available_width()` came back
+        // infinite and its flexible widths with it. Render both demo tables
+        // in the gallery layout (CentralPanel + vertical ScrollArea) for
+        // several frames. Row actions are simplified to a label (the
+        // dropdown is never opened, in the gallery or here).
+        use crate::theme::{Mode, Preset};
+        let rows = rows();
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut filter = String::new();
+        let mut visibility: Vec<bool> = vec![];
+        let mut selected: Vec<usize> = vec![];
+        let mut filter2 = String::new();
+        for _frame in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.heading("data-table");
+                        ui.add_space(12.0);
+                        let _res = DataTable::new(&rows)
+                            .id_salt("demo")
+                            .filter(&mut filter, email_pred)
+                            .filter_placeholder("Filter emails...")
+                            .column_visibility(&mut visibility)
+                            .page_size(5)
+                            .selection(&mut selected)
+                            .column(
+                                DataTableColumn::new("status", "Status")
+                                    .width(120.0)
+                                    .sort_key(|p: &Payment| SortValue::Text(p.status.clone()))
+                                    .cell(|ui, p| {
+                                        ui.label(p.status.clone());
+                                    }),
+                            )
+                            .column(
+                                DataTableColumn::new("email", "Email")
+                                    .sort_key(|p: &Payment| SortValue::Text(p.email.clone()))
+                                    .cell(|ui, p| {
+                                        ui.label(p.email.clone());
+                                    }),
+                            )
+                            .column(
+                                DataTableColumn::new("amount", "Amount")
+                                    .width(100.0)
+                                    .align(DataTableCellAlign::End)
+                                    .sort_key(|p: &Payment| SortValue::Number(p.amount))
+                                    .cell(|ui, p| {
+                                        ui.label(format!("${:.2}", p.amount));
+                                    }),
+                            )
+                            .row_actions(|ui, _p: &Payment| {
+                                ui.label("actions");
+                            })
+                            .show(ui);
+                        ui.add_space(8.0);
+                        ui.add_space(16.0);
+                        ui.label("Without pagination or selection (sort + filter only)");
+                        ui.add_space(4.0);
+                        let _res2 = DataTable::new(&rows)
+                            .id_salt("demo_plain")
+                            .filter(&mut filter2, |p: &Payment, needle: &str| {
+                                p.status.to_lowercase().contains(&needle.to_lowercase())
+                            })
+                            .filter_placeholder("Filter status...")
+                            .column(
+                                DataTableColumn::new("status", "Status")
+                                    .width(140.0)
+                                    .sort_key(|p: &Payment| SortValue::Text(p.status.clone()))
+                                    .cell(|ui, p| {
+                                        ui.label(p.status.clone());
+                                    }),
+                            )
+                            .column(DataTableColumn::new("email", "Email").cell(
+                                |ui, p: &Payment| {
+                                    ui.label(p.email.clone());
+                                },
+                            ))
+                            .show(ui);
+                    });
+                });
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn column_widths_are_finite_for_unbounded_width() {
+        // Direct pin on the widths invariant: every entry is finite and
+        // non-negative, whatever the parent offers as available width.
+        // `flexible` column "b" absorbs the rest; selection (40 px) and
+        // actions (56 px) are fixed slots.
+        let cols = [
+            DataTableColumn::new("a", "A").width(120.0),
+            DataTableColumn::new("b", "B"),
+            DataTableColumn::new("c", "C").width(100.0),
+        ];
+        for total in [
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            0.0,
+            -50.0,
+            1000.0,
+        ] {
+            let layout = column_widths::<Payment>(total, &cols, &[true, true, true], true, true);
+            assert!(
+                layout.total.is_finite() && layout.total >= 0.0,
+                "total {:?} for input {total}",
+                layout.total
+            );
+            assert!(
+                layout.widths.iter().all(|w| w.is_finite() && *w >= 0.0),
+                "widths {:?} for input total {total}",
+                layout.widths
+            );
+            assert_eq!(layout.display_of_column, vec![1, 2, 3]);
+        }
+        // The gallery condition: an unbounded parent sizes the table to its
+        // intrinsic minimum (fixed 316 px + the 40 px flexible floor).
+        let layout =
+            column_widths::<Payment>(f32::INFINITY, &cols, &[true, true, true], true, true);
+        assert_eq!(layout.total, 356.0);
+        assert_eq!(layout.widths, vec![40.0, 120.0, 40.0, 100.0, 56.0]);
+        // All columns hidden: still a finite layout (OPEN-9).
+        let layout = column_widths::<Payment>(800.0, &cols, &[false, false, false], true, true);
+        assert!(layout.total.is_finite());
+        assert_eq!(layout.widths, vec![40.0, 56.0]);
+        assert_eq!(
+            layout.display_of_column,
+            vec![usize::MAX, usize::MAX, usize::MAX]
+        );
+        // No columns at all.
+        let layout = column_widths::<Payment>(f32::INFINITY, &[], &[], false, false);
+        assert!(layout.total.is_finite() && layout.total >= 0.0);
+        assert!(layout.widths.is_empty());
+        // Non-finite / negative explicit widths are treated as flexible.
+        let bad = [
+            DataTableColumn::new("a", "A").width(f32::NAN),
+            DataTableColumn::new("b", "B").width(f32::INFINITY),
+            DataTableColumn::new("c", "C").width(-10.0),
+        ];
+        let layout = column_widths::<Payment>(100.0, &bad, &[true, true, true], false, false);
+        assert_eq!(layout.widths, vec![40.0, 40.0, 40.0]);
+    }
+
+    #[test]
+    fn rows_per_page_trigger_is_h8_under_nova() {
+        // Spec §8.3 (T-P2-2): the rows-per-page trigger is h-8 (32 px). The
+        // footer uses `SelectSize::Default`, which renders h-8 under nova
+        // (`trigger_height`); `Sm` renders h-7 (28 px). The rendered height
+        // is confirmed visually in S5.
+        use crate::components::select::SelectSize;
+        use crate::theme::Style;
+        assert_eq!(
+            SelectSize::Default.height_for(Style::Nova),
+            32.0,
+            "rows-per-page trigger must be h-8 under nova"
+        );
+        assert_eq!(SelectSize::Sm.height_for(Style::Nova), 28.0);
     }
 }
