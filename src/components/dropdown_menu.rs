@@ -59,7 +59,7 @@
 
 use crate::components::direction;
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme};
+use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use crate::utils::animation::nova_overlay_progress;
 use crate::utils::shadow;
 use egui::emath::RectAlign;
@@ -80,8 +80,21 @@ pub const SUB_MENU_MIN_WIDTH: f32 = 96.0;
 pub(crate) const MENU_CONTENT_PADDING: f32 = 4.0;
 /// Item row height: `py-1` + one `text-sm` line (min-h-7).
 pub(crate) const MENU_ROW_HEIGHT: f32 = 28.0;
-/// Label row height: `py-1` + one `text-xs` line.
-pub(crate) const MENU_LABEL_HEIGHT: f32 = 20.0;
+/// Nova label height: `py-1` (8 px) + `text-xs` line (16 px) = 24 px
+/// (OPEN-6, coordinator-decided: the audit/code value 20 px is superseded;
+/// S5 confirms with a rendered measurement).
+pub(crate) const MENU_LABEL_HEIGHT: f32 = 24.0;
+/// Base label height: `py-1.5` (12 px) + `text-sm` line (20 px) = 32 px.
+pub(crate) const MENU_LABEL_HEIGHT_BASE: f32 = 32.0;
+
+/// Label row height for the active style (OPEN-6: nova 24 px, base 32 px).
+pub(crate) fn menu_label_height(nova: bool) -> f32 {
+    if nova {
+        MENU_LABEL_HEIGHT
+    } else {
+        MENU_LABEL_HEIGHT_BASE
+    }
+}
 /// Item horizontal padding: `px-1.5` (6 px).
 pub(crate) const MENU_ROW_PAD_X: f32 = 6.0;
 /// Checkbox/radio trailing space for the indicator: `pr-8` (32 px).
@@ -869,11 +882,14 @@ pub(crate) fn render_level(
 /// `max-h-(--radix-dropdown-menu-content-available-height)` with
 /// `overflow-y-auto` (dropdown-menu.tsx:44, context-menu.tsx:104). Radix
 /// measures the available space around the anchor; this approximates it with
-/// the window height below the anchor rect minus the popup gap and a small
-/// collision margin.
+/// the larger of the space below and the space above the anchor rect
+/// (§9.1: egui flips the popup to the side with room, so the clamp must
+/// cover whichever side it opens on), minus the popup gap and a small
+/// collision margin, floored so a short menu can still show.
 fn available_content_height(screen_height: f32, anchor_rect: Rect, gap: f32) -> f32 {
     let below = screen_height - anchor_rect.bottom() - gap - MENU_SCROLL_MARGIN;
-    below.max(MENU_SCROLL_MIN_HEIGHT)
+    let above = anchor_rect.top() - gap - MENU_SCROLL_MARGIN;
+    below.max(above).max(MENU_SCROLL_MIN_HEIGHT)
 }
 
 /// Wraps the rows of one level in a themed scroll area clamped to
@@ -941,6 +957,7 @@ fn render_rows(
                         inset: item.inset,
                         indicator: None,
                         colors,
+                        chevron: false,
                     },
                 );
                 handle_row_input(&response, &path, None, item.disabled, shared);
@@ -967,6 +984,7 @@ fn render_rows(
                         inset: item.inset || shared.spec.indicator == IndicatorSide::Left,
                         indicator: Some((shared.spec.indicator, checked_now, false)),
                         colors,
+                        chevron: false,
                     },
                 );
                 handle_row_input(&response, &path, None, item.disabled, shared);
@@ -999,6 +1017,7 @@ fn render_rows(
                                 true,
                             )),
                             colors,
+                            chevron: false,
                         },
                     );
                     handle_row_input(&response, &path, None, item.disabled, shared);
@@ -1028,6 +1047,7 @@ fn render_rows(
                         inset: *inset,
                         indicator: None,
                         colors,
+                        chevron: true,
                     },
                 );
                 // Trailing chevron: `ChevronRightIcon class="ml-auto size-4"`.
@@ -1156,6 +1176,9 @@ struct RowPaint<'a> {
     /// `(side, checked, is_radio)` for checkbox/radio rows.
     indicator: Option<(IndicatorSide, bool, bool)>,
     colors: RowColors,
+    /// A sub-trigger chevron is painted at the row's right edge, so the
+    /// label must reserve that zone too (N20).
+    chevron: bool,
 }
 
 fn paint_item_row(ui: &mut Ui, row_id: Id, row: &RowPaint<'_>) -> Response {
@@ -1204,22 +1227,47 @@ fn paint_item_row(ui: &mut Ui, row_id: Id, row: &RowPaint<'_>) -> Response {
             );
         }
 
+        // N20: the label must never underlap the right zone (shortcut /
+        // chevron / check indicator). Reserve that zone plus one icon gap,
+        // then truncate with an ellipsis when the label exceeds what is
+        // left (same pop-until-it-fits shape as the command rows).
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        painter.text(
-            Pos2::new(text_x, rect.center().y),
-            Align2::LEFT_CENTER,
-            row.label,
-            font,
-            row.colors.text,
-        );
-
-        // Shortcut: `ml-auto text-xs tracking-widest text-muted-foreground`.
         let right_pad = match row.indicator {
             Some((IndicatorSide::Right, ..)) => MENU_INDICATOR_SPACE,
             _ => MENU_ROW_PAD_X,
         };
+        let mut right_reserve = right_pad;
+        let mut shortcut_width = None;
         if let Some(shortcut) = row.shortcut {
             let sfont = FontId::proportional(crate::theme::tokens::type_scale::XS);
+            let width = painter
+                .layout_no_wrap(shortcut.to_string(), sfont.clone(), row.colors.shortcut)
+                .size()
+                .x;
+            shortcut_width = Some((sfont, width));
+            right_reserve = right_pad + width + MENU_ICON_GAP;
+        } else if row.chevron {
+            right_reserve = MENU_ROW_PAD_X + MENU_ICON_SIZE + MENU_ICON_GAP;
+        }
+        let max_label_w = (rect.max.x - right_reserve - text_x).max(1.0);
+        let label = truncate_label(row.label, max_label_w, &|candidate| {
+            painter
+                .layout_no_wrap(candidate.to_string(), font.clone(), row.colors.text)
+                .size()
+                .x
+        });
+        if !label.is_empty() {
+            painter.text(
+                Pos2::new(text_x, rect.center().y),
+                Align2::LEFT_CENTER,
+                label,
+                font,
+                row.colors.text,
+            );
+        }
+
+        // Shortcut: `ml-auto text-xs tracking-widest text-muted-foreground`.
+        if let Some((shortcut, (sfont, _))) = row.shortcut.zip(shortcut_width) {
             painter.text(
                 Pos2::new(rect.max.x - right_pad, rect.center().y),
                 Align2::RIGHT_CENTER,
@@ -1235,6 +1283,25 @@ fn paint_item_row(ui: &mut Ui, row_id: Id, row: &RowPaint<'_>) -> Response {
         }
     }
     response
+}
+
+/// Truncates `label` with a trailing ellipsis so its laid-out width fits
+/// `max_width` (N20). `measure` lays out a candidate string and returns its
+/// width in points. Returns the label unchanged when it already fits, and
+/// an empty string when not even one character plus the ellipsis fits.
+fn truncate_label(label: &str, max_width: f32, measure: &dyn Fn(&str) -> f32) -> String {
+    if measure(label) <= max_width {
+        return label.to_string();
+    }
+    let mut text = label.to_string();
+    while text.chars().count() > 1 {
+        text.pop();
+        let candidate = format!("{text}…");
+        if measure(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    String::new()
 }
 
 fn paint_indicator(
@@ -1263,8 +1330,9 @@ fn paint_indicator(
 }
 
 fn paint_label(ui: &mut Ui, text: &str, inset: bool, shared: &LevelShared<'_>) {
-    // Label height is spec-driven: `py-1 text-xs` (20 px) for dropdown /
-    // context, `py-1 text-sm` (28 px) for menubar (`.cn-menubar-label`).
+    // Label height is spec-driven: `py-1 text-xs` (24 px nova / 32 px base)
+    // for dropdown / context, `py-1 text-sm` (28 px) for menubar
+    // (`.cn-menubar-label`).
     let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), shared.spec.label_height));
     if ui.is_rect_visible(rect) {
         let (color, size) = if shared.spec.label_muted {
@@ -1401,12 +1469,22 @@ pub(crate) fn write_menu_state(ctx: &Context, state_id: Id, state: MenuState) {
 /// menubar: ArrowUp/Down/Right/Left, Home/End, Enter/Space plus the Radix
 /// typeahead (printable characters jump to the first matching entry).
 /// Escape is handled by the caller (it closes the deepest level first).
+/// Returns `true` when Tab closed the menu this frame (N7): the caller must
+/// NOT return focus to the trigger in that case — focus moves on by design
+/// (Radix), and the next focus move must not re-open the menu.
 pub(crate) fn handle_menu_keys(
     ctx: &Context,
     entries: &[MenuEntry<'_>],
     state: &mut MenuState,
     activation: &mut Option<Vec<usize>>,
-) {
+) -> bool {
+    // N7: Tab closes an open menu; checked first and returns immediately
+    // so no other key in the same frame re-navigates or re-opens it.
+    if ctx.input(|i| i.key_pressed(Key::Tab)) {
+        state.open = false;
+        state.highlight.clear();
+        return true;
+    }
     let (down, up, left, right, home, end, enter, space) = ctx.input(|i| {
         (
             i.key_pressed(Key::ArrowDown),
@@ -1451,6 +1529,7 @@ pub(crate) fn handle_menu_keys(
         }
     }
     handle_menu_typeahead(ctx, entries, state);
+    false
 }
 
 /// Radix typeahead: printable characters typed while the menu is open
@@ -1792,11 +1871,14 @@ impl<'a> DropdownMenu<'a> {
             if state.open {
                 state.highlight.clear();
             }
-            state.trigger = Some(TriggerInfo {
-                rect: trigger_response.rect,
-                layer_id: trigger_response.layer_id,
-            });
         }
+        // N1: refresh the popup anchor from the trigger rect every frame,
+        // so a controlled open renders without a prior click and the popup
+        // follows a moving trigger (as select does).
+        state.trigger = Some(TriggerInfo {
+            rect: trigger_response.rect,
+            layer_id: trigger_response.layer_id,
+        });
 
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
@@ -1806,10 +1888,21 @@ impl<'a> DropdownMenu<'a> {
         let mut activation: Option<Vec<usize>> = None;
         let mut popup_rects: Vec<Rect> = Vec::new();
 
-        // Keyboard navigation while open.
+        // Keyboard navigation while open (Tab closes: N7, its return is
+        // captured so the focus return below can skip the Tab-away case).
+        let mut tab_closed = false;
         if state.open {
-            handle_menu_keys(&ctx, &entries, &mut state, &mut activation);
+            tab_closed = handle_menu_keys(&ctx, &entries, &mut state, &mut activation);
             handle_menu_escape(&ctx, &mut state);
+        } else if trigger_response.has_focus() && ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
+            // N8: ArrowDown on a focused closed trigger opens the menu and
+            // highlights the first actionable row (Radix). In the else
+            // branch so the same press is not also consumed as navigation
+            // by `handle_menu_keys` above.
+            state.open = true;
+            if let Some(idx) = first_nav_child(&entries) {
+                state.highlight = vec![idx];
+            }
         }
 
         // Popup (kept up during the close fade like the source's
@@ -1821,7 +1914,7 @@ impl<'a> DropdownMenu<'a> {
                 min_width: self.width.unwrap_or(DROPDOWN_MIN_WIDTH),
                 indicator: IndicatorSide::Right,
                 label_muted: true,
-                label_height: MENU_LABEL_HEIGHT,
+                label_height: menu_label_height(theme.style == Style::Nova),
                 sub_min_width: SUB_MENU_MIN_WIDTH,
                 sub_border_is_ring: true,
             };
@@ -1884,6 +1977,13 @@ impl<'a> DropdownMenu<'a> {
         let closed = open_at_start && !state.open;
         if closed {
             state.highlight.clear();
+        }
+        // N2: focus returns to the trigger on every close (Escape, item
+        // activation, outside click) — including the close-fade path, since
+        // this runs at close-decision time. Tab-away (N7) is excluded:
+        // focus moves on by design there.
+        if closed && !tab_closed {
+            ctx.memory_mut(|m| m.request_focus(trigger_response.id));
         }
 
         let open_now = state.open;
@@ -2051,11 +2151,22 @@ mod tests {
             600.0 - 30.0 - 4.0 - MENU_SCROLL_MARGIN,
             "space below the anchor minus gap and collision margin"
         );
+        // §9.1: a bottom anchor has little space below but plenty above,
+        // and egui flips the popup up — the clamp must cover the flip side.
+        // (This assertion replaces the old below-only expectation, which
+        // pinned the superseded behaviour.)
         let bottom_anchor = Rect::from_min_size(Pos2::new(0.0, 596.0), Vec2::new(100.0, 30.0));
         assert_eq!(
             available_content_height(600.0, bottom_anchor, 4.0),
+            596.0 - 4.0 - MENU_SCROLL_MARGIN,
+            "flipped popup is clamped by the space above the anchor"
+        );
+        // Both sides small: the floor applies.
+        let mid_anchor = Rect::from_min_size(Pos2::new(0.0, 85.0), Vec2::new(100.0, 30.0));
+        assert_eq!(
+            available_content_height(200.0, mid_anchor, 4.0),
             MENU_SCROLL_MIN_HEIGHT,
-            "clamped to the usable minimum near the window edge"
+            "clamped to the usable minimum when neither side has room"
         );
     }
 
@@ -2663,6 +2774,234 @@ mod tests {
             h.state("ta_focus").highlight,
             vec![1],
             "typing 'b' highlights Beta even with the trigger focused"
+        );
+    }
+
+    #[test]
+    fn menu_label_height_is_24_nova_32_base() {
+        // OPEN-6 (coordinator-decided): nova 24 px, base 32 px.
+        assert_eq!(menu_label_height(true), 24.0);
+        assert_eq!(menu_label_height(false), 32.0);
+        assert_eq!(MENU_LABEL_HEIGHT, 24.0);
+        assert_eq!(MENU_LABEL_HEIGHT_BASE, 32.0);
+    }
+
+    #[test]
+    fn truncate_label_fits_and_ellipsizes() {
+        // Fake measurer: 10 px per character, 5 px for the ellipsis.
+        let measure = |s: &str| {
+            s.chars()
+                .map(|c| if c == '…' { 5.0 } else { 10.0 })
+                .sum::<f32>()
+        };
+        assert_eq!(truncate_label("abc", 30.0, &measure), "abc");
+        assert_eq!(truncate_label("abc", 29.0, &measure), "ab…");
+        assert_eq!(truncate_label("abc", 15.0, &measure), "a…");
+        assert_eq!(truncate_label("abc", 5.0, &measure), "");
+        assert_eq!(truncate_label("", 10.0, &measure), "");
+    }
+
+    #[test]
+    fn controlled_open_renders_without_click() {
+        // N1: a controlled open must render at the trigger rect even
+        // though the trigger was never clicked, and the popup must follow
+        // a moving trigger.
+        let mut h = Harness::new();
+        let mut open = true;
+        let mut show = |ui: &mut Ui| {
+            DropdownMenu::controlled("Open", &mut open)
+                .id_salt("n1")
+                .show(ui, |m| m.item(MenuItem::new("Only item")))
+        };
+        let mut trigger_rect = Rect::ZERO;
+        h.run(|ui| {
+            trigger_rect = show(ui).trigger.rect;
+        });
+        // One settle frame (a popup's first pass is sizing-only).
+        h.run(|ui| {
+            trigger_rect = show(ui).trigger.rect;
+        });
+        assert!(h.state("n1").open, "controlled open is honoured");
+        assert_eq!(
+            h.state("n1").trigger.map(|t| t.rect),
+            Some(trigger_rect),
+            "anchor captured without a click"
+        );
+        let popup_id = Id::unique("dropdown_test_ui").with("n1").with("popup");
+        assert!(
+            h.ctx.read_response(popup_id).is_some(),
+            "popup response exists: the menu rendered"
+        );
+
+        // Move the trigger down; the anchor must follow it.
+        h.run(|ui| {
+            ui.add_space(50.0);
+            trigger_rect = show(ui).trigger.rect;
+        });
+        assert!(
+            trigger_rect.min.y >= 45.0,
+            "trigger moved down by the added space"
+        );
+        assert_eq!(
+            h.state("n1").trigger.map(|t| t.rect),
+            Some(trigger_rect),
+            "anchor follows the moving trigger"
+        );
+    }
+
+    #[test]
+    fn escape_close_returns_focus_to_trigger() {
+        // N2: on Escape close, focus returns to the trigger.
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "n2esc");
+        // A second focusable widget, so focus can sit somewhere real
+        // (egui drops focus on an id no widget shows) before the close.
+        let other_id = std::cell::Cell::new(Id::NULL);
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open")
+                .id_salt("n2esc")
+                .show(ui, |m| m.item(MenuItem::new("Only item")));
+            other_id.set(ui.button("Other").id);
+        };
+        h.click(rect.center(), egui::PointerButton::Primary, show);
+        assert!(h.state("n2esc").open);
+
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| {
+            trigger_id = DropdownMenu::new("Open")
+                .id_salt("n2esc")
+                .show(ui, |m| m.item(MenuItem::new("Only item")))
+                .trigger
+                .id;
+        });
+        // Move focus to the other button so the return is observable.
+        h.ctx.memory_mut(|m| m.request_focus(other_id.get()));
+        h.run(show);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(other_id.get()),
+            "focus sits on the other button before the close"
+        );
+
+        h.key(Key::Escape, show);
+        assert!(!h.state("n2esc").open, "Escape must close the menu");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger_id),
+            "focus returns to the trigger on close"
+        );
+    }
+
+    #[test]
+    fn activation_close_returns_focus_to_trigger() {
+        // N2: on item-activation close, focus returns to the trigger.
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "n2act");
+        // A second focusable widget, so focus can sit somewhere real
+        // (egui drops focus on an id no widget shows) before the close.
+        let other_id = std::cell::Cell::new(Id::NULL);
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open")
+                .id_salt("n2act")
+                .show(ui, |m| m.item(MenuItem::new("Only item")));
+            other_id.set(ui.button("Other").id);
+        };
+        h.click(rect.center(), egui::PointerButton::Primary, show);
+        assert!(h.state("n2act").open);
+
+        let mut trigger_id = Id::NULL;
+        h.run(|ui| {
+            trigger_id = DropdownMenu::new("Open")
+                .id_salt("n2act")
+                .show(ui, |m| m.item(MenuItem::new("Only item")))
+                .trigger
+                .id;
+        });
+        h.ctx.memory_mut(|m| m.request_focus(other_id.get()));
+        h.run(show);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(other_id.get()),
+            "focus sits on the other button before the close"
+        );
+
+        h.key(Key::ArrowDown, show);
+        assert_eq!(h.state("n2act").highlight, vec![0]);
+        h.key(Key::Enter, show);
+        assert!(!h.state("n2act").open, "activation closes the menu");
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger_id),
+            "focus returns to the trigger on activation close"
+        );
+    }
+
+    #[test]
+    fn tab_closes_open_menu_without_reopening() {
+        // N7: Tab closes an open menu; the subsequent focus move must not
+        // re-open it, and the close must not force focus back to the
+        // trigger (focus moves on to the first row, egui-native).
+        let mut h = Harness::new();
+        let rect = layout(&mut h, "n7");
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open")
+                .id_salt("n7")
+                .show(ui, |m| m.item(MenuItem::new("Only item")));
+        };
+        h.click(rect.center(), egui::PointerButton::Primary, show);
+        assert!(h.state("n7").open);
+
+        h.key(Key::Tab, show);
+        assert!(!h.state("n7").open, "Tab must close the menu");
+        assert!(
+            h.state("n7").highlight.is_empty(),
+            "Tab close clears the highlight"
+        );
+        let row0 = Id::unique("dropdown_test_ui")
+            .with("n7")
+            .with("popup")
+            .with(("shadcn_menu_row", 0));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(row0),
+            "Tab moves focus on; the close must not return it to the trigger"
+        );
+
+        // A later frame (after the focus move) must not re-open it.
+        h.run(show);
+        assert!(!h.state("n7").open, "menu stays closed after Tab-away");
+    }
+
+    #[test]
+    fn arrow_down_on_focused_closed_trigger_opens() {
+        // N8: ArrowDown on a focused closed trigger opens the menu and
+        // highlights the first actionable row.
+        let mut h = Harness::new();
+        let _ = layout(&mut h, "n8");
+        let show = |ui: &mut Ui| {
+            DropdownMenu::new("Open").id_salt("n8").show(ui, |m| {
+                m.item(MenuItem::new("Alpha"));
+                m.item(MenuItem::new("Beta"));
+            });
+        };
+        // Tab focuses the trigger (closed menu).
+        h.key(Key::Tab, show);
+        assert!(!h.state("n8").open);
+
+        h.key(Key::ArrowDown, show);
+        assert!(h.state("n8").open, "ArrowDown opens the focused trigger");
+        assert_eq!(
+            h.state("n8").highlight,
+            vec![0],
+            "first actionable row is highlighted"
+        );
+
+        // The same press must not advance the highlight a second row.
+        h.key(Key::ArrowDown, show);
+        assert_eq!(
+            h.state("n8").highlight,
+            vec![1],
+            "the next ArrowDown advances one row"
         );
     }
 
