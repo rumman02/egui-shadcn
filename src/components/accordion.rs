@@ -37,6 +37,7 @@
 //! Accordion::single(&mut open).id_salt("acc2").show(ui, |ui| { /* … */ });
 //! let mut many = vec![true, false];
 //! Accordion::multiple(&mut many).id_salt("acc3").show(ui, |ui| { /* … */ });
+//! Accordion::new_multiple().id_salt("acc4").default_open_many([0, 2]).show(ui, |ui| { /* … */ });
 //! ```
 
 use crate::theme::{color_alpha, ShadcnTheme};
@@ -55,6 +56,12 @@ pub enum AccordionType {
 
 /// Height of one trigger row (nova `py-2.5` + the 20px `text-sm` line box).
 pub const ACCORDION_TRIGGER_HEIGHT: f32 = 40.0;
+/// Vertical padding of the trigger row (nova `py-2.5` = 10px top + 10px
+/// bottom). N7: nova geometry is hardcoded; the base `py-4` 16px is a
+/// Phase 4 item, not this line.
+const TRIGGER_PAD_Y: f32 = 10.0;
+/// Minimum gap between the label and the chevron (`gap-4`, spec §3.4 N6).
+const TRIGGER_LABEL_GAP: f32 = 16.0;
 /// Bottom padding of the content (nova `pb-2.5`).
 const CONTENT_PAD_BOTTOM: f32 = 10.0;
 
@@ -185,6 +192,7 @@ pub struct Accordion<'a> {
     kind: AccordionType,
     collapsible: bool,
     default_open: Option<usize>,
+    default_open_many: Vec<usize>,
     id_salt: Option<String>,
 }
 
@@ -203,7 +211,19 @@ impl<'a> Accordion<'a> {
             kind: AccordionType::Single,
             collapsible: false,
             default_open: None,
+            default_open_many: Vec::new(),
             id_salt: None,
+        }
+    }
+
+    /// Creates an uncontrolled multiple accordion (nothing open by default;
+    /// use [`.default_open_many`](Self::default_open_many) for a
+    /// `defaultValue` array, spec §8.3 N3). There was no uncontrolled
+    /// multiple entry point before S1 — `multiple` is controlled-only.
+    pub fn new_multiple() -> Self {
+        Self {
+            kind: AccordionType::Multiple,
+            ..Self::new()
         }
     }
 
@@ -240,6 +260,19 @@ impl<'a> Accordion<'a> {
         self
     }
 
+    /// Items shown open on the first frame (uncontrolled multiple mode;
+    /// Radix `defaultValue` array for `type="multiple"`, spec §8.3 N3).
+    /// One index per initially-open item; the set is applied on the first
+    /// frame only, exactly like controlled multiple initialised with the
+    /// same flags. Applies to uncontrolled multiple accordions created
+    /// with [`Self::new_multiple`]; ignored in single mode (use
+    /// [`Self::default_open`]) and when controlled state is supplied
+    /// (controlled state wins each frame, spec §9.9).
+    pub fn default_open_many(mut self, indices: impl IntoIterator<Item = usize>) -> Self {
+        self.default_open_many = indices.into_iter().collect();
+        self
+    }
+
     /// Sets a stable id salt so the open state persists per instance.
     pub fn id_salt(mut self, salt: impl Into<String>) -> Self {
         self.id_salt = Some(salt.into());
@@ -264,6 +297,20 @@ impl<'a> Accordion<'a> {
             && self.kind == AccordionType::Single
         {
             write_single(ui, state_id, self.default_open);
+        } else if self.kind == AccordionType::Multiple
+            && !ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<Vec<bool>>(state_id).is_some())
+        {
+            // N3 (spec §8.3): seed uncontrolled multiple from
+            // `default_open_many` — the `defaultValue` array. The flags
+            // are sized to the largest requested index; items past the
+            // rendered count simply stay unread.
+            let mut flags = vec![false; self.default_open_many.iter().max().map_or(0, |m| m + 1)];
+            for i in &self.default_open_many {
+                flags[*i] = true;
+            }
+            write_multi(ui, state_id, flags);
         }
 
         let root = AccordionRoot {
@@ -448,7 +495,31 @@ impl AccordionTrigger {
         );
 
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let desired = Vec2::new(ui.available_width(), ACCORDION_TRIGGER_HEIGHT);
+        let fg = if self.disabled {
+            color_alpha(p.foreground, 0.5)
+        } else {
+            p.foreground
+        };
+        let icon = if self.disabled {
+            color_alpha(p.muted_foreground, 0.5)
+        } else {
+            p.muted_foreground
+        };
+
+        // N6 (spec §3.4): measure the label first, wrapped to the `flex-1`
+        // width — the row minus the 16px chevron and the 16px `gap-4`
+        // minimum — so a long label wraps inside its own width and never
+        // paints under the chevron. A wrapped label grows the row (`py-2.5`
+        // around the text); a single-line label keeps the 40px nova row
+        // exactly.
+        let icon_size = crate::theme::tokens::spacing::LG;
+        let avail_w = ui.available_width();
+        let label_width = (avail_w - icon_size - TRIGGER_LABEL_GAP).max(0.0);
+        let galley = ui
+            .painter()
+            .layout(self.label.clone(), font, fg, label_width);
+        let row_h = (galley.size().y + 2.0 * TRIGGER_PAD_Y).max(ACCORDION_TRIGGER_HEIGHT);
+        let desired = Vec2::new(avail_w, row_h);
         let id = match self.id_salt.as_deref() {
             Some(salt) => ui.scope_id().with(salt),
             None => scope.state_id.with("trigger").with(scope.index),
@@ -529,16 +600,6 @@ impl AccordionTrigger {
 
         if ui.is_rect_visible(rect) {
             let hovered = response.hovered() && !self.disabled;
-            let fg = if self.disabled {
-                color_alpha(p.foreground, 0.5)
-            } else {
-                p.foreground
-            };
-            let icon = if self.disabled {
-                color_alpha(p.muted_foreground, 0.5)
-            } else {
-                p.muted_foreground
-            };
 
             // `hover:underline` on the label.
             let underline = hovered;
@@ -556,30 +617,52 @@ impl AccordionTrigger {
 
             let painter = ui.painter();
             let center_y = rect.center().y;
-            // Laid out once: the same galley sizes the underline and paints
-            // the label (previously `painter.text` laid it out a second time).
-            let galley = painter.layout_no_wrap(self.label.clone(), font, fg);
-            let text_w = if self.label.is_empty() {
-                0.0
+            // A row taller than the 40px nova row is a wrapped label: the
+            // label is `items-start` (top-aligned at `py-2.5`) and the
+            // chevron sits on the first 20px line box. A 40px row paints
+            // exactly as before (centred label, centred chevron).
+            let wrapped = galley.size().y + 2.0 * TRIGGER_PAD_Y > ACCORDION_TRIGGER_HEIGHT;
+            let text_pos = if wrapped {
+                Pos2::new(rect.min.x, rect.min.y + TRIGGER_PAD_Y)
             } else {
-                galley.size().x
+                Align2::LEFT_CENTER
+                    .anchor_size(Pos2::new(rect.min.x, center_y), galley.size())
+                    .min
             };
-            let icon_size = crate::theme::tokens::spacing::LG;
-
-            // Same paint math as `Painter::text`.
-            let text_rect =
-                Align2::LEFT_CENTER.anchor_size(Pos2::new(rect.min.x, center_y), galley.size());
-            painter.galley(text_rect.min, galley, fg);
+            painter.galley(text_pos, galley.clone(), fg);
             if underline {
-                let y = center_y + crate::theme::tokens::type_scale::SM * 0.5 + 1.5;
-                painter.line_segment(
-                    [Pos2::new(rect.min.x, y), Pos2::new(rect.min.x + text_w, y)],
-                    Stroke::new(1.0, fg),
-                );
+                // `hover:underline` underlines every wrapped line, like CSS;
+                // the single-line case keeps the previous segment exactly.
+                let y_off = crate::theme::tokens::type_scale::SM * 0.5 + 1.5;
+                if wrapped {
+                    for placed in galley.rows.iter() {
+                        let y = text_pos.y + placed.pos.y + placed.row.size.y * 0.5 + y_off;
+                        painter.line_segment(
+                            [
+                                Pos2::new(text_pos.x + placed.pos.x, y),
+                                Pos2::new(text_pos.x + placed.pos.x + placed.row.size.x, y),
+                            ],
+                            Stroke::new(1.0, fg),
+                        );
+                    }
+                } else {
+                    let y = center_y + y_off;
+                    painter.line_segment(
+                        [
+                            Pos2::new(rect.min.x, y),
+                            Pos2::new(rect.min.x + galley.size().x, y),
+                        ],
+                        Stroke::new(1.0, fg),
+                    );
+                }
             }
 
+            // Chevron centre: the first 20px `text-sm` line box, 2px
+            // `translate-y-0.5` down from its top — which is the row centre
+            // for a single-line row, so the single-line paint is unchanged.
+            let chevron_y = rect.min.y + TRIGGER_PAD_Y + 2.0 + icon_size * 0.5;
             let icon_rect = Rect::from_center_size(
-                Pos2::new(rect.max.x - icon_size * 0.5, center_y),
+                Pos2::new(rect.max.x - icon_size * 0.5, chevron_y),
                 Vec2::splat(icon_size),
             );
             paint_chevron(painter, icon_rect, icon, progress);
@@ -693,6 +776,36 @@ mod tests {
             self.step(Vec::new(), f);
         }
 
+        /// Like [`Self::step`], but returns the frame's output so tests can
+        /// inspect the painted shapes.
+        fn step_out(
+            &mut self,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut Ui),
+        ) -> egui::FullOutput {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    Id::unique("accordion_test_ui"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 600.0))),
+                );
+                f(ui);
+            });
+            out.textures_delta.clear();
+            out
+        }
+
+        fn run_out(&mut self, f: impl FnMut(&mut Ui)) -> egui::FullOutput {
+            self.step_out(Vec::new(), f)
+        }
+
         /// Moves the pointer, presses and releases, each on a rendered frame.
         fn click(&mut self, pos: Pos2, mut f: impl FnMut(&mut Ui)) {
             self.step(vec![egui::Event::PointerMoved(pos)], &mut f);
@@ -748,6 +861,14 @@ mod tests {
         h.ctx
             .data_mut(|d| d.get_temp::<Option<usize>>(Id::unique("accordion_test_ui").with(salt)))
             .flatten()
+    }
+
+    fn multi_state(h: &Harness, salt: &str) -> Vec<bool> {
+        // Same read as `read_multi` (which takes a `&Ui`); the harness
+        // holds the `Context` directly.
+        h.ctx
+            .data_mut(|d| d.get_temp::<Vec<bool>>(Id::unique("accordion_test_ui").with(salt)))
+            .unwrap_or_default()
     }
 
     #[test]
@@ -856,6 +977,123 @@ mod tests {
 
         h.click(trigger_rects[1].center(), |ui| multi_ui(ui, &mut flags));
         assert_eq!(flags, vec![true, true], "both items can be open at once");
+    }
+
+    #[test]
+    fn multiple_default_open_many_starts_open() {
+        // N3 (spec §8.3): uncontrolled multiple with `default_open_many`
+        // starts with exactly the given items open, and behaves like
+        // controlled multiple initialised with the same flags.
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 3];
+        h.run(|ui| {
+            Accordion::new_multiple()
+                .id_salt("many")
+                .default_open_many([0, 2])
+                .show(ui, |ui| {
+                    for i in 0..3 {
+                        AccordionItem::new().show(ui, |ui| {
+                            rects[i] = AccordionTrigger::new(format!("M{i}")).show(ui).rect;
+                        });
+                    }
+                });
+        });
+        assert_eq!(
+            multi_state(&h, "many"),
+            vec![true, false, true],
+            "default_open_many opens exactly the given items"
+        );
+
+        // Controlled multiple with the same flags starts identically.
+        let mut flags = vec![true, false, true];
+        h.run(|ui| {
+            Accordion::multiple(&mut flags)
+                .id_salt("many-ctrl")
+                .show(ui, |ui| {
+                    for i in 0..3 {
+                        AccordionItem::new().show(ui, |ui| {
+                            AccordionTrigger::new(format!("C{i}")).show(ui);
+                        });
+                    }
+                });
+        });
+        assert_eq!(flags, vec![true, false, true]);
+
+        // Clicking item 1 toggles it on in both.
+        h.click(rects[1].center(), |ui| {
+            Accordion::new_multiple()
+                .id_salt("many")
+                .default_open_many([0, 2])
+                .show(ui, |ui| {
+                    for i in 0..3 {
+                        AccordionItem::new().show(ui, |ui| {
+                            AccordionTrigger::new(format!("M{i}")).show(ui);
+                        });
+                    }
+                });
+        });
+        assert_eq!(
+            multi_state(&h, "many"),
+            vec![true, true, true],
+            "toggled item joins the default-open set"
+        );
+        h.click(rects[1].center(), |ui| {
+            Accordion::multiple(&mut flags)
+                .id_salt("many-ctrl")
+                .show(ui, |ui| {
+                    for i in 0..3 {
+                        AccordionItem::new().show(ui, |ui| {
+                            AccordionTrigger::new(format!("C{i}")).show(ui);
+                        });
+                    }
+                });
+        });
+        assert_eq!(flags, vec![true, true, true], "controlled matches");
+    }
+
+    #[test]
+    fn default_open_builders_are_mode_specific() {
+        // `default_open` seeds single mode only; `default_open_many`
+        // seeds multiple mode only. Each is ignored in the other mode.
+        let mut h = Harness::new();
+        h.run(|ui| {
+            Accordion::new_multiple()
+                .id_salt("many-only")
+                .default_open(1)
+                .show(ui, |ui| {
+                    for i in 0..2 {
+                        AccordionItem::new().show(ui, |ui| {
+                            AccordionTrigger::new(format!("M{i}")).show(ui);
+                        });
+                    }
+                });
+        });
+        // Multiple mode without `default_open_many`: nothing open, even
+        // though `default_open(1)` was given (single-only builder). The
+        // stored flags may be shorter than the item count — no flag is
+        // true, which is what "nothing open" means.
+        assert!(
+            !multi_state(&h, "many-only").iter().any(|open| *open),
+            "default_open does not seed multiple mode"
+        );
+
+        h.run(|ui| {
+            Accordion::new()
+                .id_salt("single-only")
+                .default_open_many([0, 1])
+                .show(ui, |ui| {
+                    for i in 0..2 {
+                        AccordionItem::new().show(ui, |ui| {
+                            AccordionTrigger::new(format!("S{i}")).show(ui);
+                        });
+                    }
+                });
+        });
+        assert_eq!(
+            single_state(&h, "single-only"),
+            None,
+            "default_open_many does not seed single mode"
+        );
     }
 
     #[test]
@@ -1026,6 +1264,165 @@ mod tests {
             bottom <= 3.0 * ACCORDION_TRIGGER_HEIGHT + 1.0,
             "closed content frees layout height (got {bottom})"
         );
+    }
+
+    #[test]
+    fn long_label_keeps_gap_and_wraps() {
+        // N6 (spec §3.4): a long label wraps inside its `flex-1` width,
+        // keeps the 16px `gap-4` clearance to the chevron, and never paints
+        // under it. The row grows to contain the wrapped text.
+        let mut h = Harness::new();
+        let label = "What is the return policy for items purchased during the holiday sale period?";
+        let mut rect = Rect::ZERO;
+        let out = h.run_out(|ui| {
+            Accordion::new().id_salt("long").show(ui, |ui| {
+                AccordionItem::new().show(ui, |ui| {
+                    rect = AccordionTrigger::new(label).show(ui).rect;
+                });
+            });
+        });
+        // The painted label galley (the Text shape carrying the full label).
+        let mut painted = None;
+        for clipped in &out.shapes {
+            if let egui::Shape::Text(ts) = &clipped.shape {
+                if ts.galley.job.text == label {
+                    painted = Some((ts.pos, ts.galley.clone()));
+                }
+            }
+        }
+        let (pos, galley) = painted.expect("label Text shape painted");
+        // Wrapped: more than one 20px line box of text.
+        assert!(
+            galley.size().y > 20.0,
+            "long label wraps to multiple lines (galley height {})",
+            galley.size().y
+        );
+        // The row grew to contain the wrapped text (`py-2.5` around it).
+        assert!(
+            rect.height() > ACCORDION_TRIGGER_HEIGHT,
+            "wrapped label grows the row (height {})",
+            rect.height()
+        );
+        assert!(
+            (rect.height() - (galley.size().y + 2.0 * TRIGGER_PAD_Y)).abs() < 0.5,
+            "row height is text height + py-2.5 (got {})",
+            rect.height()
+        );
+        // 16px chevron + 16px `gap-4` clearance: the widest label line ends
+        // at least 32px left of the row's right edge — never under the
+        // chevron.
+        assert!(
+            pos.x + galley.size().x <= rect.max.x - 32.0 + 0.5,
+            "label right edge {} leaves the 16px gap + 16px chevron (row right {})",
+            pos.x + galley.size().x,
+            rect.max.x
+        );
+    }
+
+    #[test]
+    fn trigger_row_height_is_nova_40px() {
+        // Spec §3.1: the nova trigger row is 40px (`py-2.5` + 20px line
+        // box). The base 52px row is NOT implemented here — N7 records the
+        // nova-hardcoded geometry as acceptable for Batch D; the base
+        // values are a Phase 4 item. This test pins the implemented nova
+        // row so a regression cannot silently change it.
+        assert_eq!(ACCORDION_TRIGGER_HEIGHT, 40.0);
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 3];
+        h.run(|ui| triggers_ui(ui, "h40", &mut rects));
+        for (i, rect) in rects.iter().enumerate() {
+            assert_eq!(
+                rect.height(),
+                40.0,
+                "single-line trigger {i} is the 40px nova row"
+            );
+        }
+    }
+
+    #[test]
+    fn chevron_rotates_180_when_open() {
+        // Spec §3.3/§6: the chevron rotates 180° over 200ms when its item
+        // opens. The painted rotation is driven by `animate_value` with
+        // `Duration::Md` (0.2s); after settling, the open item's progress
+        // is 1.0 and a closed item's is 0.0.
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 2];
+        for _ in 0..4 {
+            h.run(|ui| {
+                Accordion::new()
+                    .id_salt("chev")
+                    .default_open(0)
+                    .show(ui, |ui| {
+                        for i in 0..2 {
+                            AccordionItem::new().show(ui, |ui| {
+                                rects[i] = AccordionTrigger::new(format!("C{i}")).show(ui).rect;
+                            });
+                        }
+                    });
+            });
+        }
+        assert_eq!(rects[0].height(), 40.0, "single-line rows stay 40px");
+        let state_id = Id::unique("accordion_test_ui").with("chev");
+        let open =
+            animation::animate_value(&h.ctx, state_id.with("chevron").with(0), 1.0, Duration::Md);
+        assert!(
+            (open - 1.0).abs() < 0.01,
+            "open item chevron settles at 180° (progress {open})"
+        );
+        let closed =
+            animation::animate_value(&h.ctx, state_id.with("chevron").with(1), 0.0, Duration::Md);
+        assert!(
+            closed.abs() < 0.01,
+            "closed item chevron settles at 0° (progress {closed})"
+        );
+    }
+
+    #[test]
+    fn focus_ring_geometry() {
+        // Spec §4.4: a focused trigger paints a 3px `ring/50` ring at the
+        // slot radius (10px nova) around the trigger rect expanded by 1px.
+        // The base 8px radius is N7 (Phase 4); this test pins the
+        // implemented nova geometry.
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 3];
+        h.run(|ui| triggers_ui(ui, "ring", &mut rects));
+        let state_id = Id::unique("accordion_test_ui").with("ring");
+        let trigger = |i: usize| state_id.with("trigger").with(i);
+        h.focus(trigger(0));
+        // Settle two frames so the focused trigger has installed its
+        // focus lock filter (spec §7.1 note).
+        h.run(|ui| triggers_ui(ui, "ring", &mut [Rect::ZERO; 3]));
+        let out = h.run_out(|ui| triggers_ui(ui, "ring", &mut [Rect::ZERO; 3]));
+
+        let expected_rect = rects[0].expand2(Vec2::new(1.0, 1.0));
+        let mut found = false;
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rs) = &clipped.shape {
+                if rs.stroke.width == 3.0 {
+                    assert_eq!(rs.corner_radius.nw, 10, "nova ring radius is 10px");
+                    assert_eq!(rs.corner_radius.ne, 10);
+                    assert_eq!(rs.corner_radius.sw, 10);
+                    assert_eq!(rs.corner_radius.se, 10);
+                    assert!(
+                        (rs.rect.min - expected_rect.min).length() < 0.5
+                            && (rs.rect.max - expected_rect.max).length() < 0.5,
+                        "ring rect {} is the trigger rect expanded by 1px ({})",
+                        rs.rect,
+                        expected_rect
+                    );
+                    // `color_alpha(ring, 0.5)` on an opaque colour: alpha
+                    // (255 * 0.5 + 0.5) as u8 = 128.
+                    assert_eq!(
+                        rs.stroke.color.a(),
+                        128,
+                        "ring is ring/50, got alpha {}",
+                        rs.stroke.color.a()
+                    );
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "focused trigger paints a 3px focus ring");
     }
 
     #[test]
