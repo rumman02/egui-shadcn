@@ -26,6 +26,8 @@
 //! });
 //! ```
 
+use std::collections::HashMap;
+
 use crate::components::avatar::{cover_uv, resolve_texture};
 use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, FontId, ImageSource, InnerResponse, Margin, Pos2, Rect, Ui};
@@ -192,6 +194,89 @@ struct HeaderCtx {
     left: f32,
     top: f32,
     right: f32,
+    /// Set by [`CardAction::show`] when an action runs inside this header
+    /// this frame (CRD-01: lets [`CardHeader::show`] drop a stale recorded
+    /// action width when the action stops appearing).
+    action_seen: bool,
+}
+
+/// The grid column gap between the header's `1fr` text column and the
+/// action column (§3.3, CRD-01). With the demo's 32px icon action this
+/// gives the defect file's `1fr` targets: 312−32−8=272px base,
+/// 328−32−8=288px nova.
+const ACTION_COLUMN_GAP: f32 = 8.0;
+
+/// Temp-data key for the recorded action widths (CRD-01).
+fn action_widths_id() -> egui::Id {
+    egui::Id::unique("shadcn_card_action_widths")
+}
+
+/// The action width recorded on the previous frame for the header spanning
+/// `left..right`, if any. Keyed by the header's horizontal span, which is
+/// stable under vertical scrolling. Limitation: two headers with the same
+/// horizontal span share an entry (last writer wins); the common case —
+/// same-width icon actions — is unaffected.
+fn recorded_action_width(ui: &Ui, left: f32, right: f32) -> Option<f32> {
+    ui.ctx()
+        .data_mut(|d| d.get_temp::<HashMap<(u32, u32), f32>>(action_widths_id()))
+        .and_then(|m| m.get(&(left.to_bits(), right.to_bits())).copied())
+}
+
+fn record_action_width(ui: &Ui, left: f32, right: f32, width: f32) {
+    let key = (left.to_bits(), right.to_bits());
+    let mut map: HashMap<(u32, u32), f32> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(action_widths_id()))
+        .unwrap_or_default();
+    map.insert(key, width);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(action_widths_id(), map));
+}
+
+fn remove_action_width(ui: &Ui, left: f32, right: f32) {
+    let key = (left.to_bits(), right.to_bits());
+    let mut map: HashMap<(u32, u32), f32> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(action_widths_id()))
+        .unwrap_or_default();
+    map.remove(&key);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(action_widths_id(), map));
+}
+
+/// Marks the innermost header as having run an action this frame (CRD-01).
+fn mark_action_seen(ui: &Ui) {
+    let mut stack: Vec<HeaderCtx> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(header_stack_id()))
+        .unwrap_or_default();
+    if let Some(top) = stack.last_mut() {
+        top.action_seen = true;
+    }
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(header_stack_id(), stack));
+}
+
+/// The wrap width for header text slots (title, description): the `1fr`
+/// column of the header grid — the header content width minus the action
+/// column (the action's measured width plus the column gap) when an action
+/// is present, else the full header content width (§3.3, CRD-01).
+///
+/// The action is laid out after the title, so its width is only known from
+/// the previous frame (recorded by [`CardAction::show`]); on the first
+/// frame with an action the text wraps full-width and settles from frame 2
+/// — the same one-frame-settle class as alert D7.
+fn header_text_wrap_width(ui: &Ui) -> f32 {
+    match current_header(ui) {
+        Some(ctx) => {
+            let content_width = ctx.right - ctx.left;
+            match recorded_action_width(ui, ctx.left, ctx.right) {
+                Some(w) => content_width - w - ACTION_COLUMN_GAP,
+                None => content_width,
+            }
+        }
+        None => ui.available_width(),
+    }
 }
 
 fn header_stack_id() -> egui::Id {
@@ -411,7 +496,10 @@ fn paint_image_top(ui: &mut Ui, source: &ImageSource<'_>, radius: u8, rounded: b
 /// `CardHeader` — the `gap-2 px-6` (nova `gap-1 px-4`) title block.
 ///
 /// Children flow vertically; a [`CardAction`] shown inside is lifted to the
-/// header's top-right corner, like the source's two-column grid.
+/// header's top-right corner, like the source's two-column grid. The title
+/// and description wrap within the `1fr` column when an action is present
+/// (§3.3, CRD-01); the action's width is measured on the previous frame, so
+/// the reservation settles from frame 2.
 #[derive(Clone, Debug, Default)]
 pub struct CardHeader {
     id_salt: Option<String>,
@@ -453,6 +541,7 @@ impl CardHeader {
                         left: cursor.left(),
                         top: cursor.top(),
                         right: cursor.left() + ui.available_width(),
+                        action_seen: false,
                     },
                 );
                 let ret = ui
@@ -461,6 +550,14 @@ impl CardHeader {
                         content(ui)
                     })
                     .inner;
+                // CRD-01: if no action ran in this header, drop any width
+                // recorded on a previous frame, so a conditionally-removed
+                // action stops reserving its column from the next frame.
+                if let Some(ctx) = current_header(ui) {
+                    if !ctx.action_seen {
+                        remove_action_width(ui, ctx.left, ctx.right);
+                    }
+                }
                 pop_header(ui);
                 ret
             });
@@ -492,10 +589,10 @@ impl CardTitle {
         // nova (§2.3) — the embedded Inter faces, wired here.
         let font = card_title_font(theme.style, size);
         // The line height is set explicitly (`leading-none` /
-        // `leading-snug`); the title wraps at the header content width
-        // (N2 — no `whitespace-nowrap` in either recipe). With an action
-        // present the wrap width is the full header width, not the `1fr`
-        // column — the D1 overlay limit, documented in the module docs.
+        // `leading-snug`); the title wraps within the `1fr` column when an
+        // action is present (N2, §3.3, CRD-01 — see
+        // [`header_text_wrap_width`]) and at the full header content width
+        // otherwise (no `whitespace-nowrap` in either recipe).
         let format = egui::TextFormat {
             font_id: font,
             color: p.card_foreground,
@@ -504,7 +601,7 @@ impl CardTitle {
         };
         let mut job = egui::text::LayoutJob::default();
         job.append(&self.text, 0.0, format);
-        job.wrap.max_width = ui.available_width().max(1.0);
+        job.wrap.max_width = header_text_wrap_width(ui).max(1.0);
         let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
         if ui.is_rect_visible(rect) {
@@ -543,7 +640,9 @@ impl CardDescription {
         };
         let mut job = egui::text::LayoutJob::default();
         job.append(&self.text, 0.0, format);
-        job.wrap.max_width = ui.available_width().max(1.0);
+        // Like the title, the description occupies the `1fr` column when an
+        // action is present (§3.3, CRD-01 — same reservation).
+        job.wrap.max_width = header_text_wrap_width(ui).max(1.0);
         let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
         if ui.is_rect_visible(rect) {
@@ -598,6 +697,16 @@ impl CardAction {
                         .layout(egui::Layout::right_to_left(egui::Align::Min)),
                 );
                 let ret = content(&mut child);
+                // CRD-01: record the action's measured width so the title
+                // and description can reserve the `1fr` column on the next
+                // frame (§3.3). `min_rect` is the union of the content's
+                // allocations (the seed is zero-size), so its width is the
+                // action column's width. An empty action records nothing.
+                let action_width = child.min_rect().width();
+                if action_width > 0.0 {
+                    record_action_width(ui, ctx.left, ctx.right, action_width);
+                }
+                mark_action_seen(ui);
                 let response = child.response();
                 InnerResponse::new(ret, response)
             }
@@ -918,6 +1027,130 @@ mod tests {
             );
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn title_wraps_within_1fr_column_when_action_present() {
+        // CRD-01 / §3.3: with a 32px action in a 360px card, the title and
+        // description wrap within the `1fr` column (272px base / 288px
+        // nova), not the full header width. The action is laid out after
+        // the text, so its width is only known from the previous frame —
+        // the reservation settles from frame 2 (same one-frame-settle
+        // class as alert D7).
+        let title = "A very long card title that must wrap across several lines inside the header column while the action stays pinned to the top-right corner";
+        let desc = "A long description that also wraps within the header column when an action is present and must not run underneath it.";
+        for (style, one_fr) in [(Style::Vega, 272.0), (Style::Nova, 288.0)] {
+            let ctx = egui::Context::default();
+            Preset::default()
+                .with_style(style)
+                .build(Mode::Light)
+                .install(&ctx);
+            // Frame 1 records the action width; frame 2 applies the
+            // reservation.
+            let mut frames: Vec<(Rect, Rect, Rect)> = Vec::new();
+            for _ in 0..2 {
+                let title_rect = std::cell::Cell::new(Rect::NOTHING);
+                let desc_rect = std::cell::Cell::new(Rect::NOTHING);
+                let action_rect = std::cell::Cell::new(Rect::NOTHING);
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::unique("card_1fr_test"),
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(360.0, 600.0))),
+                    );
+                    Card::new().show(ui, |ui| {
+                        CardHeader::new().show(ui, |ui| {
+                            title_rect.set(CardTitle::new(title).show(ui).rect);
+                            desc_rect.set(CardDescription::new(desc).show(ui).rect);
+                            CardAction::new().show(ui, |ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(32.0, 32.0),
+                                    egui::Sense::hover(),
+                                );
+                                action_rect.set(rect);
+                            });
+                        });
+                    });
+                });
+                out.textures_delta.clear();
+                frames.push((title_rect.get(), desc_rect.get(), action_rect.get()));
+            }
+            let (t1, d1, _) = frames[0];
+            let (t2, d2, a2) = frames[1];
+            // Frame 1: no recorded width yet — the text wraps full-width
+            // (the one-frame settle).
+            assert!(
+                t1.width() > one_fr + 0.5,
+                "frame 1 title wraps full-width ({style:?}): {t1:?}"
+            );
+            assert!(
+                d1.width() > one_fr + 0.5,
+                "frame 1 description wraps full-width ({style:?}): {d1:?}"
+            );
+            // Frame 2: both text slots wrap within the `1fr` column and
+            // the title clears the action.
+            assert!(
+                t2.width() <= one_fr + 0.5,
+                "frame 2 title width ({style:?}): {t2:?} (1fr {one_fr})"
+            );
+            assert!(
+                d2.width() <= one_fr + 0.5,
+                "frame 2 description width ({style:?}): {d2:?} (1fr {one_fr})"
+            );
+            assert!(
+                t2.right() <= a2.left() + 0.5,
+                "title must clear the action ({style:?}): title {t2:?}, action {a2:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_removal_frees_1fr_column() {
+        // CRD-01: a conditionally-removed action stops reserving its
+        // column — the reservation reflects the previous frame's action
+        // presence in both directions.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx); // nova default
+        let title = "A very long card title that must wrap across several lines inside the header column while the action stays pinned to the top-right corner";
+        // Frames 1–2 with the action, frames 3–4 without it.
+        let mut widths = Vec::new();
+        for frame in 0..4 {
+            let with_action = frame < 2;
+            let title_rect = std::cell::Cell::new(Rect::NOTHING);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("card_1fr_removal_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(360.0, 600.0))),
+                );
+                Card::new().show(ui, |ui| {
+                    CardHeader::new().show(ui, |ui| {
+                        title_rect.set(CardTitle::new(title).show(ui).rect);
+                        if with_action {
+                            CardAction::new().show(ui, |ui| {
+                                ui.allocate_exact_size(Vec2::new(32.0, 32.0), egui::Sense::hover());
+                            });
+                        }
+                    });
+                });
+            });
+            out.textures_delta.clear();
+            widths.push(title_rect.get().width());
+        }
+        // Frame 2: reserved (288px nova `1fr`); frame 4: full-width again
+        // after the removal settles.
+        assert!(
+            widths[1] <= 288.0 + 0.5,
+            "frame 2 title width: {}",
+            widths[1]
+        );
+        assert!(
+            widths[3] > 288.0 + 0.5,
+            "frame 4 title width after removal: {}",
+            widths[3]
+        );
     }
 
     #[test]
