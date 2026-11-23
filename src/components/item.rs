@@ -653,6 +653,15 @@ impl Item {
                 }
                 .with_main_wrap(true);
                 ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 0.0), row_layout, |ui| {
+                    // ITM-02: the `Frame` sizes to its content, so without
+                    // this the item sizes to content width. The source is
+                    // block-level (`ItemGroup` is `flex flex-col`,
+                    // `align-items: stretch`), so the item must stretch to
+                    // the available width. `set_min_width` only expands
+                    // the row's min_rect (it ignores wrap/justify), so the
+                    // wrapping bookkeeping `ItemContent` relies on
+                    // (`available_rect_before_wrap`) is unaffected.
+                    ui.set_min_width(ui.available_width());
                     ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
                     content(ui)
                 })
@@ -1289,6 +1298,11 @@ impl ItemGroup {
             },
         );
         let inner = ui.vertical(|ui| {
+            // ITM-02: the group is `flex flex-col` (block-level), so it
+            // stretches to the available width instead of sizing to its
+            // widest item. The items inside stretch to the group's width
+            // via the `Item::show` min-width (see there).
+            ui.set_min_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = g;
             content(ui)
         });
@@ -2145,6 +2159,110 @@ mod tests {
         })
         .1;
         check("vega title-only", h, 53.25);
+    }
+
+    #[test]
+    fn items_stretch_to_available_width() {
+        // ITM-02: items are block-level (`ItemGroup` is `flex flex-col`,
+        // `align-items: stretch`), so every item stretches to the
+        // available width instead of sizing to its content. Pre-fix the
+        // frames measured 24–44% of the column (§2 Alpha/Beta ~50px in a
+        // 1019px column). The response rect is the frame's outer rect
+        // (border to border), so in a 400px root it must be 400 wide.
+        let check_w = |name: &str, got: f32, want: f32| {
+            assert!(
+                (got - want).abs() < 0.5,
+                "{name}: frame width must stretch to {want}, got {got}"
+            );
+        };
+
+        // Standalone item, icon + description.
+        let (w, h) = render_twice(400.0, 600.0, |ui| {
+            let r = Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("w_icon_desc")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect;
+            (r.width(), r.height())
+        })
+        .1;
+        check_w("standalone icon+desc", w, 400.0);
+        // The ITM-01 height model still holds at full width (the short
+        // title/description do not re-wrap).
+        assert!(
+            (h - 66.25).abs() < 0.5,
+            "standalone icon+desc height must stay the spec model 66.25, got {h}"
+        );
+
+        // Title-only tiny item (§2 Alpha/Beta shape): was ~50px wide.
+        let w = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("w_title_only")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Alpha").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .width()
+        })
+        .1;
+        check_w("title-only", w, 400.0);
+
+        // Item inside a group: the group stretches too, so the item gets
+        // the full root width.
+        let w = render_twice(400.0, 600.0, |ui| {
+            ItemGroup::new()
+                .id_salt("w_group")
+                .show(ui, |ui| {
+                    Item::new()
+                        .variant(ItemVariant::Outline)
+                        .id_salt("w_grouped")
+                        .show(ui, |ui| {
+                            ItemContent::new().show(ui, |ui| {
+                                ItemTitle::new("Ada Lovelace").show(ui);
+                            });
+                        })
+                        .response
+                        .rect
+                        .width()
+                })
+                .inner
+        })
+        .1;
+        check_w("grouped item", w, 400.0);
+
+        // Narrow scope (§4 shape): the item stretches to the scope's
+        // width, not the page width.
+        let w = render_twice(400.0, 600.0, |ui| {
+            let mut w = 0.0;
+            ui.allocate_ui(Vec2::new(360.0, 600.0), |ui| {
+                w = Item::new()
+                    .variant(ItemVariant::Outline)
+                    .id_salt("w_scoped")
+                    .show(ui, |ui| {
+                        ItemContent::new().show(ui, |ui| {
+                            ItemTitle::new("Ada Lovelace").show(ui);
+                            ItemDescription::new("Engineer").show(ui);
+                        });
+                    })
+                    .response
+                    .rect
+                    .width();
+            });
+            w
+        })
+        .1;
+        check_w("scoped item", w, 360.0);
     }
 
     #[test]
