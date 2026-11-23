@@ -21,9 +21,9 @@
 //! - Progress is non-interactive: no hover, focus, pressed, disabled, or
 //!   invalid recipe, and it takes no Tab stop (spec §7).
 //! - `transition-all` is 150ms with the `cubic-bezier(0.4, 0, 0.2, 1)` curve;
-//!   the current animation drives the fill through egui's
-//!   `animate_value_with_time`, which is LINEAR in time — the linear-vs-bezier
-//!   difference is an S7 verification item, not spec (spec §6).
+//!   the fill animates through the shared `animate_value_eased` helper,
+//!   which applies that curve on top of egui's (linear)
+//!   `animate_value_with_time` (PRG-01, spec §6).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -149,16 +149,16 @@ impl Progress {
         painter.rect_filled(rect, radius, track_color(&p, theme.style));
 
         // `transition-all` on the indicator: animate the fill width over
-        // 150ms (`Duration::Default`). The spec requires the
-        // `cubic-bezier(0.4, 0, 0.2, 1)` curve, but `animate_value_with_time`
-        // is LINEAR in time — the difference is an S7 verification item, not
-        // a spec change (spec §6).
+        // 150ms (`Duration::Default`) with the spec's
+        // `cubic-bezier(0.4, 0, 0.2, 1)` curve (`Easing::EaseInOut`),
+        // applied by the shared `animate_value_eased` helper on top of
+        // egui's linear `animate_value_with_time` (PRG-01, spec §6).
         let target = fill_fraction(self.value) * track.x;
-        let animated = ui.ctx().animate_value_with_time(
-            id,
-            target,
-            crate::utils::animation::Duration::Default.secs(),
+        let spec = crate::utils::animation::TransitionSpec::new(
+            crate::utils::animation::Duration::Default,
+            crate::utils::animation::Easing::EaseInOut,
         );
+        let animated = crate::utils::animation::animate_value_eased(ui.ctx(), id, target, spec);
         if animated > 0.0 {
             let fill_w = animated.min(track.x);
             let fill_rect = egui::Rect::from_min_size(rect.min, Vec2::new(fill_w, track.y));
@@ -265,5 +265,63 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// Width of the widest rect painted in `fill` in one pass, i.e. the
+    /// progress indicator's fill width (the track paints a different
+    /// colour: `bg-primary/20` or `bg-muted`).
+    fn painted_fill_width(out: &egui::FullOutput, fill: egui::Color32) -> f32 {
+        let mut best = 0.0f32;
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rect) = &clipped.shape {
+                if rect.fill == fill {
+                    best = best.max(rect.rect.width());
+                }
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn fill_animates_with_bezier_curve() {
+        // PRG-01: the fill must follow cubic-bezier(0.4, 0, 0.2, 1) over
+        // 150ms. At the mid-flight sample (t = 0.075, raw animator
+        // progress 0.5556) the eased fill is 76.74px vs 71.11px linear
+        // on a 200px track, so the band (73.0, 80.0) discriminates the
+        // curve from linear with margin on both sides; the settled
+        // endpoints are exact. (Pre-fix this test fails: the linear fill
+        // measures 71.11px at the mid-flight sample, below the band.)
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let primary = palette(Mode::Light).primary;
+        // The root Ui's id is stable across passes, so the animation id
+        // (derived from it) is stable too.
+        let fill_at = |ctx: &egui::Context, time: f64, value: f32| -> f32 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    Progress::new(value).width(200.0).show(ui);
+                },
+            );
+            let width = painted_fill_width(&out, primary);
+            out.textures_delta.clear();
+            width
+        };
+        // Mount settled at 30, flip to 40 at t = 0.0. The settled fills
+        // are computed the same way the component does — f32(0.3) * 200
+        // is 60.000004, not exactly 60.0, so compare with an epsilon.
+        let fill30 = fill_fraction(30.0) * 200.0;
+        let fill40 = fill_fraction(40.0) * 200.0;
+        assert!((fill_at(&ctx, 0.0, 30.0) - fill30).abs() < 1e-4);
+        assert!((fill_at(&ctx, 0.0, 40.0) - fill30).abs() < 1e-4);
+        // Mid-flight: ahead of the linear midpoint (71.11px), below the
+        // settled 80px.
+        let mid = fill_at(&ctx, 0.075, 40.0);
+        assert!(mid > 73.0 && mid < 80.0, "mid-flight fill width = {mid}");
+        // Settled: lands exactly on the 40% fill.
+        assert!((fill_at(&ctx, 0.30, 40.0) - fill40).abs() < 1e-4);
     }
 }

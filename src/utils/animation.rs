@@ -513,6 +513,97 @@ pub fn transition_color_to(
     }
 }
 
+/// Per-slot state for [`animate_value_eased`], kept in the context's temp
+/// data under the caller's `id`. Mirrors [`EndpointColorState`], but for a
+/// scalar value instead of a colour.
+#[derive(Clone, Copy, Debug)]
+struct EndpointValueState {
+    /// Value the current leg started from: the displayed value at the
+    /// moment the target last changed.
+    from: f32,
+    /// Current target value.
+    to: f32,
+    /// Animator direction for the current leg: the drive target is `1.0`
+    /// when `flip` is true, `0.0` when false. Toggles on every target
+    /// change so the animator re-targets and runs a fresh leg.
+    flip: bool,
+    /// Raw animator value when the current leg began. The leg's linear
+    /// progress is `(raw - start) / (target - start)`.
+    start: f32,
+}
+
+/// Animates a scalar value toward a *changing* target, with the spec's
+/// easing applied to the leg progress — e.g. a progress-bar fill width.
+///
+/// This is the value analogue of [`transition_color_to`]: egui's
+/// `Context::animate_value_with_time` is LINEAR in time, so this helper
+/// drives it between 0.0 and 1.0 (flipping direction on every target
+/// change) and maps the leg's linear progress through `spec.easing`
+/// before interpolating `from` → `to`. The first call for an `id`
+/// returns `target` settled (no fade-in from a wrong state), and a
+/// target change mid-flight restarts the leg from the displayed value —
+/// never a snap — taking the full `spec` duration from that value.
+/// Completion lands exactly on the target.
+///
+/// Call it once per widget per frame with a stable `id`, and keep `spec`
+/// stable per `id` across frames (changing it mid-flight re-times the
+/// running leg). Repaints are requested only while the transition runs
+/// (inherited from egui's animator, exactly as for
+/// [`transition_progress`]).
+pub fn animate_value_eased(ctx: &Context, id: Id, target: f32, spec: TransitionSpec) -> f32 {
+    let duration = spec.duration_secs.max(0.0);
+    let mut state = ctx
+        .data_mut(|data| data.get_temp::<EndpointValueState>(id))
+        .unwrap_or(EndpointValueState {
+            from: target,
+            to: target,
+            flip: false,
+            start: 0.0,
+        });
+    // A changed target starts a new leg in the opposite animator
+    // direction. The animator re-targets from its current value and
+    // returns that value on the flip frame, so a single call serves both
+    // the old leg's displayed value and the new leg's start value.
+    let changed = target != state.to;
+    let flip = if changed { !state.flip } else { state.flip };
+    let drive_target = if flip { 1.0 } else { 0.0 };
+    let raw = ctx.animate_value_with_time(id, drive_target, duration);
+    if changed {
+        let old_target = if state.flip { 1.0 } else { 0.0 };
+        let displayed = state.from
+            + (state.to - state.from)
+                * spec
+                    .easing
+                    .apply(leg_progress(raw, state.start, old_target));
+        state = EndpointValueState {
+            from: displayed,
+            to: target,
+            flip,
+            start: raw,
+        };
+    }
+    // The leg's progress is the animator's linear traversal from its
+    // start value to its target, with the spec's easing applied fresh —
+    // the same curve a settled-start leg runs, including mid-flight
+    // re-targets. (Deriving progress from an eased value instead would
+    // jump on mid-flight re-targets, for the same reason as in
+    // [`transition_color_to`].)
+    let progress = leg_progress(raw, state.start, drive_target);
+    let eased = spec.easing.apply(progress);
+    // Endpoints are exact: the interpolation `from + (to - from) * 1.0`
+    // is not guaranteed to round back to `to` in f32, so snap at the
+    // ends (mirroring [`mix_oklab`]'s endpoint guards).
+    let value = if eased >= 1.0 {
+        state.to
+    } else if eased <= 0.0 {
+        state.from
+    } else {
+        state.from + (state.to - state.from) * eased
+    };
+    ctx.data_mut(|data| data.insert_temp(id, state));
+    value
+}
+
 /// Mixes two [`egui::Color32`] values at `t` (0.0..1.0, clamped) in the
 /// OKLab perceptual color space, with alpha interpolated linearly.
 ///
@@ -1108,5 +1199,98 @@ mod tests {
         });
         assert_eq!(still.color, egui::Color32::RED);
         assert!(!still.animating);
+    }
+
+    #[test]
+    fn animate_value_eased_first_call_is_settled_at_target() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::default();
+        let id = Id::unique("eased_first");
+        let first = run_at(&ctx, 0.0, || animate_value_eased(&ctx, id, 42.0, spec));
+        assert_eq!(first, 42.0);
+        // Repeated calls with the same target stay settled, at later
+        // times too.
+        let again = run_at(&ctx, 5.0, || animate_value_eased(&ctx, id, 42.0, spec));
+        assert_eq!(again, 42.0);
+    }
+
+    #[test]
+    fn animate_value_eased_follows_bezier_not_linear() {
+        // PRG-01: the progress fill must run cubic-bezier(0.4, 0, 0.2, 1)
+        // (Easing::EaseInOut), not the linear ramp egui's animator
+        // produces on its own. The eased leg is compared against the
+        // linear `animate_value` on the same timeline, so animator
+        // timing cancels: at the same instant the eased value must be
+        // ahead of the linear one (EaseInOut(0.5) = 0.7756 vs 0.5).
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::new(Duration::Default, Easing::EaseInOut);
+        let eased_id = Id::unique("eased_curve");
+        let lin_id = Id::unique("eased_lin_ref");
+        // Mount both settled at 0.0, then flip both to 100.0 at t = 0.0.
+        run_at(&ctx, 0.0, || animate_value_eased(&ctx, eased_id, 0.0, spec));
+        run_at(&ctx, 0.0, || {
+            animate_value(&ctx, lin_id, 0.0, Duration::Default)
+        });
+        run_at(&ctx, 0.0, || {
+            animate_value_eased(&ctx, eased_id, 100.0, spec)
+        });
+        run_at(&ctx, 0.0, || {
+            animate_value(&ctx, lin_id, 100.0, Duration::Default)
+        });
+        // Mid-flight (half of 150ms): the eased value leads linear by
+        // far more than float noise (the gap is >= 6.7 even at the low
+        // end of the animator's mid-flight progress range).
+        let lin = run_at(&ctx, 0.075, || {
+            animate_value(&ctx, lin_id, 100.0, Duration::Default)
+        });
+        let eased = run_at(&ctx, 0.075, || {
+            animate_value_eased(&ctx, eased_id, 100.0, spec)
+        });
+        assert!(lin > 0.0 && lin < 100.0, "linear mid = {lin}");
+        assert!(
+            eased > lin + 1.0,
+            "eased {eased} should lead linear {lin} by more than 1.0"
+        );
+        assert!(eased < 100.0, "eased mid must not overshoot: {eased}");
+        // Past the duration: lands exactly on the target.
+        let done = run_at(&ctx, 0.30, || {
+            animate_value_eased(&ctx, eased_id, 100.0, spec)
+        });
+        assert_eq!(done, 100.0);
+    }
+
+    #[test]
+    fn animate_value_eased_midflight_retarget_continues_from_displayed() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::new(Duration::Default, Easing::Linear);
+        let id = Id::unique("eased_retarget");
+        run_at(&ctx, 0.0, || animate_value_eased(&ctx, id, 0.0, spec));
+        run_at(&ctx, 0.0, || animate_value_eased(&ctx, id, 100.0, spec));
+        // Mid-flight toward 100.0.
+        let mid = run_at(&ctx, 0.075, || animate_value_eased(&ctx, id, 100.0, spec));
+        assert!(mid > 0.0 && mid < 100.0, "mid = {mid}");
+        // Re-target to 50.0 at the same instant: the returned value is
+        // the displayed value, unchanged — no snap toward 100 or 50.
+        // This pins the re-target rule: restarting from the old target
+        // (100) instead of the displayed value fails this assertion.
+        let retarget = run_at(&ctx, 0.075, || animate_value_eased(&ctx, id, 50.0, spec));
+        assert_eq!(retarget, mid);
+        // The new leg runs from the displayed value: halfway through it
+        // the value is strictly between the displayed value and 50.
+        let leg_mid = run_at(&ctx, 0.15, || animate_value_eased(&ctx, id, 50.0, spec));
+        assert!(leg_mid != mid && leg_mid != 50.0, "leg_mid = {leg_mid}");
+        // Lands exactly on 50.
+        let done = run_at(&ctx, 0.30, || animate_value_eased(&ctx, id, 50.0, spec));
+        assert_eq!(done, 50.0);
+    }
+
+    #[test]
+    fn animate_value_eased_zero_duration_snaps() {
+        let ctx = egui::Context::default();
+        let spec = TransitionSpec::secs(0.0, Easing::EaseInOut);
+        let id = Id::unique("eased_zero");
+        run_at(&ctx, 0.0, || animate_value_eased(&ctx, id, 0.0, spec));
+        let snapped = run_at(&ctx, 0.0, || animate_value_eased(&ctx, id, 100.0, spec));
+        assert_eq!(snapped, 100.0);
     }
 }
