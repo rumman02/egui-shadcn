@@ -149,6 +149,44 @@ fn read_frame_fractions(ctx: &egui::Context, id: Id) -> Option<Vec<f32>> {
     })
 }
 
+/// Per-handle drag convergence state (RSZ-04), persisted in temp data
+/// keyed by the handle's response id. `applied_px` is the total
+/// displacement already applied to the split in the current drag;
+/// `origin_px` is the pointer's axis position at the press, recovered
+/// on the first dragged frame as the pointer position minus
+/// `total_drag_delta()` — it lets the release frame converge on the
+/// final pointer position even though `total_drag_delta()` is
+/// unavailable once the button is up.
+#[derive(Clone, Copy, Debug, Default)]
+struct DragConverge {
+    applied_px: f32,
+    origin_px: Option<f32>,
+}
+
+fn drag_states_id() -> Id {
+    Id::unique("shadcn_resizable_drag_states")
+}
+
+fn read_drag_state(ctx: &egui::Context, id: Id) -> DragConverge {
+    ctx.data_mut(|d| {
+        d.get_temp::<Vec<(Id, DragConverge)>>(drag_states_id())
+            .and_then(|all| all.into_iter().find(|(i, _)| *i == id).map(|(_, s)| s))
+            .unwrap_or_default()
+    })
+}
+
+fn write_drag_state(ctx: &egui::Context, id: Id, state: DragConverge) {
+    ctx.data_mut(|d| {
+        let mut all: Vec<(Id, DragConverge)> = d.get_temp(drag_states_id()).unwrap_or_default();
+        if let Some(slot) = all.iter_mut().find(|(i, _)| *i == id) {
+            slot.1 = state;
+        } else {
+            all.push((id, state));
+        }
+        d.insert_temp(drag_states_id(), all);
+    });
+}
+
 /// Group context shared with panels and handles during layout.
 #[derive(Clone, Copy, Debug)]
 struct GroupCtx {
@@ -690,13 +728,43 @@ impl ResizableHandle {
             }
         }
 
-        // Pointer drag adjusts the split.
+        // Pointer drag adjusts the split. RSZ-04: per-frame
+        // `drag_delta()` is lossy — any frame in which `dragged()` is
+        // false (notably the first frames after pointer-down, before
+        // egui's click-vs-drag decision) drops that frame's movement,
+        // and the widget never recovers it because it never applies an
+        // absolute position. Instead, apply the not-yet-applied part of
+        // the total drag displacement: `total_drag_delta()` is the
+        // pointer position minus the press origin, so once the
+        // decision is made it already includes the pre-decision
+        // movement, and the line converges on the pointer regardless
+        // of frame alignment. The already-applied total is tracked
+        // per handle below, so a clamp in one frame does not lose the
+        // remainder — the next frame's increment still carries it.
+        let ctx = ui.ctx().clone();
+        let mut drag = read_drag_state(&ctx, response.id);
+        let pointer_axis =
+            response
+                .interact_pointer_pos()
+                .map(|p| if horizontal_group { p.x } else { p.y });
         let dragged_px = if response.dragged() {
-            let delta = response.drag_delta();
-            if horizontal_group {
-                delta.x
-            } else {
-                delta.y
+            match (response.total_drag_delta(), pointer_axis) {
+                (Some(total), Some(pos)) => {
+                    let total_px = if horizontal_group { total.x } else { total.y };
+                    if drag.origin_px.is_none() {
+                        drag.origin_px = Some(pos - total_px);
+                    }
+                    total_px - drag.applied_px
+                }
+                _ => 0.0,
+            }
+        } else if response.drag_stopped() {
+            // The button came up this frame: `total_drag_delta()` is
+            // no longer available, so converge from the stored press
+            // origin and the release position.
+            match (drag.origin_px, pointer_axis) {
+                (Some(origin), Some(pos)) => (pos - origin) - drag.applied_px,
+                _ => 0.0,
             }
         } else {
             0.0
@@ -758,13 +826,33 @@ impl ResizableHandle {
             0.0
         };
 
-        let delta_px = dragged_px + key_px;
-        if delta_px != 0.0 && st.total_panels >= 2 {
-            let d = delta_px / st.panels_px().max(1.0);
+        // Drag and arrow-key steps are applied separately so the drag
+        // bookkeeping above credits exactly the px the drag applied
+        // (a clamp binds the same either way: the two sequential
+        // `adjust()` calls reach the same limit as one combined call).
+        let mut repaint = false;
+        if dragged_px != 0.0 && st.total_panels >= 2 {
+            let d = dragged_px / st.panels_px().max(1.0);
             let applied = adjust(ui, group.id, idx, d) * st.panels_px();
-            if applied.abs() > 0.01 {
-                ui.ctx().request_repaint();
-            }
+            drag.applied_px += applied;
+            repaint |= applied.abs() > 0.01;
+        }
+        if key_px != 0.0 && st.total_panels >= 2 {
+            let d = key_px / st.panels_px().max(1.0);
+            let applied = adjust(ui, group.id, idx, d) * st.panels_px();
+            repaint |= applied.abs() > 0.01;
+        }
+        if repaint {
+            ui.ctx().request_repaint();
+        }
+
+        // Persist the convergence state for the next frame of this
+        // drag; any frame that is neither dragging nor the release
+        // frame resets it, so the next drag starts from zero.
+        if response.dragged() || response.drag_stopped() {
+            write_drag_state(&ctx, response.id, drag);
+        } else {
+            write_drag_state(&ctx, response.id, DragConverge::default());
         }
 
         response
@@ -1536,5 +1624,189 @@ mod tests {
         let (l1, l2) = drag_check_partner(&ctx, l2, l2 + 20.0, l1, "h2");
         assert!((l1 - 146.5).abs() < 1.0, "h2+20 l1: got {l1:.1}");
         assert!((l2 - 313.5).abs() < 1.0, "h2+20 l2: got {l2:.1}");
+    }
+
+    #[test]
+    fn restoring_drag_converges_to_pointer() {
+        // RSZ-04: restoring drags end 2-5px short of the pointer because
+        // per-frame `drag_delta()` drops the movement from frames in
+        // which `dragged()` is false (before egui's click-vs-drag
+        // decision). Replays the exact S7 R1 sequence (§3 group, 5px
+        // steps — the step size at which the RSZ-03 diagnostic saw the
+        // restoring drag settle 5px short, 151.5 instead of 146.5) and
+        // asserts every settled endpoint is exact, the dragged line
+        // moves monotonically toward the pointer in every frame, and
+        // the partner never moves.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let ui_id = egui::Id::new("rsz04_converge_test");
+
+        let render = |ctx: &egui::Context, input: egui::RawInput| -> (f32, f32) {
+            let mut h1 = f32::NAN;
+            let mut h2 = f32::NAN;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    ui_id,
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                ResizablePanelGroup::new()
+                    .id_salt("rsz04")
+                    .length(440.0)
+                    .show(ui, |ui| {
+                        ResizablePanel::new().min(0.15).show(ui, |ui| {
+                            ui.label("Sidebar");
+                        });
+                        h1 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().max(0.4).show(ui, |ui| {
+                            ui.label("Content (max 40%)");
+                        });
+                        h2 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().min(0.2).show(ui, |ui| {
+                            ui.label("Details");
+                        });
+                    });
+            });
+            out.textures_delta.clear();
+            (h1, h2)
+        };
+
+        let moved = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerMoved(pos));
+            input
+        };
+        let press = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+        let release = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+        // One frame that both moves the pointer and releases the
+        // button: the release-frame convergence path (origin +
+        // release position) must apply the final step, since
+        // `total_drag_delta()` is unavailable once the button is up.
+        let move_and_release = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerMoved(pos));
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+
+        // Drags the handle currently at `x0` to `x1` in 5px steps (one
+        // frame per step) and asserts the dragged line moves
+        // monotonically toward the pointer, stays in band, and settles
+        // exactly at `x1`, while the partner never moves. Returns the
+        // settled line positions. 5px steps are deliberate: a 5px
+        // first step is below egui's 6px `max_click_dist`, so the
+        // click-vs-drag decision has not been made yet and that
+        // step's delta is the one RSZ-04 loses.
+        let mut drag_check_converge = |ctx: &egui::Context,
+                                       x0: f32,
+                                       x1: f32,
+                                       other_settled: f32,
+                                       which: &str|
+         -> (f32, f32) {
+            let y = 10.0;
+            let steps = ((x1 - x0).abs() / 5.0).round() as usize;
+            let (mut a, mut b) = render(ctx, moved(Pos2::new(x0, y)));
+            assert!(
+                ((if which == "h1" { b } else { a }) - other_settled).abs() < 0.01,
+                "press frame: partner moved before the drag"
+            );
+            let _ = render(ctx, press(Pos2::new(x0, y)));
+            let lo = x0.min(x1);
+            let hi = x0.max(x1);
+            let mut prev = x0;
+            for i in 1..=steps {
+                let x = x0 + (x1 - x0) * (i as f32 / steps as f32);
+                (a, b) = render(ctx, moved(Pos2::new(x, y)));
+                let (dragged, partner) = if which == "h1" { (a, b) } else { (b, a) };
+                assert!(
+                    (partner - other_settled).abs() < 0.01,
+                    "{which} drag step {i}: partner moved to {partner:.4}, settled {other_settled:.4}"
+                );
+                assert!(
+                    dragged >= lo - 0.01 && dragged <= hi + 0.01,
+                    "{which} drag step {i}: dragged line {dragged:.4} outside [{lo:.1}, {hi:.1}]"
+                );
+                if x1 > x0 {
+                    assert!(
+                        dragged >= prev - 0.01,
+                        "{which} drag step {i}: dragged line moved back {prev:.4} -> {dragged:.4}"
+                    );
+                } else {
+                    assert!(
+                        dragged <= prev + 0.01,
+                        "{which} drag step {i}: dragged line moved back {prev:.4} -> {dragged:.4}"
+                    );
+                }
+                prev = dragged;
+            }
+            let (a, b) = render(ctx, release(Pos2::new(x1, y)));
+            let (a, b) = render(ctx, egui::RawInput::default());
+            assert!(
+                ((if which == "h1" { a } else { b }) - x1).abs() < 0.01,
+                "{which} drag settled at {:.4}, expected {x1:.1}",
+                if which == "h1" { a } else { b }
+            );
+            (a, b)
+        };
+
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        assert!((l1 - 146.5).abs() < 1.0, "settled l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "settled l2: got {l2:.1}");
+
+        // h1 +50, then the restoring drag back: the S7 shortfall.
+        let (l1, l2) = drag_check_converge(&ctx, l1, l1 + 50.0, l2, "h1");
+        assert!((l1 - 196.5).abs() < 1.0, "h1+50 l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "h1+50 l2: got {l2:.1}");
+        let (l1, l2) = drag_check_converge(&ctx, l1, l1 - 50.0, l2, "h1");
+        assert!((l1 - 146.5).abs() < 1.0, "h1-50 l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "h1-50 l2: got {l2:.1}");
+
+        // h2 +25, then the restoring drag back.
+        let (l1, l2) = drag_check_converge(&ctx, l2, l2 + 25.0, l1, "h2");
+        assert!((l1 - 146.5).abs() < 1.0, "h2+25 l1: got {l1:.1}");
+        assert!((l2 - 318.5).abs() < 1.0, "h2+25 l2: got {l2:.1}");
+        let (l1, l2) = drag_check_converge(&ctx, l2, l2 - 25.0, l1, "h2");
+        assert!((l1 - 146.5).abs() < 1.0, "h2-25 l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "h2-25 l2: got {l2:.1}");
+
+        // Move-and-release in one frame: h1 from 146.5 to 196.5 in
+        // 5px steps, but the final step and the release share one
+        // frame, so the release-frame path must apply it.
+        let y = 10.0;
+        let _ = render(&ctx, moved(Pos2::new(l1, y)));
+        let _ = render(&ctx, press(Pos2::new(l1, y)));
+        for i in 1..=9 {
+            let x = l1 + 5.0 * i as f32;
+            let _ = render(&ctx, moved(Pos2::new(x, y)));
+        }
+        let (l1, l2) = render(&ctx, move_and_release(Pos2::new(l1 + 50.0, y)));
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        assert!((l1 - 196.5).abs() < 1.0, "move+release l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "move+release l2: got {l2:.1}");
     }
 }
