@@ -7997,6 +7997,14 @@ pub fn input_group_demo(ui: &mut egui::Ui) {
 }
 
 pub fn card_demo(ui: &mut egui::Ui) {
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("card_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
     ui.label("Default (display-only card)");
     ui.add_space(4.0);
     Card::new().show(ui, |ui| {
@@ -8014,10 +8022,16 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.ctx().data_mut(|d| d.insert_temp(store, name));
         });
         CardFooter::new().show(ui, |ui| {
-            Button::new("Create").show(ui);
-            Button::new("Cancel")
+            if Button::new("Create").show(ui).clicked() {
+                clicks += 1;
+            }
+            if Button::new("Cancel")
                 .variant(ButtonVariant::Outline)
-                .show(ui);
+                .show(ui)
+                .clicked()
+            {
+                clicks += 1;
+            }
         });
     });
 
@@ -8029,11 +8043,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
             CardTitle::new("Notifications").show(ui);
             CardDescription::new("Control how you receive updates.").show(ui);
             CardAction::new().show(ui, |ui| {
-                Button::new("")
+                if Button::new("")
                     .size(ButtonSize::IconSm)
                     .variant(ButtonVariant::Outline)
                     .icon_start(Icon::MoreHorizontal)
-                    .show(ui);
+                    .show(ui)
+                    .clicked()
+                {
+                    clicks += 1;
+                }
             });
         });
         CardContent::new().show(ui, |ui| {
@@ -8053,9 +8071,13 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.label("All resources will be removed immediately.");
         });
         CardFooter::new().show(ui, |ui| {
-            Button::new("Delete project")
+            if Button::new("Delete project")
                 .variant(ButtonVariant::Destructive)
-                .show(ui);
+                .show(ui)
+                .clicked()
+            {
+                clicks += 1;
+            }
         });
     });
 
@@ -8084,6 +8106,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.label("The media slot removes the card's top padding.");
         });
     });
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
+    ));
 }
 
 /// A generated gradient texture for the card demo's image slot (cached in
@@ -8116,6 +8147,14 @@ fn card_demo_texture(ui: &mut egui::Ui) -> egui::ImageSource<'static> {
 }
 
 pub fn alert_demo(ui: &mut egui::Ui) {
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("alert_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
     ui.label("Default (no icon)");
     ui.add_space(4.0);
     Alert::new().id_salt("alert_demo_plain").show(ui, |ui| {
@@ -8171,7 +8210,9 @@ pub fn alert_demo(ui: &mut egui::Ui) {
             AlertTitle::new("Token expiring").show(ui);
             AlertDescription::new("Your API token expires in 3 days.").show(ui);
             AlertAction::new().show(ui, |ui| {
-                Button::new("Renew").size(ButtonSize::Sm).show(ui);
+                if Button::new("Renew").size(ButtonSize::Sm).show(ui).clicked() {
+                    clicks += 1;
+                }
             });
         });
     ui.add_space(4.0);
@@ -8183,12 +8224,25 @@ pub fn alert_demo(ui: &mut egui::Ui) {
             AlertTitle::new("Storage quota exceeded").show(ui);
             AlertDescription::new("Delete some files to keep syncing.").show(ui);
             AlertAction::new().show(ui, |ui| {
-                Button::new("Free up space")
+                if Button::new("Free up space")
                     .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Destructive)
-                    .show(ui);
+                    .show(ui)
+                    .clicked()
+                {
+                    clicks += 1;
+                }
             });
         });
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
+    ));
 }
 
 pub fn avatar_demo(ui: &mut egui::Ui) {
@@ -8490,6 +8544,15 @@ pub fn empty_demo(ui: &mut egui::Ui) {
     ));
     ui.label("Honest notes: D1 — EmptyFooter (§5) is an invented slot, not exported by empty.tsx; kept as a documented extension pending the Expert Reviewer (prefer EmptyContent). D4 — the 48px padding in §2 is a manual override for md:p-12, not a media query: egui has no md breakpoint. OPEN-1 — the other 7 styles are not frozen here. OPEN-2 — cn() merge semantics are unknown. OPEN-3 — the dashed-border geometry (6px dash / 4px gap) is a reasonable rendering, not a frozen value. OPEN-4 — free-form media sizing follows the S1 contract (the box takes its content's size; the mb-2 8px sits below it). Nothing animates; no keys or Tab stops — the only interaction is the link hover in §3.");
 
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("empty_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
+
     ui.add_space(16.0);
     ui.label("§1 Default — 24px padding (p-6), icon media, actions");
     ui.add_space(4.0);
@@ -8523,6 +8586,12 @@ pub fn empty_demo(ui: &mut egui::Ui) {
                     let last = Button::new("Save search")
                         .variant(ButtonVariant::Outline)
                         .show(ui);
+                    if first.clicked() {
+                        clicks += 1;
+                    }
+                    if last.clicked() {
+                        clicks += 1;
+                    }
                     (first, last)
                 },
             );
@@ -8557,7 +8626,9 @@ pub fn empty_demo(ui: &mut egui::Ui) {
                 .width(240.0)
                 .show(ui);
             ui.ctx().data_mut(|d| d.insert_temp(store, name));
-            Button::new("Create project").show(ui);
+            if Button::new("Create project").show(ui).clicked() {
+                clicks += 1;
+            }
         });
     });
     ui.label(format!(
@@ -8583,7 +8654,9 @@ pub fn empty_demo(ui: &mut egui::Ui) {
                 .show(ui);
         });
         EmptyContent::new().show(ui, |ui| {
-            Button::new("Start a conversation").show(ui);
+            if Button::new("Start a conversation").show(ui).clicked() {
+                clicks += 1;
+            }
         });
     });
     ui.label(format!(
@@ -8639,13 +8712,24 @@ pub fn empty_demo(ui: &mut egui::Ui) {
                 .show(ui);
         });
         EmptyFooter::new().show(ui, |ui| {
-            Button::new("Compose message").show(ui);
+            if Button::new("Compose message").show(ui).clicked() {
+                clicks += 1;
+            }
         });
     });
     ui.label(format!(
         "measured: {:.1} x {:.1} px; footer is NOT exported by empty.tsx (D1) — prefer EmptyContent; the reviewer decides keep vs remove",
         footer_empty.response.rect.width(),
         footer_empty.response.rect.height(),
+    ));
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
     ));
 }
 
