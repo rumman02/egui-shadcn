@@ -676,6 +676,28 @@ impl Item {
             Sense::hover()
         };
         let response = ui.interact(inner.response.rect, id, sense);
+
+        // Native `<a>` behaviour (spec §7 + D4, ITM-03): a clicked
+        // anchor row holds keyboard focus afterwards, so Space/Enter
+        // then activate it. egui's `interact` does not move focus on
+        // pointer press, so request it explicitly on click — the
+        // pattern `Button` uses (`button.rs:1175-1177`). Requesting
+        // before painting lets `has_focus()` below see the focus on
+        // the click frame itself. Non-interactive items never take
+        // focus.
+        //
+        // Nested-button note: egui's click is exclusive — the hit
+        // test takes the last-registered widget on a tie, so the item
+        // (whose `interact` runs after its children) wins the click
+        // over a nested button, and the button's own
+        // `request_focus()` never runs. The item taking focus here
+        // therefore steals nothing from the button: before this fix a
+        // click on Launch left focus nowhere; now it focuses the row,
+        // and Space/Enter toggle it.
+        if self.interactive && response.clicked() {
+            response.request_focus();
+        }
+
         if ui.is_rect_visible(response.rect) && response.has_focus() {
             // `focus-visible:border-ring`: recolor the border, then the 3px
             // `ring-ring/50` outline.
@@ -2307,5 +2329,182 @@ mod tests {
             );
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn click_moves_keyboard_focus_to_the_item() {
+        // ITM-03: native `<a>` behaviour (spec §7 + D4) — a clicked
+        // anchor row holds keyboard focus afterwards, so Space/Enter
+        // then activate it. Pre-fix the click toggled the item but left
+        // focus nowhere, so Space/Return after a click did nothing.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("item_click_focus_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            )
+        };
+        let click_event = |pos: Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let build = |ui: &mut Ui| {
+            Item::new()
+                .interactive(true)
+                .id_salt("click_focus_item")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Launch checklist").show(ui);
+                    });
+                })
+                .response
+        };
+
+        // Frame 1: render, record rect + id; nothing focused yet.
+        let mut rect = Rect::NOTHING;
+        let mut id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let r = build(ui);
+            rect = r.rect;
+            id = r.id;
+        });
+        out.textures_delta.clear();
+        assert!(!ctx.memory(|m| m.has_focus(id)));
+
+        // Frames 2-3: press + release on the item = a click.
+        let center = rect.center();
+        let mut out = ctx.run_ui(click_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = build(ui);
+        });
+        out.textures_delta.clear();
+        let mut clicked = false;
+        let mut out = ctx.run_ui(click_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            clicked = build(ui).clicked();
+        });
+        out.textures_delta.clear();
+        assert!(clicked, "press + release must register a click");
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "click must move keyboard focus to the item"
+        );
+    }
+
+    #[test]
+    fn click_on_nested_button_focuses_the_item() {
+        // ITM-03, nested-button case: egui's click is exclusive and the
+        // hit test takes the last-registered widget on a tie, so the
+        // item (whose `interact` runs after its children) wins the
+        // click over a nested button — the button never receives the
+        // click, so its own `request_focus()` never runs. The item
+        // taking focus here therefore steals nothing from the button:
+        // before this fix a click on Launch left focus nowhere (S6: no
+        // ring, Tab wrapped to the theme-toggle); now it focuses the
+        // row, and Space/Enter toggle it.
+        let ctx = egui::Context::default();
+        Preset::default().install(&ctx);
+        let make_ui = |ctx: &egui::Context| {
+            egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("item_nested_button_focus_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            )
+        };
+        let click_event = |pos: Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        // Renders the §8 shape — interactive item with a nested Launch
+        // button — and returns (item response, button response).
+        let build = |ui: &mut Ui| {
+            let mut button = None;
+            let item = Item::new()
+                .interactive(true)
+                .id_salt("nested_button_item")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Launch checklist").show(ui);
+                    });
+                    ItemActions::new().show(ui, |ui| {
+                        button = Some(
+                            crate::components::button::Button::new("Launch")
+                                .size(crate::components::button::ButtonSize::Sm)
+                                .show(ui),
+                        );
+                    });
+                })
+                .response;
+            (item, button.expect("nested button rendered"))
+        };
+
+        // Frame 1: render, record rects + ids; nothing focused yet.
+        let mut item_rect = Rect::NOTHING;
+        let mut item_id = egui::Id::NULL;
+        let mut button_rect = Rect::NOTHING;
+        let mut button_id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let (item, button) = build(ui);
+            item_rect = item.rect;
+            item_id = item.id;
+            button_rect = button.rect;
+            button_id = button.id;
+        });
+        out.textures_delta.clear();
+        assert!(!ctx.memory(|m| m.has_focus(item_id)));
+        assert!(!ctx.memory(|m| m.has_focus(button_id)));
+        assert!(
+            button_rect.center() != item_rect.center(),
+            "the nested button must sit away from the item centre"
+        );
+
+        // Frames 2-3: press + release on the nested button = a click.
+        let center = button_rect.center();
+        let mut out = ctx.run_ui(click_event(center, true), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = build(ui);
+        });
+        out.textures_delta.clear();
+        let mut item_clicked = false;
+        let mut button_clicked = false;
+        let mut out = ctx.run_ui(click_event(center, false), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let (item, button) = build(ui);
+            item_clicked = item.clicked();
+            button_clicked = button.clicked();
+        });
+        out.textures_delta.clear();
+        assert!(
+            item_clicked,
+            "the item must win the click over the nested button"
+        );
+        assert!(
+            !button_clicked,
+            "the nested button must not receive the click (the item's later interact wins the hit test)"
+        );
+        assert!(
+            ctx.memory(|m| m.has_focus(item_id)),
+            "clicking the nested button must focus the item row"
+        );
+        assert!(
+            !ctx.memory(|m| m.has_focus(button_id)),
+            "the nested button must not hold focus it never received"
+        );
     }
 }
