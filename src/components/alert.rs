@@ -244,11 +244,17 @@ impl Alert {
         let inner = frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width()); // `w-full`
             ui.style_mut().visuals.override_text_color = Some(c.title);
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 if let Some(icon) = self.icon {
                     // `[&>svg]:size-4 [&>svg]:translate-y-0.5` — 16px icon,
-                    // nudged 2px down, spanning both text rows.
+                    // top-aligned with the title row, nudged 2px down.
+                    // `horizontal_top` (not `horizontal`): the default
+                    // horizontal row centres the icon in the 36px
+                    // interact-size row, putting its top 12px below the
+                    // title top (ALR-02); top alignment keeps it at the
+                    // row top, so the +2 nudge below lands it at +2px
+                    // from the title's top edge.
                     let (rect, _) =
                         ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
                     if ui.is_rect_visible(rect) {
@@ -676,6 +682,73 @@ mod tests {
                 (rect.height() - 20.0).abs() < 0.01,
                 "title height ({style:?}): {}",
                 rect.height()
+            );
+        }
+    }
+
+    /// Like [`render_alert`], but with an icon set, returning the
+    /// closure's output together with the frame's output shapes.
+    fn render_alert_with_icon<R>(
+        style: Style,
+        render: impl Fn(&mut Ui) -> R,
+    ) -> (R, Vec<egui::epaint::ClippedShape>) {
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(style)
+            .build(Mode::Light)
+            .install(&ctx);
+        let mut out = None;
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("alert_icon_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            out = Some(
+                Alert::new()
+                    .icon(Icon::CircleCheck)
+                    .show(ui, |ui| render(ui))
+                    .inner,
+            );
+        });
+        full.textures_delta.clear();
+        (out.expect("alert rendered"), full.shapes)
+    }
+
+    #[test]
+    fn icon_is_top_aligned_with_title_row() {
+        // Spec §3.3 / ALR-02: the 16px icon is top-aligned with the
+        // title, its top edge exactly 2px below the title's top edge
+        // (`translate-y-0.5`), in both styles — measured against the
+        // corrected 20px title row (ALR-01). The icon is painted as a
+        // 16×16 textured mesh, so its rect is read back from the
+        // output shapes; the title rect comes from the content closure.
+        for style in [Style::Nova, Style::Vega] {
+            let (title_rect, shapes) = render_alert_with_icon(style, |ui| {
+                let t = AlertTitle::new("Heads up!").show(ui).rect;
+                AlertDescription::new("Description line.").show(ui);
+                t
+            });
+            assert!(
+                (title_rect.height() - 20.0).abs() < 0.01,
+                "title height ({style:?}): {}",
+                title_rect.height()
+            );
+            let icon_rect = shapes
+                .iter()
+                .map(|s| s.shape.visual_bounding_rect())
+                .find(|r| {
+                    (r.width() - 16.0).abs() < 0.01
+                        && (r.height() - 16.0).abs() < 0.01
+                        && r.min.x < 33.0
+                })
+                .expect("icon shape found");
+            assert!(
+                (icon_rect.top() - title_rect.top() - 2.0).abs() < 0.01,
+                "icon top ({style:?}): {}, title top: {}",
+                icon_rect.top(),
+                title_rect.top()
             );
         }
     }
