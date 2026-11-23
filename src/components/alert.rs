@@ -281,6 +281,13 @@ pub(crate) fn title_font() -> FontId {
     fonts::medium(crate::theme::tokens::type_scale::SM)
 }
 
+/// The title's line box — the `text-sm` default line-height (20px);
+/// no `leading-*` class applies (spec §3.3). The 14px font's natural
+/// line height is 17px, so this must be set explicitly (ALR-01).
+pub(crate) fn title_line_height() -> f32 {
+    20.0
+}
+
 /// Returns the longest prefix of `text` such that `prefix + "…"` fits within
 /// `max_width`, measured by `measure` (the width of a candidate string).
 /// `line-clamp-1` (N4): the title renders on exactly one line, truncated
@@ -337,7 +344,19 @@ impl AlertTitle {
                 .size()
                 .x
         });
-        let galley = ui.painter().layout_no_wrap(display, font, c.title);
+        // Lay the title out through a job so the 20px line-height applies
+        // (ALR-01): `layout_no_wrap` uses the font's natural 17px leading.
+        // The job does not wrap (`max_width` is infinite by default), so
+        // the title stays one line, exactly as before.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: c.title,
+            line_height: Some(title_line_height()),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&display, 0.0, format);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(
             galley.size().max(egui::Vec2::new(0.0, 16.0)),
             egui::Sense::hover(),
@@ -571,6 +590,13 @@ mod tests {
     }
 
     #[test]
+    fn title_line_height_is_text_sm_default() {
+        // `text-sm` default line-height is 20px; no `leading-*` class
+        // (spec §3.3, ALR-01). The font's natural leading is 17px.
+        assert_eq!(title_line_height(), 20.0);
+    }
+
+    #[test]
     fn description_line_height_is_relaxed() {
         // `[&_p]:leading-relaxed` = 1.625 × 14px = 22.75px (spec §3.5).
         assert_eq!(description_line_height(), 22.75);
@@ -638,6 +664,20 @@ mod tests {
         });
         assert!(rect.width() <= 368.0, "title width: {}", rect.width());
         assert!(rect.height() < 36.0, "title height: {}", rect.height());
+    }
+
+    #[test]
+    fn title_row_is_20px_tall_in_both_styles() {
+        // Spec §3.3 / ALR-01: the title line box is 20px, in both styles
+        // (the title geometry is style-independent per spec §2.5).
+        for style in [Style::Nova, Style::Vega] {
+            let rect = render_alert(style, |ui| AlertTitle::new("Heads up!").show(ui).rect);
+            assert!(
+                (rect.height() - 20.0).abs() < 0.01,
+                "title height ({style:?}): {}",
+                rect.height()
+            );
+        }
     }
 
     #[test]
