@@ -514,8 +514,14 @@ impl TableRow {
         });
 
         let rect = inner.response.rect;
+        // Click-only, never focusable: the frozen spec (§7) gives rows no
+        // keyboard behaviour of their own — no Tab stops, no Space/Enter
+        // activation, no focus ring. `click()` and `click_and_drag()` both
+        // add FOCUSABLE, so only the `Sense::CLICK` constant is correct
+        // here (TBL-01). No drag component: the demo never drags a row and
+        // `clicked()` comes from `CLICK` alone.
         let sense = if self.interactive {
-            Sense::click_and_drag()
+            Sense::CLICK
         } else {
             Sense::hover()
         };
@@ -1062,6 +1068,117 @@ mod tests {
         out.textures_delta.clear();
         assert!(!plain_clicked);
         assert!(interactive_senses_clicks);
+    }
+
+    #[test]
+    fn interactive_rows_are_click_only_not_focusable() {
+        // TBL-01 (spec §7): rows have no keyboard behaviour of their own —
+        // no Tab stops, no Space/Enter activation, no focus ring. The sense
+        // must be the `Sense::CLICK` constant only: `click()` and
+        // `click_and_drag()` both add FOCUSABLE, which made the §4 rows
+        // invisible Tab stops that toggled on Space and Return.
+        let ctx = egui::Context::default();
+        let click_event = |pos: Pos2, pressed: bool| egui::RawInput {
+            events: vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let render = |ctx: &egui::Context| {
+            let mut sense = Sense::hover();
+            let mut rect = Rect::NOTHING;
+            let mut id = egui::Id::NULL;
+            let mut clicked = false;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("table_click_only_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                TableBody::new().show(ui, |ui| {
+                    let interactive = TableRow::new()
+                        .interactive(true)
+                        .id_salt("click_only_row")
+                        .show(ui, |ui| {
+                            TableCell::text("click me").show_text(ui);
+                        });
+                    sense = interactive.response.sense;
+                    rect = interactive.response.rect;
+                    id = interactive.response.id;
+                    clicked = interactive.response.clicked();
+                });
+            });
+            out.textures_delta.clear();
+            (sense, rect, id, clicked)
+        };
+
+        // Frame 1: the sense is CLICK only — no drag, no focusable.
+        let (sense, rect, id, _) = render(&ctx);
+        assert!(sense.senses_click(), "interactive row must sense clicks");
+        assert!(!sense.senses_drag(), "rows have no drag component");
+        assert!(
+            !sense.is_focusable(),
+            "interactive row must not be focusable (TBL-01)"
+        );
+        assert_eq!(sense, Sense::CLICK);
+
+        // Frames 2-3: press + release on the row still registers a click,
+        // and the click does NOT move keyboard focus to the row.
+        let center = rect.center();
+        let mut out = ctx.run_ui(click_event(center, true), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("table_click_only_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            TableBody::new().show(ui, |ui| {
+                TableRow::new()
+                    .interactive(true)
+                    .id_salt("click_only_row")
+                    .show(ui, |ui| {
+                        TableCell::text("click me").show_text(ui);
+                    });
+            });
+        });
+        out.textures_delta.clear();
+        let (_, _, _, clicked) = {
+            let mut sense = Sense::hover();
+            let mut rect = Rect::NOTHING;
+            let mut id = egui::Id::NULL;
+            let mut clicked = false;
+            let mut out = ctx.run_ui(click_event(center, false), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("table_click_only_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                TableBody::new().show(ui, |ui| {
+                    let interactive = TableRow::new()
+                        .interactive(true)
+                        .id_salt("click_only_row")
+                        .show(ui, |ui| {
+                            TableCell::text("click me").show_text(ui);
+                        });
+                    sense = interactive.response.sense;
+                    rect = interactive.response.rect;
+                    id = interactive.response.id;
+                    clicked = interactive.response.clicked();
+                });
+            });
+            out.textures_delta.clear();
+            (sense, rect, id, clicked)
+        };
+        assert!(clicked, "press + release must still register a click");
+        assert!(
+            !ctx.memory(|m| m.has_focus(id)),
+            "click must not move keyboard focus to the row (TBL-01)"
+        );
     }
 
     #[test]
