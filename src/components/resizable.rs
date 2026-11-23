@@ -584,16 +584,49 @@ impl ResizableHandle {
         // context lock itself, so it must run outside `ui.input`.
         let focused = response.has_focus();
         let key_px: f32 = if focused {
+            // RSZ-01: lock the arrow keys to this handle so stepping never
+            // moves focus. egui decides the focus direction at the START of
+            // the pass from the raw input (`Focus::begin_pass`), so merely
+            // consuming the key mid-pass cannot stop it — the focused widget
+            // must carry an `EventFilter` (the same mechanism `Slider` uses
+            // in `slider_core::keyboard_steps`). Both axes are locked: the
+            // on-axis arrows resize, and a wrong-axis arrow must leave both
+            // the line AND the focus unchanged (S8). The filter only takes
+            // effect once the handle had focus last frame, so it is set on
+            // every focused pass; an arrow arriving in the very first pass
+            // after focus is gained can still move focus (the same one-frame
+            // hole egui's own `Slider`/`TextEdit` have).
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                );
+            });
             let step = 0.05 * st.panels_px();
-            ui.input(|i| {
+            ui.input_mut(|i| {
                 let (prev_key, next_key) = if horizontal_group {
                     (egui::Key::ArrowLeft, egui::Key::ArrowRight)
                 } else {
                     (egui::Key::ArrowUp, egui::Key::ArrowDown)
                 };
-                if i.key_pressed(prev_key) {
+                // Consume the arrows as well, so no other widget in this
+                // pass acts on them. The wrong-axis arrows never resize,
+                // but they are consumed too — a mistaken keypress must not
+                // cost the user their focus.
+                let (other_prev, other_next) = if horizontal_group {
+                    (egui::Key::ArrowUp, egui::Key::ArrowDown)
+                } else {
+                    (egui::Key::ArrowLeft, egui::Key::ArrowRight)
+                };
+                i.consume_key(egui::Modifiers::NONE, other_prev);
+                i.consume_key(egui::Modifiers::NONE, other_next);
+                if i.consume_key(egui::Modifiers::NONE, prev_key) {
                     -step
-                } else if i.key_pressed(next_key) {
+                } else if i.consume_key(egui::Modifiers::NONE, next_key) {
                     step
                 } else {
                     0.0
@@ -752,6 +785,134 @@ mod tests {
                     });
             });
             out.textures_delta.clear();
+        }
+    }
+
+    /// RSZ-01: arrow keys resize a focused handle repeatedly without moving
+    /// focus — including a second press in the same direction, and a
+    /// wrong-axis key (which must move neither the line nor the focus).
+    ///
+    /// Mechanism under test: the handle locks both arrow axes via
+    /// `set_focus_lock_filter` (the `Slider` mechanism). The filter only
+    /// takes effect once the handle had focus last frame, so the test lets
+    /// one idle pass elapse after focusing before pressing any arrow — the
+    /// same settling the gallery drivers do. A focusable button sits to the
+    /// left of the group so that, pre-fix, the first ArrowLeft has somewhere
+    /// to move focus to (without it, `find_widget_in_direction` finds
+    /// nothing and the test would pass even unfixed).
+    #[test]
+    fn arrow_keys_resize_repeatedly_without_losing_focus() {
+        for mode in [Mode::Light, Mode::Dark] {
+            let ctx = egui::Context::default();
+            Preset::default().build(mode).install(&ctx);
+            let ui_id = egui::Id::new("rsz01_arrow_focus_test");
+
+            // Renders the button + group for one pass and returns the handle
+            // line's x position (from its response rect) and the handle's
+            // real interact id (from its response — captured, not derived,
+            // so `request_focus` targets the exact widget).
+            let render = |ctx: &egui::Context, input: egui::RawInput| -> (f32, egui::Id) {
+                let mut handle_x = f32::NAN;
+                let mut handle_id = egui::Id::new("rsz01_no_handle_yet");
+                let mut out = ctx.run_ui(input, |ctx| {
+                    let ui = &mut egui::Ui::new(
+                        ctx.clone(),
+                        ui_id,
+                        egui::UiBuilder::new()
+                            .layout(egui::Layout::left_to_right(egui::Align::Min))
+                            .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                    );
+                    let _ = ui.button("left");
+                    ResizablePanelGroup::new()
+                        .id_salt("rsz01")
+                        .length(400.0)
+                        .show(ui, |ui| {
+                            ResizablePanel::new().min(0.2).show(ui, |ui| {
+                                ui.label("Left");
+                            });
+                            let response = ResizableHandle::new().show(ui);
+                            handle_x = response.rect.center().x;
+                            handle_id = response.id;
+                            ResizablePanel::new().show(ui, |ui| {
+                                ui.label("Right");
+                            });
+                        });
+                });
+                out.textures_delta.clear();
+                (handle_x, handle_id)
+            };
+
+            let key_event = |key: Key| {
+                let mut input = egui::RawInput::default();
+                input.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                });
+                input
+            };
+
+            // Pass 1 (warm-up): establishes the panel totals, so the
+            // split is 50/50 from the next pass on (in the very first pass
+            // `total_panels` is still 0 while panels lay out, so the left
+            // panel takes the full width and the handle sits at the far
+            // right). Pass 2 measures the settled 50/50 line; focus the
+            // handle.
+            let _ = render(&ctx, egui::RawInput::default());
+            let (x0, handle_id) = render(&ctx, egui::RawInput::default());
+            ctx.memory_mut(|m| m.request_focus(handle_id));
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 3 (idle): the focus lock filter is set during this
+            // pass's show; an arrow pressed before this pass would still
+            // move focus (egui's one-frame hole, same as `Slider`).
+            let (x1, _) = render(&ctx, egui::RawInput::default());
+            assert!((x1 - x0).abs() < 0.01, "idle pass must not move the line");
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 4: ArrowLeft resizes by one 5% step and keeps focus.
+            // The fraction changes in this pass, but the panels were already
+            // laid out at the old split, so the line only VISIBLY moves in
+            // the next pass (one-frame layout lag — the same lag the drag
+            // path has). This pass asserts focus only.
+            let step = 0.05 * (400.0 - 1.0);
+            let (x2, _) = render(&ctx, key_event(Key::ArrowLeft));
+            assert!(
+                (x2 - x1).abs() < 0.01,
+                "line moves in the next pass, not this one"
+            );
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 5: the first Left's resize is now visible, and a second
+            // ArrowLeft resizes again — focus must still be on the handle.
+            let (x3, _) = render(&ctx, key_event(Key::ArrowLeft));
+            assert!((x3 - (x1 - step)).abs() < 1.0, "first Left must move -5%");
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 6: the second Left's resize is now visible. Pre-fix,
+            // focus had left the handle after pass 4, so pass 5 resized
+            // nothing and this line would be unchanged from pass 5.
+            let (x4, _) = render(&ctx, key_event(Key::ArrowLeft));
+            assert!(
+                (x4 - (x3 - step)).abs() < 1.0,
+                "second Left must move -5% again"
+            );
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 7: wrong-axis ArrowUp must not move focus. (The line
+            // still moves one lagged step here — pass 6's resize becoming
+            // visible — which is expected, not a failure.)
+            let (x5, _) = render(&ctx, key_event(Key::ArrowUp));
+            assert!(
+                (x5 - (x4 - step)).abs() < 1.0,
+                "pass 6 resize becomes visible here"
+            );
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
+            // Pass 8 (idle): settled — the ArrowUp changed nothing, so the
+            // line is unmoved from pass 7.
+            let (x6, _) = render(&ctx, egui::RawInput::default());
+            assert!(
+                (x6 - x5).abs() < 0.01,
+                "wrong-axis key must not move the line"
+            );
+            assert_eq!(ctx.memory(|m| m.focused()), Some(handle_id));
         }
     }
 
