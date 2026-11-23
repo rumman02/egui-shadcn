@@ -637,7 +637,22 @@ impl Item {
                 // document order, and header/footer take full lines. The
                 // same gap applies between slots on a line and between
                 // wrapped lines (CSS `gap` covers both axes).
-                ui.horizontal_wrapped(|ui| {
+                //
+                // ITM-01: do NOT use `ui.horizontal_wrapped` here — it
+                // starts the row at the 36px `interact_size` height, and
+                // children centre in that frame even when the row's real
+                // height is smaller. Start the row at height 0 instead, so
+                // it grows from its content (row height = max child
+                // height, as in the source's `flex flex-wrap
+                // items-center`). Cross-align stays Center
+                // (`items-center`); only the initial height changes.
+                let row_layout = if ui.layout().prefer_right_to_left() {
+                    egui::Layout::right_to_left(egui::Align::Center)
+                } else {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                }
+                .with_main_wrap(true);
+                ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 0.0), row_layout, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
                     content(ui)
                 })
@@ -797,12 +812,21 @@ impl ItemMedia {
         {
             ui.end_row();
         }
-        let cursor = ui.cursor();
+        // ITM-01: do NOT allocate the shifted rect with `allocate_rect`.
+        // The wrapping row takes the first explicit rect as the new row's
+        // anchor (`Layout::advance_after_rects`), so the row top moves
+        // down to `cursor.top() + 2` and the content — and the frame —
+        // grow 2px. Allocate the box normally instead, so the row top
+        // stays anchored, then re-interact at the shifted rect so the
+        // response matches the painted box (the earlier registration is
+        // overwritten by id).
+        let row_top = ui.cursor().top();
+        let (_, alloc) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
         let rect = Rect::from_min_size(
-            Pos2::new(cursor.left(), cursor.top() + 2.0),
+            Pos2::new(alloc.rect.min.x, row_top + 2.0),
             Vec2::splat(size),
         );
-        let response = ui.allocate_rect(rect, Sense::hover());
+        let response = ui.interact(rect, alloc.id, Sense::hover());
         (rect, response)
     }
 }
@@ -861,7 +885,14 @@ impl ItemContent {
         } else {
             4.0
         };
-        let inner = ui.allocate_ui(Vec2::new(w, 0.0), |ui| {
+        // ITM-01: do NOT allocate the content at height 0 — the row's
+        // Center cross-align centres the child in the row's current
+        // height, which (before the root fix) is the 36px row floor and
+        // pushes the content ~18px down. Start the allocation at the
+        // row's current height (`ui.cursor().height()` — the tallest
+        // thing allocated on the line so far, i.e. the media box, or 0
+        // with no media) so it starts at the row top.
+        let inner = ui.allocate_ui(Vec2::new(w, ui.cursor().height()), |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = content_gap;
                 content(ui)
@@ -932,14 +963,27 @@ impl ItemTitle {
         job.append(&self.text, 0.0, format);
         job.wrap.max_width = text_wrap;
         let galley = ui.painter().layout_job(job);
-        let inner = ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
-            if ui.is_rect_visible(rect) {
-                ui.painter().galley(rect.min, galley.clone(), p.foreground);
-            }
-            content(ui)
-        });
+        // ITM-01: do NOT use `ui.horizontal` here — it starts the row at
+        // the 36px `interact_size` height, so the title row is 36px tall
+        // instead of the title's line height (19.25px at 14px /
+        // `leading-snug`). Start the row at the galley's height instead;
+        // it grows to the hosted content when that is taller, and the
+        // Center cross-align keeps hosted content vertically centred on
+        // the title (the source's `flex items-center`).
+        let title_layout = if ui.layout().prefer_right_to_left() {
+            egui::Layout::right_to_left(egui::Align::Center)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Center)
+        };
+        let inner =
+            ui.allocate_ui_with_layout(Vec2::new(avail, galley.size().y), title_layout, |ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+                if ui.is_rect_visible(rect) {
+                    ui.painter().galley(rect.min, galley.clone(), p.foreground);
+                }
+                content(ui)
+            });
         // Measure the hosted content's width for next frame's wrap budget.
         let row_w = inner.response.rect.width();
         let measured = (row_w - galley.size().x - gap).max(0.0);
@@ -1488,8 +1532,19 @@ mod tests {
     /// reservation, the group-gap recording — settle) and returns the
     /// (first, second) outputs.
     fn render_twice<T>(width: f32, height: f32, build: impl Fn(&mut Ui) -> T) -> (T, T) {
+        render_twice_with_preset(Preset::default(), width, height, build)
+    }
+
+    /// Like [`render_twice`], but with an explicit preset (so a non-nova
+    /// style can be measured headlessly).
+    fn render_twice_with_preset<T>(
+        preset: Preset,
+        width: f32,
+        height: f32,
+        build: impl Fn(&mut Ui) -> T,
+    ) -> (T, T) {
         let ctx = egui::Context::default();
-        Preset::default().build(Mode::Light).install(&ctx);
+        preset.build(Mode::Light).install(&ctx);
         let run = |build: &dyn Fn(&mut Ui) -> T| -> T {
             let mut out_val: Option<T> = None;
             let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
@@ -1888,6 +1943,208 @@ mod tests {
             (height - 42.0).abs() < 0.5,
             "description height is 2 lines, got {height}"
         );
+    }
+
+    #[test]
+    fn frame_heights_match_spec_model() {
+        // ITM-01: the frame height must match the frozen spec model
+        // (title + gap + description + padding + 2px border), not the
+        // +36.75px overshoot from the 36px horizontal floor plus the 18px
+        // centring offset. All cases use the Outline variant (1px border),
+        // like the S3 demo's composition items, so the expected heights
+        // below include the 2px border.
+        //
+        // Nova Default/Sm, title + description:
+        //   19.25 (title, 14px x 1.375) + 4 (gap-1) + 21 (desc, 14px x 1.5)
+        //   + 20 (pad_y 10 x 2) + 2 (border) = 66.25.
+        // Nova Xs, title + description:
+        //   19.25 + 0 (gap 0 at xs nova) + 18 (desc text-xs 12px x 1.5)
+        //   + 16 (pad_y 8 x 2) + 2 = 55.25.
+        // Nova Default, title only: 19.25 + 20 + 2 = 41.25.
+        // Nova Default, title only + icon media: the 32px media dominates
+        //   the row, so 32 + 20 + 2 = 54.
+        // Vega Default, title + description:
+        //   19.25 + 4 + 21 + 32 (pad_y 16 x 2) + 2 = 78.25.
+        // Vega Default, title only: 19.25 + 32 + 2 = 53.25.
+        let check = |name: &str, got: f32, want: f32| {
+            assert!(
+                (got - want).abs() < 0.5,
+                "{name}: frame height must be the spec model {want}, got {got}"
+            );
+        };
+
+        // Nova, title + description, one case per media variant.
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_icon_desc")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova icon+desc", h, 66.25);
+
+        let h = render_twice(400.0, 600.0, |ui| {
+            let tex = ui.ctx().load_texture(
+                "item_height_texture",
+                egui::ColorImage::example(),
+                egui::TextureOptions::default(),
+            );
+            let source = egui::ImageSource::Texture(egui::load::SizedTexture::new(
+                tex.id(),
+                Vec2::splat(ITEM_MEDIA_IMAGE_SIZE),
+            ));
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_image_desc")
+                .show(ui, |ui| {
+                    ItemMedia::image(source).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova image+desc", h, 66.25);
+
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_nomedia_desc")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova no-media+desc", h, 66.25);
+
+        // Nova Sm takes the same geometry as Default.
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .size(ItemSize::Sm)
+                .id_salt("h_sm_desc")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova sm icon+desc", h, 66.25);
+
+        // Nova Xs: zero content gap, 12px description.
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .size(ItemSize::Xs)
+                .id_salt("h_xs_desc")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova xs icon+desc", h, 55.25);
+
+        // Title-only cases.
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_title_only")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova title-only", h, 41.25);
+
+        let h = render_twice(400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_title_only_icon")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("nova title-only+icon", h, 54.0);
+
+        // Vega (base recipe): larger padding, same text block.
+        let vega = Preset::default().with_style(Style::Vega);
+        let h = render_twice_with_preset(vega.clone(), 400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_vega_desc")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::User).show(ui);
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                        ItemDescription::new("Engineer").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("vega icon+desc", h, 78.25);
+
+        let h = render_twice_with_preset(vega, 400.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("h_vega_title_only")
+                .show(ui, |ui| {
+                    ItemContent::new().show(ui, |ui| {
+                        ItemTitle::new("Ada Lovelace").show(ui);
+                    });
+                })
+                .response
+                .rect
+                .height()
+        })
+        .1;
+        check("vega title-only", h, 53.25);
     }
 
     #[test]
