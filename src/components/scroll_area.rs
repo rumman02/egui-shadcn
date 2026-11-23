@@ -57,10 +57,12 @@ const THUMB_INSET: f32 = 1.0;
 /// The thumb corner radius (`rounded-full` on the 8px thumb).
 const THUMB_RADIUS: u8 = 4;
 
-/// Minimum thumb length (egui `ScrollStyle::solid()` default).
-/// OPEN-3: no source basis — the `.tsx` states only `flex-1`
-/// (ratio-derived); never present this as spec truth.
-const THUMB_MIN_LENGTH: f32 = 12.0;
+/// Minimum thumb length (Radix `@radix-ui/react-scroll-area@1.2.10`:
+/// `Math.max(thumbSize, 18)` — "minimum of 18 matches macOS minimum").
+/// OPEN-3 settled at the S8 gate (see `s8-decisions.md` §3.7): the 18px
+/// value is adopted from the Radix source; the previous 12.0 was egui's
+/// default with no source basis.
+const THUMB_MIN_LENGTH: f32 = 18.0;
 
 /// A shadcn scroll area. See the [module docs](self) for an example.
 #[derive(Clone, Debug)]
@@ -133,7 +135,8 @@ impl ScrollArea {
     /// `floating_allocated_width = 0`, `bar_width = 10.0` (`w-2.5`),
     /// `bar_outer_margin = 0` (`N14b` — flush with the Root edge),
     /// `floating_width = 10.0` (never shrinks to the thin width),
-    /// `handle_min_length = 12.0` (OPEN-3, egui default, no source basis).
+    /// `handle_min_length = 18.0` (OPEN-3, Radix `Math.max(thumbSize, 18)`,
+    /// settled at the S8 gate).
     ///
     /// egui's own handle is invisible in every state (all handle opacities
     /// 0): it spans the bar's full cross range and cannot express the
@@ -145,7 +148,7 @@ impl ScrollArea {
         s.bar_width = SCROLLBAR_WIDTH; // w-2.5
         s.bar_inner_margin = THUMB_INSET; // p-px (documents the inset; unused by floating cross placement)
         s.bar_outer_margin = 0.0; // N14b: flush with the Root edge
-        s.handle_min_length = THUMB_MIN_LENGTH; // OPEN-3: egui default, no source basis
+        s.handle_min_length = THUMB_MIN_LENGTH; // OPEN-3: Radix 18px minimum (S8)
         s.floating_width = SCROLLBAR_WIDTH; // never shrink to the thin width
         s.floating_allocated_width = 0.0; // N14a: no layout width
         s.foreground_color = false; // handle uses the widget bg_fill (= border), as before
@@ -327,7 +330,7 @@ mod tests {
         assert_eq!(s.bar_outer_margin, 0.0); // N14b: flush with the Root edge
         assert_eq!(s.floating_width, 10.0); // never shrinks to the thin width
         assert_eq!(s.floating_allocated_width, 0.0); // N14a: no layout width
-        assert_eq!(s.handle_min_length, 12.0); // OPEN-3: egui default, no source basis
+        assert_eq!(s.handle_min_length, 18.0); // OPEN-3: Radix 18px minimum (S8)
                                                // egui's own handle is invisible in every state; S1 paints the
                                                // thumb itself (see `scrollbar_thumb_rect`).
         assert_eq!(s.dormant_handle_opacity, 0.0);
