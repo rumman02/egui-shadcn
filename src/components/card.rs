@@ -9,6 +9,78 @@
 //! footer a `bg-muted/50 border-t` band that bleeds to the card's inner
 //! bottom edge.
 //!
+//! # Verified final state (S10 PASS, all 4 configs — `card-s10-report.md`)
+//!
+//! The header is a `1fr auto` grid (spec §3.3): with an action present the
+//! title and description wrap within the `1fr` column. CRD-01 (fix `0ae8248`)
+//! reserves that column by recording the action's measured content width in
+//! ui temp data and wrapping at header width minus action width minus the
+//! 8px column gap (272px base / 288px nova with the demo's 32px icon
+//! action). S10-verified, settled frames only: max title ink line 282px
+//! nova / 245–246px vega (≤ 288 / 272); smallest gap to the button's left
+//! edge 15px nova / 33px vega; no word cut in any config (vega "header"
+//! complete, pre-fix cut to "head"); title lines 4 nova / 5 vega; card
+//! heights nova 196 (unchanged) / vega 216 (was 200, +16px = exactly one
+//! 16px title line). **One-frame settle:** the action is laid out after
+//! the title, so its width is known from the previous frame only — on the
+//! first frame with an action the text wraps full-width and settles from
+//! frame 2 (same class as alert D7). Removing an action frees its column
+//! from the next frame.
+//!
+//! Observation for the reviewer (OBS-CRD-S10-01, not a defect): the demo
+//! readout's title-rect width is not the nominal `1fr` width (289.3px vs
+//! 288px nova; 251.0px vs 272px vega) — the reservation uses the action's
+//! measured *content* width, not the full 32px button width. The ink
+//! criterion still passes in all 4 configs, so the pixel ink measurement
+//! is the verdict basis, not the readout width; whether the reservation
+//! should use the full button width is a reviewer question.
+//!
+//! Edge and type: 1px `border` (`--border`) in both styles; nova adds a
+//! 1px ring (`foreground` at 10%) outside it (spec §0 A2); `shadow-sm` in
+//! both styles (§0 A1, LAYER). Footer children sit with gap 0 (§0 A3).
+//! Title: 16px, 600 base / 500 nova, line-height 1.0 base / 1.375 nova
+//! (22px); 14px on nova `size=sm`. Description: 14px, line-height 20px,
+//! `--muted-foreground`. `CardSize::Sm` is nova-only (no effect under
+//! other styles). Image-top `pt-0` zeroes the TOP padding only, nova
+//! only (N1, §3.2); base top images sit below the 24px top padding with
+//! square corners (D2 decided (a) at S0 sign-off — nova-only full-bleed).
+//! Overflow clips to the rounded rect under nova only (N3).
+//!
+//! States: the source defines **no** state recipe for Card (§4) — no
+//! hover, focus, disabled, or invalid rule; the card is not focusable and
+//! adds no tab stops. S7 regression legs R1–R5 PASS in all 4 configs at
+//! S10 (hover/focus endpoint-only on the nested control, card-owned paint
+//! diff 0 in every frame, determinism 0, flicker 0, budgets inside
+//! limits). Timing is UNRESOLVED in every video leg and the render floor
+//! NOT VERIFIED (pipeline-capped ~1–1.9 fps) — the same verdict class as
+//! S7, never a defect. Activation counting PASS in all 4 configs
+//! (empty S10 §3, cited: 9/9 deltas, 10/10 distinct digits).
+//!
+//! # Deviations and OPEN items (current disposition)
+//!
+//! - D1 — header grid approximated by a top-right overlay (LIMITATION, in
+//!   force): a taller-than-header action does not grow the header.
+//! - D2 — base image full-bleed: DECIDED at S0 sign-off, option (a)
+//!   nova-only full-bleed (source-faithful).
+//! - D3 — base unstyled content 14px vs 16px: THEME-LEVEL NOTE, no
+//!   card-line action.
+//! - D4 — `data-slot` attributes dropped: CONFIRMED CLASS (no egui
+//!   runtime meaning; presence checks reproduce the selectors).
+//! - D5 — no ARIA semantics: LIMITATION (the source defines none).
+//! - OPEN-1 (`group/card` attachment), OPEN-2 (action outside a header),
+//!   OPEN-3 (compiled image-selector scope): still OPEN, carried to the
+//!   Expert Reviewer in the wave pack (S8 §3.12 — S6/S7 did not measure
+//!   them). No code change in this wave.
+//! - Token divergence (spec §5.4): light `--card-foreground` /
+//!   `--foreground` is `oklch(0.145 0 0)` in `themes.ts` vs `oklch(0% 0 0)`
+//!   in `globals.css`. The spec applies Batch B ruling R1 ("Palette
+//!   follows themes.ts", effective 0.145), but the Batch F cross-batch
+//!   verification (2026-11-21, `batch-f/reports/coordinator-note.md`)
+//!   found no such ruling in the Batch D sources and records
+//!   globals.css (0%) as the verified source — the disposition is
+//!   CONTESTED, carried to S12 / the Expert Reviewer; no card-line
+//!   action, and S10 did not re-measure the token value.
+//!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
 //!
@@ -611,7 +683,9 @@ impl CardTitle {
     }
 }
 
-/// `CardDescription` — `text-sm text-muted-foreground`, wraps to the width.
+/// `CardDescription` — `text-sm text-muted-foreground`; wraps within the
+/// `1fr` column when an action is present (§3.3, CRD-01), else at the full
+/// header content width.
 #[derive(Clone, Debug)]
 pub struct CardDescription {
     text: String,

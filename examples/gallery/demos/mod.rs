@@ -8142,7 +8142,7 @@ pub fn card_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(16.0);
-    ui.label("7. Long title with an action (N2) — the title wraps at the header width; the action stays top-aligned");
+    ui.label("7. Long title with an action (N2) — the title wraps within the 1fr column (CRD-01); the action stays top-aligned");
     ui.add_space(4.0);
     let avail = ui.available_rect_before_wrap();
     let narrow = ui.scope_builder(
