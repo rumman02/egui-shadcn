@@ -102,7 +102,14 @@ impl ScrollArea {
         self
     }
 
-    /// Caps the viewport height (default: available height).
+    /// Fixes the viewport height (default: available height).
+    ///
+    /// The height is enforced, not merely capped: egui's `max_height`
+    /// alone collapses to the available height, which is ~0 for a
+    /// ScrollArea laid out far below the fold of a scrolling parent
+    /// (SCA-02), so `show` also sets `min_scrolled_height` to the same
+    /// value. With `auto_shrink([false, false])` the viewport then
+    /// renders at exactly this height even when the content is shorter.
     pub fn height(mut self, height: f32) -> Self {
         self.height = Some(height);
         self
@@ -185,7 +192,15 @@ impl ScrollArea {
             let mut area =
                 egui::ScrollArea::new([self.horizontal, self.vertical]).auto_shrink([false, false]);
             if let Some(h) = self.height {
-                area = area.max_height(h);
+                // SCA-02: `max_height` alone is only a cap — egui takes
+                // `min(available_height, max_height)`, and the available
+                // height is ~0 for an area laid out far below the fold of
+                // a scrolling parent, so the viewport collapsed to egui's
+                // 64px `min_scrolled_size` floor. Pin the floor to the
+                // same value so the viewport renders at exactly `h`
+                // regardless of the available height (the spec's `.height()`
+                // is a fixed size, "cap or fix" per spec §3).
+                area = area.max_height(h).min_scrolled_height(h);
             }
             if let Some(salt) = self.id_salt.as_deref() {
                 area = area.id_salt(ui.scope_id().with(salt));
@@ -575,5 +590,55 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn height_is_enforced_far_down_a_scrolling_page() {
+        // SCA-02: a ScrollArea with an explicit `.height()` laid out far
+        // below the fold of a parent vertical ScrollArea rendered at
+        // egui's 64px `min_scrolled_size` floor instead of the requested
+        // height. `.height()` only set `max_height` (a cap), and the
+        // available height at that cursor position is ~0 because the
+        // parent content Ui's max_rect is the page viewport, so
+        // `outer_size = min(available, max)` collapsed and the 64px
+        // floor was all that remained. The requested height must be
+        // enforced regardless of the available height.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut heights = (0.0, 0.0);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_height_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 3300.0))),
+            );
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Push the cursor ~13000px down the page, as §5's 400
+                // overflowing rows do on the gallery page.
+                ui.add_space(13000.0);
+                let both = ScrollArea::new()
+                    .horizontal(true)
+                    .height(140.0)
+                    .id_salt("height_both")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                    });
+                heights.0 = both.response.rect.height();
+                let short = ScrollArea::new()
+                    .height(80.0)
+                    .id_salt("height_short")
+                    .show(ui, |ui| {
+                        ui.label("Just a couple of lines.");
+                        ui.label("Second line.");
+                    });
+                heights.1 = short.response.rect.height();
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(heights.0, 140.0, "§6 both-axes viewport is 140px");
+        assert_eq!(heights.1, 80.0, "§7 short viewport is 80px");
     }
 }
