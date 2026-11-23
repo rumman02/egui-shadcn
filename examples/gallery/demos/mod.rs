@@ -8262,7 +8262,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
         wide_texture.size_vec2(),
     ));
 
-    ui.small("Avatar is a non-interactive display element: no keys, no Tab stop, clicks do nothing. Nova == base for every slot (spec §2.2). D2: the image centre-crop is a proposed deviation — the source stretches a non-square image to fill the square; judge it on the wide image in §2b. D3: Radix loading/delay states are degraded to texture-or-fallback (end-states only). OPEN-1: the Radix loading state machine timing is open for S6. OPEN-2: a mixed-size group's count falls back to the group's .size() hint when set, else 32px; S5 to confirm rendered.");
+    ui.small("Avatar is a non-interactive display element: no keys, no Tab stop, clicks do nothing. Nova == base for every slot (spec §2.2). D2: the image centre-crop is a proposed deviation — the source stretches a non-square image to fill the square; judge it on the wide image in §2b (S5 judged centre-crop; S8 §3.3 accepted it). D3: Radix loading/delay states are degraded to texture-or-fallback (end-states only) — S6 fetched the Radix source and settled D3 as a documented equivalence; the transition timing stays OPEN-1. OPEN-2 CLOSED (S8 §3.4): a mixed-size group's count follows the hint-wins rule — the group's .size() hint when set, else 32px (S5/S6-verified: 24 hint-Sm / 32 no-hint).");
 
     ui.add_space(12.0);
     ui.label("§1 Sizes with fallback initials");
@@ -8309,7 +8309,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
             .badge(AvatarBadge::new().icon(Icon::Plus))
             .show(ui);
     });
-    ui.small("expected: badge 10px with 8px icon (default), 12px with 8px icon (lg), ring-2 ring-background, bottom-right corner; S5 judges rendered (badges paint inside the avatar rect, no separate response to measure).");
+    ui.small("expected: badge 10px with 8px icon (default), 12px with 8px icon (lg), ring-2 ring-background, bottom-right corner; S5-verified in all 4 configs (the ring disc extends ~2px past the avatar rect — a CSS ring-2 outside the badge box, by design).");
 
     ui.add_space(12.0);
     ui.label("§2b Non-square image (D2) — wide 128x64 texture");
@@ -8321,7 +8321,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
             .image(wide_src.clone())
             .show(ui);
     });
-    ui.small("D2: the white edge stripes survive a stretch near the circle's left/right edges and are cut off by a centre crop — S5 judges which renders.");
+    ui.small("D2: the white edge stripes survive a stretch near the circle's left/right edges and are cut off by a centre crop — S5 judged centre-crop (t 0.24–0.76, zero white pixels); S8 §3.3 accepted the crop.");
 
     ui.add_space(12.0);
     ui.label("§3 Groups — count keys off MEMBER sizes (N5)");
@@ -8381,7 +8381,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("§4 Mixed-size group (OPEN-2 tiebreak)");
+    ui.label("§4 Mixed-size group (hint-wins — OPEN-2 closed, S8 §3.4)");
     ui.add_space(4.0);
     ui.label("Mixed sm + lg members, group hint Sm");
     let mixed_hint = AvatarGroup::new().size(AvatarSize::Sm).show(ui, |ui| {
@@ -8391,7 +8391,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
     });
     let mixed_hint_count = mixed_hint.inner;
     ui.small(format!(
-        "measured: count {:.1} x {:.1} px (expected 24 — the Sm hint wins the tiebreak; OPEN-2, S5 to confirm rendered)",
+        "measured: count {:.1} x {:.1} px (expected 24 — the Sm hint wins the tiebreak; hint-wins, OPEN-2 closed S8 §3.4, S5/S6-verified)",
         mixed_hint_count.rect.width(),
         mixed_hint_count.rect.height(),
     ));
@@ -8405,7 +8405,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
     });
     let mixed_plain_count = mixed_plain.inner;
     ui.small(format!(
-        "measured: count {:.1} x {:.1} px (expected 32 — base size when no hint is set; OPEN-2, S5 to confirm rendered)",
+        "measured: count {:.1} x {:.1} px (expected 32 — base size when no hint is set; hint-wins, OPEN-2 closed S8 §3.4, S5/S6-verified)",
         mixed_plain_count.rect.width(),
         mixed_plain_count.rect.height(),
     ));
@@ -8434,7 +8434,7 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
             .badge(AvatarBadge::new().icon(Icon::Plus))
             .show(ui);
     });
-    ui.small("expected: badge 8px (sm, icon hidden) / 10px (default, icon 8px) / 12px (lg, icon 8px), ring-2 ring-background; S5 judges rendered.");
+    ui.small("expected: badge 8px (sm, icon hidden) / 10px (default, icon 8px) / 12px (lg, icon 8px), ring-2 ring-background; S5-verified in all 4 configs.");
 
     ui.add_space(8.0);
     ui.small("URI images load through the context's texture loaders and fall back to initials until resolved. Long fallback text is centre-clipped with no ellipsis (spec §3.3) — not exercisable here: .fallback() reduces names to at most 2 initials, so the clip path is unit-pinned in S1 instead.");

@@ -6,19 +6,65 @@
 //! status badge bottom-right, and an overlapping `AvatarGroup`
 //! (`-space-x-2` with a `ring-2 ring-background` on each member).
 //!
+//! Verified final state (S10, `reports/avatar-s10-report.md`): PASS — the
+//! S7 PASS holds in full. Settled diff 0 on all 535 probe rows in all 4
+//! configs, rest captures pixel-identical to S7, round-trips
+//! byte-identical. No S9 changes on this branch (avatar had no S9 fix
+//! rows, S8 §2). Nova == base for every slot (spec §2.2 — every nova rule
+//! restates its base value; the `after:rounded-full` in `.cn-avatar` is a
+//! no-op, declaring no `content`).
+//!
+//! Non-interactive display element (spec §7): no Tab stop, no click
+//! behaviour, no keys, and no hover/focus/disabled recipe (§4). S6/S10
+//! verified the Tab walk is chrome-only (full sidebar interior 71/71 in
+//! nova/light), clicks take no focus (20/20), hover changes nothing
+//! (20/20), and the page does not scroll (R10, 8/8). Activation counting
+//! is N/A — the demo has no interactive widgets (S8 §3.9, S10 §5).
+//!
 //! Images: pass an [`egui::ImageSource`] to [`Avatar::image`]. Texture
 //! sources paint immediately (circularly clipped); URI/bytes sources load
 //! through the context's texture loaders when available and degrade
 //! gracefully to the fallback until/unless they resolve. The image is
 //! centre-cropped to the square (proposed deviation D2, spec §10 — the
 //! source stretches the image to fill, `object-fit: fill` default;
-//! identical for square images).
+//! identical for square images). S8 §3.3 ACCEPTED the centre-crop; D2
+//! stands as a proposed deviation for the Expert Reviewer. S5/S6
+//! re-confirmed the crop from pixels in all 4 configs (centre-row texture
+//! span t 0.24–0.76, zero white pixels, edges mid-gradient).
+//!
+//! Loading states (D3, spec §10): Radix loading/delay states are degraded
+//! to texture-or-fallback end-states only — no `delayMs` timing, no
+//! loading-status transitions. S6 fetched the public Radix source (`main`
+//! + `@radix-ui/react-avatar@1.1.3`) and SETTLED D3 as a documented
+//! equivalence for the end-states (image shown only when Loaded, fallback
+//! otherwise); the transition timing stays OPEN-1. Nothing animates
+//! (spec §6 — no transition class anywhere in the source).
 //!
 //! Group counts size off the member avatars (`group-has-data-[size]`,
 //! spec §3.6, audit N5): all-default / no members / outside a group →
-//! 32px, all-sm → 24px, all-lg → 40px. Mixed member sizes are OPEN-2; the
-//! count then falls back to the group's explicitly-set `.size()` hint when
-//! present, else the base 32px.
+//! 32px, all-sm → 24px, all-lg → 40px. Mixed member sizes follow the
+//! hint-wins rule — the group's explicitly-set `.size()` hint when present,
+//! else the base 32px (S5 check 6 values re-confirmed at S6: 24 hint-Sm /
+//! 32 no-hint; the count's centre aligns with lg, 944.3 vs 944.4 / 1048.3
+//! vs 1048.4). OPEN-2 is CLOSED by S8 §3.4: hint-wins is the only
+//! deterministic rule for mixed groups.
+//!
+//! Mixed-row vertical alignment (S8 §3.5, ACCEPTED): smaller avatars sit
+//! 2.0–2.5px above the row centre in mixed rows — egui horizontal-row
+//! behaviour (children centred in the initial 36px row height; the row
+//! grows when a taller item arrives, already-placed children keep their
+//! positions). No frozen spec rule pins it; no code change.
+//!
+//! Tokens (spec §5): `--muted` / `--muted-foreground` / `--primary` /
+//! `--background` from `globals.css`, with no upstream disagreement
+//! (`themes.ts` agrees for avatar tokens). Fallback text is default
+//! weight 400 — no weight slot exists in avatar.
+//!
+//! Budgets (S10 §2): flicker 7×0, idle CPU 0.0%, animating CPU 66.6–81.8%
+//! (< 150%), RSS −0.23%..0.0% with no monotonic growth. Render floor NOT
+//! VERIFIED (1.2–1.8 fps, pipeline-capped, load-independent — the same
+//! verdict class as S7, not a defect). Disc fill modes constant across
+//! all video legs: 245 light / 38 dark.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -99,6 +145,10 @@ impl AvatarSize {
 
 /// Derives initials from a name: first character of the first two words,
 /// or the first two characters of a single word. Uppercased.
+///
+/// Rust extension (spec §8): the source passes pre-computed text as
+/// fallback children and computes no initials; the helper is a documented
+/// convenience, not source behaviour.
 pub fn initials_from_name(name: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     let initials: String = match words.as_slice() {
@@ -135,6 +185,9 @@ impl AvatarBadge {
 
 /// The avatar's `bg-primary` status badge, positioned bottom-right.
 /// Attach with [`Avatar::badge`].
+///
+/// Non-interactive display element (spec §7): the avatar takes no Tab
+/// stop, clicks do nothing, and there are no keys — the badge included.
 #[derive(Clone, Debug, Default)]
 pub struct Avatar<'a> {
     size: AvatarSize,
@@ -178,7 +231,10 @@ impl<'a> Avatar<'a> {
         self
     }
 
-    /// Shows an icon instead of text when there is no image.
+    /// Shows an icon instead of text when there is no image. The icon
+    /// renders at half the avatar size (16px default, 12px sm, 20px lg) —
+    /// a Rust extension: the source specifies no icon size for fallback
+    /// icons (spec §8, §0 correction 3).
     pub fn fallback_icon(mut self, icon: Icon) -> Self {
         self.fallback_icon = Some(icon);
         self
@@ -320,7 +376,9 @@ pub(crate) fn resolve_texture(
 /// Proposed deviation D2 (spec §10): the source declares `aspect-square
 /// size-full` with no `object-fit` rule, so the CSS default is
 /// stretch-to-fill; this port centre-crops instead. Identical for square
-/// images; differs for non-square images. The reviewer decides D2.
+/// images; differs for non-square images. S8 §3.3 ACCEPTED the
+/// centre-crop; D2 stands as a proposed deviation for the Expert
+/// Reviewer.
 pub(crate) fn cover_uv(texture_size: Vec2, target: Vec2) -> Rect {
     if texture_size.x <= 0.0 || texture_size.y <= 0.0 || target.x <= 0.0 || target.y <= 0.0 {
         return Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -344,15 +402,16 @@ pub(crate) fn cover_uv(texture_size: Vec2, target: Vec2) -> Rect {
 /// Members record their sizes here (spec §3.6, audit N5) so the group count
 /// can key off member `data-size` — the source's
 /// `group-has-data-[size]/avatar-group` rules. The group has no size prop
-/// in the source; `AvatarGroup::size()` is a Rust extension kept only as
-/// the OPEN-2 tiebreak for mixed member sizes.
+/// in the source; `AvatarGroup::size()` is a Rust extension kept as the
+/// hint-wins tiebreak for mixed member sizes (OPEN-2 CLOSED by S8 §3.4).
 pub(crate) mod group {
     use egui::{Id, Ui};
 
     #[derive(Clone, Debug, Default)]
     pub struct GroupState {
         /// Explicitly-set group size hint (`AvatarGroup::size()`), if any.
-        /// Used only as the OPEN-2 tiebreak for mixed member sizes.
+        /// Used only as the hint-wins tiebreak for mixed member sizes
+        /// (OPEN-2 CLOSED by S8 §3.4).
         pub size: Option<super::AvatarSize>,
         /// Sizes of the member avatars shown so far in this group, in show
         /// order. Fresh on every `AvatarGroup::show` (one frame).
@@ -410,9 +469,10 @@ pub(crate) mod group {
     ///
     /// Order: an explicit size on the count itself wins; otherwise the
     /// members' size when they all agree (all-default, all-sm, or all-lg);
-    /// mixed members are OPEN-2 — the group's explicitly-set `.size()` hint
-    /// is used as the caller-declared tiebreak when present, else the base
-    /// `size-8` (32px); no members recorded (or outside a group) → base.
+    /// mixed members follow the hint-wins rule (OPEN-2 CLOSED by S8 §3.4)
+    /// — the group's explicitly-set `.size()` hint is used as the
+    /// caller-declared tiebreak when present, else the base `size-8`
+    /// (32px); no members recorded (or outside a group) → base.
     pub(crate) fn resolve_count_size(
         explicit: Option<super::AvatarSize>,
         members: &[super::AvatarSize],
@@ -427,9 +487,10 @@ pub(crate) mod group {
         if members.iter().all(|&m| m == members[0]) {
             return members[0];
         }
-        // Mixed sizes — OPEN-2: never guess a winner from the two
-        // `group-has-data-[size]` rules; use the caller-declared group hint
-        // when present, else the count's base `size-8`.
+        // Mixed sizes — hint-wins (OPEN-2 CLOSED by S8 §3.4): never guess
+        // a winner from the two `group-has-data-[size]` rules; use the
+        // caller-declared group hint when present, else the count's base
+        // `size-8`.
         group_hint.unwrap_or_default()
     }
 
@@ -452,8 +513,9 @@ pub(crate) mod group {
 #[derive(Clone, Debug, Default)]
 pub struct AvatarGroup {
     /// Explicitly-set group size hint, if any. Rust extension — the source
-    /// has no group size prop (spec §3.5); used only as the OPEN-2 tiebreak
-    /// for the group count when member sizes are mixed (spec §3.6).
+    /// has no group size prop (spec §3.5); used only as the hint-wins
+    /// tiebreak for the group count when member sizes are mixed
+    /// (OPEN-2 CLOSED by S8 §3.4).
     size: Option<AvatarSize>,
     id_salt: Option<String>,
 }
@@ -469,8 +531,9 @@ impl AvatarGroup {
 
     /// Sets the group-size hint (Rust extension — the source has no group
     /// size prop, spec §3.5). Members do NOT inherit this size; each member
-    /// carries its own. The hint is used only as the OPEN-2 tiebreak for
-    /// the group count when member sizes are mixed (spec §3.6).
+    /// carries its own. The hint is used only as the hint-wins tiebreak for
+    /// the group count when member sizes are mixed (OPEN-2 CLOSED by
+    /// S8 §3.4).
     pub fn size(mut self, size: AvatarSize) -> Self {
         self.size = Some(size);
         self
@@ -534,7 +597,8 @@ impl AvatarGroupCount {
 
     /// Overrides the resolved size (spec §3.6). When omitted, the count
     /// follows the member avatars' sizes (all-default → 32px, all-sm →
-    /// 24px, all-lg → 40px; mixed sizes are OPEN-2).
+    /// 24px, all-lg → 40px; mixed sizes follow the hint-wins rule,
+    /// OPEN-2 CLOSED by S8 §3.4).
     pub fn size(mut self, size: AvatarSize) -> Self {
         self.size = Some(size);
         self
@@ -620,7 +684,8 @@ mod tests {
         assert_eq!(r(None, &[D, D], None), D);
         assert_eq!(r(None, &[Sm, Sm, Sm], None), Sm);
         assert_eq!(r(None, &[Lg], None), Lg);
-        // Mixed sizes are OPEN-2: group hint when set, else base.
+        // Mixed sizes follow the hint-wins rule (OPEN-2 CLOSED by S8 §3.4):
+        // group hint when set, else base.
         assert_eq!(r(None, &[Sm, Lg], Some(Sm)), Sm);
         assert_eq!(r(None, &[Sm, Lg], Some(Lg)), Lg);
         assert_eq!(r(None, &[Sm, Lg], None), D);
@@ -670,13 +735,15 @@ mod tests {
                 Avatar::new().size(AvatarSize::Lg).fallback("CD").show(ui);
                 all_lg = AvatarGroupCount::new("+2").show(ui).rect.width();
             });
-            // Mixed members + explicit group hint → hint size (OPEN-2).
+            // Mixed members + explicit group hint → hint size (hint-wins,
+            // OPEN-2 CLOSED by S8 §3.4).
             AvatarGroup::new().size(AvatarSize::Sm).show(ui, |ui| {
                 Avatar::new().size(AvatarSize::Sm).fallback("AB").show(ui);
                 Avatar::new().size(AvatarSize::Lg).fallback("CD").show(ui);
                 mixed_hint = AvatarGroupCount::new("+2").show(ui).rect.width();
             });
-            // Mixed members, no hint → base 32px (OPEN-2).
+            // Mixed members, no hint → base 32px (hint-wins, OPEN-2 CLOSED
+            // by S8 §3.4).
             AvatarGroup::new().show(ui, |ui| {
                 Avatar::new().size(AvatarSize::Sm).fallback("AB").show(ui);
                 Avatar::new().size(AvatarSize::Lg).fallback("CD").show(ui);
