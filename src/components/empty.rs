@@ -261,15 +261,22 @@ fn link_runs(galley: &egui::Galley, segments: &[DescriptionSegment]) -> Vec<Link
 /// Allocates the full available width at the galley's height and returns the
 /// centred paint origin, the allocated rect, and the response. Paints
 /// nothing; the caller paints the galley (and any underlines) at the origin.
+///
+/// The callers lay the job out with `halign = Align::Center`, so the
+/// galley's rect is centred on x = 0 (epaint: with
+/// `LayoutJob::halign == Align::Center`, `galley.rect.center() == 0.0`).
+/// Centring the galley therefore means putting the galley rect's centre on
+/// the allocated rect's centre. Offsetting by
+/// `(rect.width() - galley.size().x) * 0.5` instead assumes a left-aligned
+/// galley whose rect starts at 0 and double-counts the centring: the ink
+/// shifts left by half the galley width, so the widest row's right edge
+/// lands on the container centre (EMP-01).
 fn allocate_centered(ui: &mut Ui, galley: &egui::Galley) -> (Pos2, Rect, egui::Response) {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), galley.size().y),
         egui::Sense::hover(),
     );
-    let origin = Pos2::new(
-        rect.left() + (rect.width() - galley.size().x) * 0.5,
-        rect.min.y,
-    );
+    let origin = Pos2::new(rect.center().x - galley.rect.center().x, rect.min.y);
     (origin, rect, response)
 }
 
@@ -976,5 +983,112 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// Ink centre of one galley row, painted at `origin`, in absolute coords.
+    /// Uses the glyphs' logical rects (pos + advance width), which bound the
+    /// ink to within a pixel of bearing on each side.
+    fn row_ink_centre_x(origin: Pos2, galley: &egui::Galley, row_idx: usize) -> f32 {
+        let placed = &galley.rows[row_idx];
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        for glyph in &placed.row.glyphs {
+            let rect = glyph.logical_rect();
+            min_x = min_x.min(origin.x + placed.pos.x + rect.min.x);
+            max_x = max_x.max(origin.x + placed.pos.x + rect.max.x);
+        }
+        (min_x + max_x) * 0.5
+    }
+
+    #[test]
+    fn allocate_centered_centres_title_ink_on_rect_centre() {
+        // EMP-01: the title's ink centre must sit on the allocated rect's
+        // centre. The pre-fix origin put the widest row's right edge on the
+        // centre instead (ink centre off by half the galley width, 25–190px
+        // in the gallery), so a 2px tolerance discriminates decisively.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_allocate_centered_title_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            // Title job, built exactly as `EmptyTitle::show` builds it.
+            let theme = ShadcnTheme::of_ui(ui);
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                "No results found",
+                0.0,
+                egui::TextFormat {
+                    font_id: title_font(theme.style),
+                    color: Color32::BLACK,
+                    line_height: Some(title_line_height(theme.style)),
+                    ..egui::TextFormat::default()
+                },
+            );
+            job.halign = Align::Center;
+            job.wrap.max_width = EMPTY_MAX_WIDTH.min(ui.available_width());
+            let galley = ui.painter().layout_job(job);
+            let (origin, rect, _response) = allocate_centered(ui, &galley);
+            assert_eq!(rect.width(), 400.0, "allocates the full available width");
+            assert_eq!(galley.rows.len(), 1);
+            let ink_centre = row_ink_centre_x(origin, &galley, 0);
+            assert!(
+                (ink_centre - rect.center().x).abs() < 2.0,
+                "title ink centre {ink_centre} must sit on rect centre {} (origin.x = {}, galley width = {})",
+                rect.center().x,
+                origin.x,
+                galley.size().x,
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn allocate_centered_centres_each_description_row() {
+        // EMP-01, multi-row case: with `halign = Center` every row is
+        // centred on the galley centre independently, so each row's ink
+        // centre must sit on the rect centre — including the short second
+        // row, which the defect showed centred on the first row's (shifted)
+        // centre instead of the container's.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let segments = vec![
+            DescriptionSegment::Text("See the ".to_string()),
+            DescriptionSegment::Link("docs".to_string()),
+            DescriptionSegment::Text(
+                " for details about this empty state and how to fix it.".to_string(),
+            ),
+        ];
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_allocate_centered_desc_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            // Description job, built exactly as `EmptyDescription::show`
+            // builds its pass-1 job (wraps at 384, so it spans two rows).
+            let p = Preset::default().build(Mode::Light).palette;
+            let mut job = description_job(&segments, p.muted_foreground, p.muted_foreground);
+            job.wrap.max_width = EMPTY_MAX_WIDTH.min(ui.available_width());
+            let galley = ui.painter().layout_job(job);
+            let (origin, rect, _response) = allocate_centered(ui, &galley);
+            assert!(
+                galley.rows.len() >= 2,
+                "the description must wrap to exercise the multi-row case"
+            );
+            for i in 0..galley.rows.len() {
+                let ink_centre = row_ink_centre_x(origin, &galley, i);
+                assert!(
+                    (ink_centre - rect.center().x).abs() < 2.0,
+                    "row {i} ink centre {ink_centre} must sit on rect centre {}",
+                    rect.center().x,
+                );
+            }
+        });
+        out.textures_delta.clear();
     }
 }
