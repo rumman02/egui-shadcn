@@ -115,6 +115,40 @@ fn write_state(ctx: &egui::Context, id: Id, state: GroupState) {
     });
 }
 
+/// Per-frame fraction snapshot (RSZ-03): the fractions as they were when
+/// the group's layout started this frame. `adjust()` mutates the live
+/// fractions mid-layout (inside the dragged handle's `show`, which runs
+/// after the panels before it but before the panels after it), so without
+/// a snapshot the panels after the dragged handle render one drag step
+/// ahead of the panels before it — the non-dragged partner line moves by
+/// exactly one frame's drag delta for every frame of the drag, then
+/// settles exactly. Panels lay out from this snapshot, so every panel in
+/// the group sees the same fractions in a frame; the live fractions take
+/// effect on the next frame's snapshot. Keyed by group id, same shape as
+/// the states map above.
+fn frame_fractions_id() -> Id {
+    Id::unique("shadcn_resizable_frame_fractions")
+}
+
+fn write_frame_fractions(ctx: &egui::Context, id: Id, fractions: Vec<f32>) {
+    ctx.data_mut(|d| {
+        let mut all: Vec<(Id, Vec<f32>)> = d.get_temp(frame_fractions_id()).unwrap_or_default();
+        if let Some(slot) = all.iter_mut().find(|(i, _)| *i == id) {
+            slot.1 = fractions;
+        } else {
+            all.push((id, fractions));
+        }
+        d.insert_temp(frame_fractions_id(), all);
+    });
+}
+
+fn read_frame_fractions(ctx: &egui::Context, id: Id) -> Option<Vec<f32>> {
+    ctx.data_mut(|d| {
+        d.get_temp::<Vec<(Id, Vec<f32>)>>(frame_fractions_id())
+            .and_then(|all| all.into_iter().find(|(i, _)| *i == id).map(|(_, f)| f))
+    })
+}
+
 /// Group context shared with panels and handles during layout.
 #[derive(Clone, Copy, Debug)]
 struct GroupCtx {
@@ -345,6 +379,11 @@ impl ResizablePanelGroup {
             st.handles_drawn = 0;
             st.total_len = total_len;
         }
+        // RSZ-03: freeze this frame's fractions for the layout below.
+        // The dragged handle's `adjust()` mutates the live fractions
+        // mid-layout; panels read the snapshot instead, so every panel
+        // in the group lays out from the same fractions.
+        write_frame_fractions(&ctx, id, st.fractions.clone());
         write_state(&ctx, id, st);
         push_group(
             ui,
@@ -440,7 +479,17 @@ impl ResizablePanel {
             limits: vec![],
             total_len: 0.0,
         });
-        let frac = st.fraction(idx) * st.panels_px();
+        // RSZ-03: lay out from this frame's fraction snapshot, not the
+        // live fractions — the dragged handle's `adjust()` mutates the
+        // live fractions mid-layout, and panels after the handle would
+        // otherwise render one drag step ahead of the panels before it
+        // (the partner line moves by exactly one frame's drag delta for
+        // every frame of the drag). Falls back to the live fractions
+        // when no snapshot covers this panel count (first frame).
+        let frac = match read_frame_fractions(ui.ctx(), group.id) {
+            Some(snap) if snap.len() == st.total_panels && idx < snap.len() => snap[idx],
+            _ => st.fraction(idx),
+        } * st.panels_px();
 
         // RSZ-02: a panel occupies exactly its fraction width — no more,
         // no less. `ui.allocate_ui` grows to the content's `min_rect`
@@ -1357,5 +1406,135 @@ mod tests {
         let (l1, l2) = drag(&ctx, l1, l1 + 150.0, 12);
         close(l1, 346.5, "h1+150 l1 (cascade target)");
         close(l2, 347.5, "h1+150 l2 (cascade target)");
+    }
+
+    /// RSZ-03: the non-dragged partner line stays exactly put during a
+    /// drag. Before the fix the partner moved by exactly one frame's
+    /// drag delta for every frame of the drag (the dragged handle's
+    /// `adjust()` mutated the live fractions mid-layout, so panels
+    /// after the handle rendered one step ahead of the panels before
+    /// it — with 5px steps the partner sat 5px off its settled value
+    /// for the whole drag, then settled exactly). The dragged line
+    /// still moves and settles exactly; the h2 drags never jittered
+    /// the partner either, and still must not.
+    #[test]
+    fn partner_line_is_stable_during_h1_drag() {
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let ui_id = egui::Id::new("rsz03_partner_test");
+
+        let render = |ctx: &egui::Context, input: egui::RawInput| -> (f32, f32) {
+            let mut h1 = f32::NAN;
+            let mut h2 = f32::NAN;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    ui_id,
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                ResizablePanelGroup::new()
+                    .id_salt("rsz03")
+                    .length(440.0)
+                    .show(ui, |ui| {
+                        ResizablePanel::new().min(0.15).show(ui, |ui| {
+                            ui.label("Sidebar");
+                        });
+                        h1 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().max(0.4).show(ui, |ui| {
+                            ui.label("Content (max 40%)");
+                        });
+                        h2 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().min(0.2).show(ui, |ui| {
+                            ui.label("Details");
+                        });
+                    });
+            });
+            out.textures_delta.clear();
+            (h1, h2)
+        };
+
+        let moved = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerMoved(pos));
+            input
+        };
+        let press = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+        let release = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+
+        // Drags the handle currently at `x0` to `x1` in 10px steps (one
+        // frame per step) and asserts the OTHER line stays at its
+        // settled value in every frame of the drag. Returns the
+        // settled line positions. Steps are 10px so the drag is
+        // decided on step 1: egui's click-vs-drag decision waits until
+        // the pointer moves past `max_click_dist` (6px), so a smaller
+        // first step would drop its delta (that loss is RSZ-04's
+        // domain, not this test's).
+        let mut drag_check_partner = |ctx: &egui::Context,
+                                      x0: f32,
+                                      x1: f32,
+                                      other_settled: f32,
+                                      which: &str|
+         -> (f32, f32) {
+            let y = 10.0;
+            let steps = ((x1 - x0).abs() / 10.0).round() as usize;
+            let (mut a, mut b) = render(ctx, moved(Pos2::new(x0, y)));
+            assert!(
+                ((if which == "h1" { b } else { a }) - other_settled).abs() < 0.01,
+                "press frame: partner moved before the drag"
+            );
+            let _ = render(ctx, press(Pos2::new(x0, y)));
+            for i in 1..=steps {
+                let x = x0 + (x1 - x0) * (i as f32 / steps as f32);
+                (a, b) = render(ctx, moved(Pos2::new(x, y)));
+                let partner = if which == "h1" { b } else { a };
+                assert!(
+                    (partner - other_settled).abs() < 0.01,
+                    "{which} drag step {i}: partner moved to {partner:.4}, settled {other_settled:.4}"
+                );
+            }
+            let (a, b) = render(ctx, release(Pos2::new(x1, y)));
+            let (a, b) = render(ctx, egui::RawInput::default());
+            (a, b)
+        };
+
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        assert!((l1 - 146.5).abs() < 1.0, "settled l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "settled l2: got {l2:.1}");
+
+        // h1 +50: the dragged line moves, the partner (l2) never moves.
+        let (l1, l2) = drag_check_partner(&ctx, l1, l1 + 50.0, l2, "h1");
+        assert!((l1 - 196.5).abs() < 1.0, "h1+50 l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "h1+50 l2: got {l2:.1}");
+
+        // h1 -50 restoring drag: same, in the other direction.
+        let (l1, l2) = drag_check_partner(&ctx, l1, l1 - 50.0, l2, "h1");
+        assert!((l1 - 146.5).abs() < 1.0, "h1-50 l1: got {l1:.1}");
+        assert!((l2 - 293.5).abs() < 1.0, "h1-50 l2: got {l2:.1}");
+
+        // h2 +20 (within the middle's 0.4 max): the partner is l1 this
+        // time; it must not move either.
+        let (l1, l2) = drag_check_partner(&ctx, l2, l2 + 20.0, l1, "h2");
+        assert!((l1 - 146.5).abs() < 1.0, "h2+20 l1: got {l1:.1}");
+        assert!((l2 - 313.5).abs() < 1.0, "h2+20 l2: got {l2:.1}");
     }
 }
