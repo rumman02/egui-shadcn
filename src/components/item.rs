@@ -426,6 +426,11 @@ struct RowCtx {
     left: f32,
     top: f32,
     right: f32,
+    /// Temp-data key (suffixed to the enclosing item's id) under which
+    /// [`ItemActions`] records the actions' measured height, so the row
+    /// can reserve it next frame (ITM-04: the actions lay out in a
+    /// separate child Ui, so their height never grows the row itself).
+    actions_h_key: &'static str,
 }
 
 fn row_stack_id() -> egui::Id {
@@ -1156,6 +1161,18 @@ impl ItemActions {
                     .layout(egui::Layout::right_to_left(egui::Align::Min)),
             );
             let ret = content(&mut child);
+            // ITM-04: the actions lay out in this separate child Ui, so
+            // their height never grows the header/footer row itself (the
+            // row only sees its direct children). Record the measured
+            // height so the row can reserve it next frame — the same
+            // two-frame pattern as the `actions_w` reservation below
+            // (ITM-02). `min_rect()` is this frame's content rect;
+            // `child.response()` would read last frame's rect.
+            if let Some(item) = current_item(ui) {
+                let h = child.min_rect().height();
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(item.id.with(row.actions_h_key), h));
+            }
             return InnerResponse::new(ret, child.response());
         }
 
@@ -1211,13 +1228,55 @@ impl ItemHeader {
                 left: cursor.left(),
                 top: cursor.top(),
                 right: cursor.left() + full_w,
+                actions_h_key: "header_actions_h",
             },
         );
-        let inner = ui.horizontal(|ui| {
-            ui.set_min_width(ui.available_width()); // basis-full
-            ui.spacing_mut().item_spacing.x = 8.0;
-            content(ui)
-        });
+        // ITM-04: the actions' height, measured last frame (see
+        // `ItemActions::show`); 0.0 on the first frame, so frame 1
+        // sizes to the direct children only (one-frame settle, same
+        // class as the `actions_w` reservation / alert D7).
+        let actions_h: f32 = current_item(ui)
+            .and_then(|item| {
+                ui.ctx()
+                    .data_mut(|d| d.get_temp(item.id.with("header_actions_h")))
+            })
+            .unwrap_or(0.0);
+        let inner = {
+            // ITM-04: do NOT use `ui.horizontal` here — it starts the row
+            // at the 36px `interact_size` height, so the header row is
+            // 36px tall instead of its content height (max(title, badge)
+            // — 20px in nova, 22px in vega). Start the row at the reserved actions
+            // height instead (the badge lays out in a separate child Ui,
+            // so it never grows the row itself — see `ItemActions::show`),
+            // the same way ITM-01 fixed the root/title rows; the row
+            // grows to its tallest child, and the Center cross-align
+            // keeps the title vertically centred on the badge (the
+            // source's `flex items-center`). RTL and no-wrap match
+            // `ui.horizontal`.
+            let header_layout = if ui.layout().prefer_right_to_left() {
+                egui::Layout::right_to_left(egui::Align::Center)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            ui.allocate_ui_with_layout(Vec2::new(full_w, actions_h), header_layout, |ui| {
+                ui.set_min_width(ui.available_width()); // basis-full
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let ret = content(ui);
+                // ITM-04: the title lays out in a nested child Ui (ITM-01),
+                // so the row advances by the title's own 19px rect, not the
+                // 20px frame the badge needs — the frame's 0.5px top/bottom
+                // is lost and the row lands 0.5px short of the model. A
+                // zero-width spacer at the reserved actions height forces
+                // the row's min_rect to span the full row height: for a
+                // Center cross-aligned row the spacer's frame fills the
+                // whole row height and `advance_after_rects` unions the
+                // frame into the min_rect. It is 0px wide, so nothing
+                // shifts horizontally. On frame 1 `actions_h` is 0 and the
+                // spacer is a no-op.
+                ui.allocate_space(Vec2::new(0.0, actions_h));
+                ret
+            })
+        };
         pop_row(ui);
         InnerResponse::new(inner.inner, inner.response)
     }
@@ -1256,13 +1315,44 @@ impl ItemFooter {
                 left: cursor.left(),
                 top: cursor.top(),
                 right: cursor.left() + full_w,
+                actions_h_key: "footer_actions_h",
             },
         );
-        let inner = ui.horizontal(|ui| {
-            ui.set_min_width(ui.available_width());
-            ui.spacing_mut().item_spacing.x = 8.0;
-            content(ui)
-        });
+        // ITM-04: the actions' height, measured last frame (see
+        // `ItemActions::show`); 0.0 on the first frame (one-frame
+        // settle, as in the header).
+        let actions_h: f32 = current_item(ui)
+            .and_then(|item| {
+                ui.ctx()
+                    .data_mut(|d| d.get_temp(item.id.with("footer_actions_h")))
+            })
+            .unwrap_or(0.0);
+        let inner = {
+            // ITM-04: same fix as the header (see above) — the footer row
+            // is the Sm button's outer rect (28px in nova, 32px in vega;
+            // its painted face is 26px), not the 36px `interact_size`
+            // floor `ui.horizontal` starts at. The button lays out in a
+            // separate child Ui, so the row reserves its height from
+            // last frame instead of growing to it.
+            let footer_layout = if ui.layout().prefer_right_to_left() {
+                egui::Layout::right_to_left(egui::Align::Center)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            ui.allocate_ui_with_layout(Vec2::new(full_w, actions_h), footer_layout, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let ret = content(ui);
+                // ITM-04: same zero-width spacer as the header — the
+                // label allocates directly, so its frame already spans
+                // the row height, but the spacer keeps the two rows
+                // symmetric and guards the row if the label ever lays
+                // out in a nested child. On frame 1 `actions_h` is 0
+                // and the spacer is a no-op.
+                ui.allocate_space(Vec2::new(0.0, actions_h));
+                ret
+            })
+        };
         pop_row(ui);
         InnerResponse::new(inner.inner, inner.response)
     }
@@ -2181,6 +2271,106 @@ mod tests {
         })
         .1;
         check("vega title-only", h, 53.25);
+    }
+
+    #[test]
+    fn header_footer_rows_match_spec_model() {
+        // ITM-04: the §7 Header/Footer rows must allocate at content
+        // height, not the 36px `ui.horizontal` floor. The stack is the §7
+        // demo stack (Outline variant, Default size, 600px root so the
+        // one-line description does not wrap): header = title + Admin
+        // badge, content = one-line description, footer = label + Sm
+        // Manage button.
+        //
+        // Nova model: 20 (py 10 x 2) + 20 (header: max(19 title, 20
+        // badge)) + 10 (gap-2.5) + 21 (desc, 14px x 1.5) + 10 (gap-2.5)
+        // + 28 (footer: Sm button outer rect) + 2 (border) = 111.
+        // Vega model: 32 (py 16 x 2) + 22 (header: max(19 title, 22
+        // badge)) + 16 (gap-4) + 21 + 16 + 32 (footer: Sm button outer
+        // rect) + 2 = 141.
+        //
+        // The badge (20 nova / 22 vega) and Sm button (28 nova / 32
+        // vega) are taller in vega than nova — style-dependent
+        // component geometry, not item geometry — so the vega frame
+        // is 141, not 135. The defect file's 109/133 model used the
+        // Sm button's 26px painted face (and nova heights for vega);
+        // the row height is the button's outer rect (its response
+        // rect), so 111/141 is correct.
+        //
+        // One-frame settle: the rows reserve the actions' height from
+        // last frame (ITM-04), so frame 1 sizes to the direct children
+        // only — header 19 (title), footer 17 (label) — for 99 nova /
+        // 123 vega; frame 2 settles at the model. Same class as the
+        // `actions_w` reservation (ITM-02) and alert D7.
+        let check = |name: &str, got: f32, want: f32| {
+            assert!(
+                (got - want).abs() < 0.5,
+                "{name}: frame height must be the spec model {want}, got {got}"
+            );
+        };
+
+        let (first, second) = render_twice(600.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("hf_nova")
+                .show(ui, |ui| {
+                    ItemHeader::new().show(ui, |ui| {
+                        ItemTitle::new("Team settings").show(ui);
+                        ItemActions::new().show(ui, |ui| {
+                            crate::components::badge::Badge::new("Admin").show(ui);
+                        });
+                    });
+                    ItemContent::new().show(ui, |ui| {
+                        ItemDescription::new("Invite members and manage roles for this workspace.")
+                            .show(ui);
+                    });
+                    ItemFooter::new().show(ui, |ui| {
+                        ui.label("12 members");
+                        ItemActions::new().show(ui, |ui| {
+                            crate::components::button::Button::new("Manage")
+                                .size(crate::components::button::ButtonSize::Sm)
+                                .show(ui);
+                        });
+                    });
+                })
+                .response
+                .rect
+                .height()
+        });
+        check("nova header/footer stack frame 1 (settle)", first, 99.0);
+        check("nova header/footer stack", second, 111.0);
+
+        let vega = Preset::default().with_style(Style::Vega);
+        let (first, second) = render_twice_with_preset(vega, 600.0, 600.0, |ui| {
+            Item::new()
+                .variant(ItemVariant::Outline)
+                .id_salt("hf_vega")
+                .show(ui, |ui| {
+                    ItemHeader::new().show(ui, |ui| {
+                        ItemTitle::new("Team settings").show(ui);
+                        ItemActions::new().show(ui, |ui| {
+                            crate::components::badge::Badge::new("Admin").show(ui);
+                        });
+                    });
+                    ItemContent::new().show(ui, |ui| {
+                        ItemDescription::new("Invite members and manage roles for this workspace.")
+                            .show(ui);
+                    });
+                    ItemFooter::new().show(ui, |ui| {
+                        ui.label("12 members");
+                        ItemActions::new().show(ui, |ui| {
+                            crate::components::button::Button::new("Manage")
+                                .size(crate::components::button::ButtonSize::Sm)
+                                .show(ui);
+                        });
+                    });
+                })
+                .response
+                .rect
+                .height()
+        });
+        check("vega header/footer stack frame 1 (settle)", first, 123.0);
+        check("vega header/footer stack", second, 141.0);
     }
 
     #[test]
