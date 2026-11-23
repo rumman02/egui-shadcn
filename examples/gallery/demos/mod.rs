@@ -8503,12 +8503,31 @@ pub fn empty_demo(ui: &mut egui::Ui) {
             .show(ui);
         });
         EmptyContent::new().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                Button::new("Clear filters").show(ui);
-                Button::new("Save search")
-                    .variant(ButtonVariant::Outline)
-                    .show(ui);
-            });
+            // EMP-02: centre the two-button row. `ui.horizontal` takes the
+            // full available width and left-aligns its children, so measure
+            // the row's content width (right edge of the last button minus
+            // left edge of the first) on one frame and reserve exactly that
+            // width from the next frame on; the parent top_down(Align::Center)
+            // layout then centres the reserved rect. Same one-frame-settle
+            // class as alert D7 / card CRD-01; settled frames are exact.
+            let row_width_id = egui::Id::unique("empty_demo_s1_action_row_width");
+            let row_width: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(row_width_id));
+            let row = ui.allocate_ui_with_layout(
+                egui::Vec2::new(
+                    row_width.unwrap_or_else(|| ui.available_width()),
+                    ui.spacing().interact_size.y,
+                ),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let first = Button::new("Clear filters").show(ui);
+                    let last = Button::new("Save search")
+                        .variant(ButtonVariant::Outline)
+                        .show(ui);
+                    (first, last)
+                },
+            );
+            let measured = row.inner.1.rect.max.x - row.inner.0.rect.min.x;
+            ui.ctx().data_mut(|d| d.insert_temp(row_width_id, measured));
         });
     });
     ui.label(format!(
