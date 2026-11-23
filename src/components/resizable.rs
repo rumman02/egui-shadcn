@@ -34,7 +34,8 @@
 use crate::icons::Icon;
 use crate::theme::{ShadcnTheme, Style};
 use egui::{
-    Color32, CornerRadius, CursorIcon, Id, InnerResponse, Rect, Response, Sense, Stroke, Ui, Vec2,
+    Color32, CornerRadius, CursorIcon, Id, InnerResponse, Pos2, Rect, Response, Sense, Stroke, Ui,
+    Vec2,
 };
 
 /// Group orientation, mirroring `aria-orientation`.
@@ -536,22 +537,45 @@ impl ResizablePanel {
         // pushed the next handle right: dragging handle 1 past the
         // middle's minimum left the fractions exact (middle 0) but the
         // middle panel still rendered ~14px wide and l2 sat at 509
-        // instead of the cascaded 520. Reserve exactly `frac` in the flow
-        // with `allocate_exact_size`, then lay the content out in a child
-        // Ui confined to that rect, clipped to it (CSS `overflow:
-        // hidden`): overflowing content paints cut off instead of moving
-        // the following handle. The child Ui's own `min_rect` growth
-        // cannot feed back into the parent's layout — the space was
-        // already reserved.
+        // instead of the cascaded 520.
+        //
+        // RSZ-05: the width must stay exactly `frac`, but the HEIGHT
+        // must come from the content — the RSZ-02 `allocate_exact_size`
+        // froze it at `ui.available_height()`, which inside a horizontal
+        // group is the row height so far, seeded at
+        // `spacing().interact_size.y` = 36px (`Ui::horizontal`).
+        // `allocate_exact_size` never grows to content, so every
+        // horizontal panel rendered 36px tall and §1's labels and
+        // "Add item" button were clipped invisible. The fix lays the
+        // content out once in a child Ui confined to `frac` width (the
+        // same child the old `allocate_ui` path used, with the same
+        // `available_height()` max height), then allocates exactly
+        // `frac` × the child's `min_rect` height in the parent — the
+        // old code's height behaviour, with the width pinned. Content
+        // runs once, so no double side effects (the "Add item" click
+        // cannot double-count). The clip rect is a horizontal band
+        // only: the parent's clip rect already bounds the paint
+        // vertically (window / scroll viewport), and clipping to the
+        // panel height was the RSZ-05 bug; the band keeps the RSZ-02
+        // `overflow: hidden` behaviour for content wider than `frac`.
         let inner = match group.orientation {
             ResizableOrientation::Horizontal => {
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(frac, ui.available_height()), Sense::hover());
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                child.shrink_clip_rect(rect);
+                let origin = ui.cursor().min;
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(
+                    origin,
+                    Vec2::new(frac, ui.available_height()),
+                )));
+                let clip = child.clip_rect();
+                child.shrink_clip_rect(Rect::from_min_max(
+                    Pos2::new(origin.x, clip.min.y),
+                    Pos2::new(origin.x + frac, clip.max.y),
+                ));
                 child.set_min_width(frac);
                 child.set_max_width(frac);
                 let ret = child.vertical(content).inner;
+                let panel_rect =
+                    Rect::from_min_size(origin, Vec2::new(frac, child.min_rect().height()));
+                let response = ui.allocate_rect(panel_rect, Sense::hover());
                 InnerResponse::new(ret, response)
             }
             ResizableOrientation::Vertical => {
@@ -1808,5 +1832,144 @@ mod tests {
         let (l1, l2) = render(&ctx, egui::RawInput::default());
         assert!((l1 - 196.5).abs() < 1.0, "move+release l1: got {l1:.1}");
         assert!((l2 - 293.5).abs() < 1.0, "move+release l2: got {l2:.1}");
+    }
+
+    /// RSZ-05: a horizontal panel's height comes from its content,
+    /// while its width stays exactly its fraction. RSZ-02's
+    /// `allocate_exact_size` froze every horizontal panel at the
+    /// row's seeded 36px height, clipping §1's labels and "Add item"
+    /// button invisible. The pin: the left panel's height equals its
+    /// content height (the "Add item" button's bottom), the button
+    /// sits inside the panel rect, and the handle spans the full
+    /// group height — while the width stays exactly the fraction
+    /// (219.5px at the equal split of 440, RSZ-02's requirement).
+    /// Single-label panels take their label's height (18px); the row
+    /// itself stays 36px because the handles allocate the seeded row
+    /// height — the pre-RSZ-02 behaviour, verified against the old
+    /// `allocate_ui` arm headlessly (§1 135px, §3 panels 18px,
+    /// handles 36px).
+    #[test]
+    fn horizontal_panel_height_comes_from_content() {
+        use crate::components::button::{Button, ButtonSize};
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let ui_id = egui::Id::new("rsz05_height_test");
+        let mut left = Rect::NOTHING;
+        let mut right = Rect::NOTHING;
+        let mut h = Rect::NOTHING;
+        let mut btn = Rect::NOTHING;
+        let mut s3 = [Rect::NOTHING; 3];
+        let mut s3h = [Rect::NOTHING; 2];
+        let mut s3_label = Rect::NOTHING;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    ui_id,
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                ResizablePanelGroup::new()
+                    .id_salt("rsz05_h")
+                    .length(440.0)
+                    .show(ui, |ui| {
+                        let r = ResizablePanel::new().min(0.2).max(0.7).show(ui, |ui| {
+                            ui.heading("Left panel");
+                            ui.label("Item 1");
+                            ui.label("Item 2");
+                            ui.label("Item 3");
+                            btn = Button::new("Add item").size(ButtonSize::Sm).show(ui).rect;
+                        });
+                        left = r.response.rect;
+                        h = ResizableHandle::new().with_handle(true).show(ui).rect;
+                        let r2 = ResizablePanel::new().show(ui, |ui| {
+                            ui.heading("Right panel");
+                            ui.label("Drag the divider between us.");
+                            ui.small("Panel sizes persist across frames (per group id).");
+                        });
+                        right = r2.response.rect;
+                    });
+                ui.add_space(12.0);
+                ResizablePanelGroup::new()
+                    .id_salt("rsz05_3")
+                    .length(440.0)
+                    .show(ui, |ui| {
+                        for (i, text) in ["Sidebar", "Content (max 40%)", "Details"]
+                            .iter()
+                            .enumerate()
+                        {
+                            let r = ResizablePanel::new().show(ui, |ui| {
+                                let lr = ui.label(*text).rect;
+                                if i == 0 {
+                                    s3_label = lr;
+                                }
+                            });
+                            s3[i] = r.response.rect;
+                            if i < 2 {
+                                s3h[i] = ResizableHandle::new().show(ui).rect;
+                            }
+                        }
+                    });
+            });
+            out.textures_delta.clear();
+        }
+
+        // §1: the panel is exactly as tall as its content (the button
+        // is the last widget), not the 36px row seed.
+        let content_h = btn.bottom() - left.top();
+        assert!(
+            content_h > 100.0,
+            "§1 content must be taller than the 36px seed, got {content_h:.1}"
+        );
+        assert!(
+            (left.height() - content_h).abs() < 1.0,
+            "left panel height must equal its content height: got {:.1}, want {:.1}",
+            left.height(),
+            content_h
+        );
+        assert!(
+            left.contains_rect(btn),
+            "the Add item button must sit inside the left panel rect: panel {left:?}, button {btn:?}"
+        );
+        assert!(
+            (left.width() - 219.5).abs() < 1.0,
+            "left panel width must stay exactly its fraction: got {:.1}, want 219.5",
+            left.width()
+        );
+        assert!(
+            (h.height() - left.height()).abs() < 1.0,
+            "handle must span the full group height: got {:.1}, want {:.1}",
+            h.height(),
+            left.height()
+        );
+        // The right panel is shorter than the left (its content ends
+        // higher) but shares the group's top edge.
+        assert!(
+            right.top() == left.top() && right.bottom() < left.bottom(),
+            "right panel must start at the group top and end above the left panel's bottom: {right:?} vs {left:?}"
+        );
+
+        // §3: single-label panels take their label's height, and the
+        // row stays 36px because the handles allocate the seeded row
+        // height.
+        let label_h = s3_label.bottom() - s3[0].top();
+        for (i, p) in s3.iter().enumerate() {
+            // Tolerance 1.5px: `allocate_rect` rounds the panel rect to
+            // whole pixels (`round_ui`), so the panel can sit up to 1px
+            // above the label's exact height.
+            assert!(
+                (p.height() - label_h).abs() <= 1.5,
+                "§3 panel {i} height must equal its label height: got {:.1}, want {:.1}",
+                p.height(),
+                label_h
+            );
+        }
+        for (i, handle) in s3h.iter().enumerate() {
+            assert!(
+                (handle.height() - 36.0).abs() < 1.0,
+                "§3 handle {i} must span the seeded 36px row height: got {:.1}",
+                handle.height()
+            );
+        }
     }
 }
