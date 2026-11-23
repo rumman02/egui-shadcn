@@ -186,8 +186,18 @@ fn next_handle(ui: &Ui, id: Id) -> Option<(usize, GroupState)> {
     Some((idx, st))
 }
 
-/// Adjusts the split between panels `idx` and `idx + 1` by a fractional
-/// delta `d`, clamped to both panels' limits. Returns the applied delta.
+/// Adjusts the split at separator `idx` by a fractional delta `d`,
+/// clamped to the panels' limits. When the immediate neighbour hits its
+/// limit, the leftover continues into the next panel in the same
+/// direction — the library's `adjustLayoutByDelta` cascade (S8 §3.1
+/// corrects frozen spec §10 edge case 2 to the cascade; the "excess is
+/// dropped" rule was written without the drag-algorithm evidence).
+/// Returns the applied delta.
+///
+/// Direction: `d > 0` grows panel `idx` and shrinks panels `idx + 1`,
+/// `idx + 2`, … in turn; `d < 0` grows panel `idx + 1` and shrinks
+/// panels `idx`, `idx - 1`, … in turn. The growing panel's own max is a
+/// hard stop — the walk only ever continues on the shrinking side.
 fn adjust(ui: &Ui, id: Id, idx: usize, d: f32) -> f32 {
     let ctx = ui.ctx().clone();
     let Some(mut st) = read_state(&ctx, id) else {
@@ -209,17 +219,60 @@ fn adjust(ui: &Ui, id: Id, idx: usize, d: f32) -> f32 {
             .unwrap_or(PanelLimit { min: 0.0, max: 1.0 });
         (lim.min, lim.max)
     };
-    let left = st.fractions[idx];
-    let right = st.fractions[idx + 1];
-    let (lmin, lmax) = get(&st, idx);
-    let (rmin, rmax) = get(&st, idx + 1);
-    let d_min = (lmin - left).max(right - rmax);
-    let d_max = (lmax - left).min(right - rmin);
-    let d = d.clamp(d_min.min(d_max), d_max.max(d_min));
-    st.fractions[idx] = left + d;
-    st.fractions[idx + 1] = right - d;
+    let n = st.total_panels;
+    // Room on the growing side (the single adjacent panel) and on the
+    // shrinking side (every panel outward from the separator).
+    let applied = if d > 0.0 {
+        let (_, lmax) = get(&st, idx);
+        let grow = (lmax - st.fractions[idx]).max(0.0);
+        let shrink = (idx + 1..n)
+            .map(|j| {
+                let (jmin, _) = get(&st, j);
+                (st.fractions[j] - jmin).max(0.0)
+            })
+            .sum::<f32>();
+        d.clamp(0.0, grow.min(shrink))
+    } else {
+        let (_, rmax) = get(&st, idx + 1);
+        let grow = (rmax - st.fractions[idx + 1]).max(0.0);
+        let shrink = (0..=idx)
+            .map(|j| {
+                let (jmin, _) = get(&st, j);
+                (st.fractions[j] - jmin).max(0.0)
+            })
+            .sum::<f32>();
+        d.clamp(-grow.min(shrink), 0.0)
+    };
+    if applied == 0.0 {
+        return 0.0;
+    }
+    if applied > 0.0 {
+        st.fractions[idx] += applied;
+        let mut remaining = applied;
+        for j in idx + 1..n {
+            if remaining <= 0.0 {
+                break;
+            }
+            let (jmin, _) = get(&st, j);
+            let take = remaining.min((st.fractions[j] - jmin).max(0.0));
+            st.fractions[j] -= take;
+            remaining -= take;
+        }
+    } else {
+        st.fractions[idx + 1] -= applied;
+        let mut remaining = -applied;
+        for j in (0..=idx).rev() {
+            if remaining <= 0.0 {
+                break;
+            }
+            let (jmin, _) = get(&st, j);
+            let take = remaining.min((st.fractions[j] - jmin).max(0.0));
+            st.fractions[j] -= take;
+            remaining -= take;
+        }
+    }
     write_state(&ctx, id, st);
-    d
+    applied
 }
 
 /// A shadcn resizable panel group. See the [module docs](self) for an example.
@@ -389,20 +442,40 @@ impl ResizablePanel {
         });
         let frac = st.fraction(idx) * st.panels_px();
 
+        // RSZ-02: a panel occupies exactly its fraction width — no more,
+        // no less. `ui.allocate_ui` grows to the content's `min_rect`
+        // ("if the contents overflow, more space will be allocated"), so
+        // a panel whose fraction shrank below its content's minimum width
+        // pushed the next handle right: dragging handle 1 past the
+        // middle's minimum left the fractions exact (middle 0) but the
+        // middle panel still rendered ~14px wide and l2 sat at 509
+        // instead of the cascaded 520. Reserve exactly `frac` in the flow
+        // with `allocate_exact_size`, then lay the content out in a child
+        // Ui confined to that rect, clipped to it (CSS `overflow:
+        // hidden`): overflowing content paints cut off instead of moving
+        // the following handle. The child Ui's own `min_rect` growth
+        // cannot feed back into the parent's layout — the space was
+        // already reserved.
         let inner = match group.orientation {
             ResizableOrientation::Horizontal => {
-                ui.allocate_ui(Vec2::new(frac, ui.available_height()), |ui| {
-                    ui.set_min_width(frac);
-                    ui.set_max_width(frac);
-                    ui.vertical(content).inner
-                })
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(frac, ui.available_height()), Sense::hover());
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                child.shrink_clip_rect(rect);
+                child.set_min_width(frac);
+                child.set_max_width(frac);
+                let ret = child.vertical(content).inner;
+                InnerResponse::new(ret, response)
             }
             ResizableOrientation::Vertical => {
-                ui.allocate_ui(Vec2::new(ui.available_width(), frac), |ui| {
-                    ui.set_min_height(frac);
-                    ui.set_max_height(frac);
-                    ui.vertical(content).inner
-                })
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), frac), Sense::hover());
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                child.shrink_clip_rect(rect);
+                child.set_min_height(frac);
+                child.set_max_height(frac);
+                let ret = child.vertical(content).inner;
+                InnerResponse::new(ret, response)
             }
         };
         InnerResponse::new(inner.inner, inner.response)
@@ -1154,5 +1227,135 @@ mod tests {
         );
         assert!((ring_strokes[0].stroke.width - 1.0).abs() < 1e-4);
         assert_eq!(ring_strokes[0].rect, line.rect.expand(1.0));
+    }
+
+    /// RSZ-02: dragging handle 1 past the middle's minimum cascades the
+    /// excess into the next panel (S8 §3.1 — the library's cascade, not
+    /// the frozen spec's "excess is dropped").
+    ///
+    /// Replays the S6 R5 sequence on the §3 group (Sidebar min 0.15,
+    /// Content max 0.4, Details min 0.2; 440px group, 438px of panels):
+    /// h2 +50 (middle to its 0.4 max), h1 +50, then h1 +150 in 12 steps.
+    /// The middle can only shrink 125px, so 25px of the last drag is
+    /// excess and must cascade into Details: the settled lines must be
+    /// l1 = 346.5, l2 = 347.5 (fractions [0.79, 0, 0.21] — gallery
+    /// coordinates 519/520, the S8 target).
+    ///
+    /// Pre-fix this failed at l1 = 321.7, l2 = 336.4: the fractions were
+    /// already exact ([0.7333, 0, 0.2667]) but the middle panel rendered
+    /// ~14px wide at fraction 0 — `allocate_ui` grows to the content's
+    /// `min_rect` — pushing the next handle right. The fix confines each
+    /// panel to exactly its fraction width.
+    #[test]
+    fn drag_cascades_excess_past_middle_min() {
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let ui_id = egui::Id::new("rsz02_drag_test");
+
+        // Renders the §3 group for one pass and returns the two handle
+        // line x positions (from their response rect centres, i.e. the
+        // 1px line centre — fraction position + 0.5).
+        let render = |ctx: &egui::Context, input: egui::RawInput| -> (f32, f32) {
+            let mut h1 = f32::NAN;
+            let mut h2 = f32::NAN;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    ui_id,
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0))),
+                );
+                ResizablePanelGroup::new()
+                    .id_salt("rsz02")
+                    .length(440.0)
+                    .show(ui, |ui| {
+                        ResizablePanel::new().min(0.15).show(ui, |ui| {
+                            ui.label("Sidebar");
+                        });
+                        h1 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().max(0.4).show(ui, |ui| {
+                            ui.label("Content (max 40%)");
+                        });
+                        h2 = ResizableHandle::new().show(ui).rect.center().x;
+                        ResizablePanel::new().min(0.2).show(ui, |ui| {
+                            ui.label("Details");
+                        });
+                    });
+            });
+            out.textures_delta.clear();
+            (h1, h2)
+        };
+
+        let moved = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerMoved(pos));
+            input
+        };
+        let press = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+        let release = |pos: Pos2| {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+            input
+        };
+
+        // Drags the handle currently at `x0` to `x1` in `steps` equal
+        // steps (one frame per step, as the gallery driver does) and
+        // settles; returns the settled line positions.
+        let mut drag = |ctx: &egui::Context, x0: f32, x1: f32, steps: usize| -> (f32, f32) {
+            let y = 10.0;
+            let _ = render(ctx, moved(Pos2::new(x0, y)));
+            let _ = render(ctx, press(Pos2::new(x0, y)));
+            for i in 1..=steps {
+                let x = x0 + (x1 - x0) * (i as f32 / steps as f32);
+                let _ = render(ctx, moved(Pos2::new(x, y)));
+            }
+            let _ = render(ctx, release(Pos2::new(x1, y)));
+            render(ctx, egui::RawInput::default())
+        };
+
+        let close = |got: f32, want: f32, what: &str| {
+            assert!(
+                (got - want).abs() < 1.0,
+                "{what}: got {got:.1}, want {want:.1}"
+            );
+        };
+
+        // Settle: two frames (learned totals make the split 1/3 each).
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        let (l1, l2) = render(&ctx, egui::RawInput::default());
+        close(l1, 146.5, "settled l1");
+        close(l2, 293.5, "settled l2");
+
+        // h2 +50: middle grows to its 0.4 max (l2 +29.3); the rest of
+        // the drag is dropped, l1 unmoved.
+        let (l1, l2) = drag(&ctx, l2, l2 + 50.0, 4);
+        close(l1, 146.5, "h2+50 l1");
+        close(l2, 322.7, "h2+50 l2");
+
+        // h1 +50: middle shrinks 0.4 -> 0.285; l2 unmoved (no transfer
+        // within limits).
+        let (l1, l2) = drag(&ctx, l1, l1 + 50.0, 4);
+        close(l1, 196.5, "h1+50 l1");
+        close(l2, 322.7, "h1+50 l2");
+
+        // h1 +150: middle can only shrink 125px; the 25px excess
+        // cascades into Details — l1 = 346.5, l2 = 347.5.
+        let (l1, l2) = drag(&ctx, l1, l1 + 150.0, 12);
+        close(l1, 346.5, "h1+150 l1 (cascade target)");
+        close(l2, 347.5, "h1+150 l2 (cascade target)");
     }
 }
