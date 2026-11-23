@@ -4,22 +4,71 @@
 //! `rounded-lg border px-4 py-3 text-sm` with `default` (`bg-card
 //! text-card-foreground`) and `destructive` (`text-destructive`,
 //! description `text-destructive/90`) variants; the nova style tightens the
-//! padding to `px-2.5 py-2` and narrows the icon gap.
+//! padding to `px-2.5 py-2` and narrows the icon gap. No shadow in either
+//! style (spec §2.1). Fill is `bg-card` in both variants; destructive
+//! changes text colour only (spec §2.2).
+//!
+//! Geometry — S10-verified in all 4 configs (nova/vega × light/dark;
+//! `reports/alert-s10-report.md` §1):
+//! - Alert boxes are exactly 3px taller than pre-fix (ALR-01): nova
+//!   63/106/86, vega 71/98/94; the title line box is 20.0px (`text-sm`
+//!   default — the 14px font's natural leading is 17px, so it is set
+//!   explicitly).
+//! - The 16×16 icon sits 2px below the title-row top in all 9 icon alerts
+//!   (ALR-02); the icon↔text column gap is 8px nova / 12–13px vega.
+//! - Description pitch is 23px (§5, all configs); paragraph text is
+//!   22.75px (`leading-relaxed`), paragraphs separated by 4px in base
+//!   and 20px in nova (16px `mb-4` + 4px grid gap).
 //!
 //! The optional icon slot sits left of the title/description column; the
 //! optional [`AlertAction`] paints at the alert's top-right corner (nova
-//! `absolute top-2 right-2`). `AlertAction` is a nova-era slot: the nova
+//! `absolute top-2 right-2`, 8px from the alert's OUTER rect — a 1px
+//! approximation of the spec's padding-box rule, spec §3.4). The nova
 //! recipe reserves `pr-18` for it — 72px TOTAL right padding, not 72px
-//! additional. S8 decision §3.2 (D4, a documented port extension):
-//! the 72px reservation applies in ALL styles, so base titles wrap
-//! within the reserved column instead of running under the opaque
-//! action button.
+//! additional. S8 decision §3.2 (D4, a documented port extension —
+//! "uniform action placement in all styles"): the 72px reservation
+//! applies in ALL styles, so base titles wrap within the reserved column
+//! instead of running under the opaque action button. S10-verified:
+//! vega §3a/§5 titles end with a visible "…" and clear their buttons
+//! by 8px/2px; nova is unchanged (clearance 18px/12px). The reservation
+//! is read from the previous frame, so it applies from frame 2 (D7,
+//! one-frame settle — a documented approximation, same class as
+//! input-otp's corners).
 //!
-//! Title: `line-clamp-1` — a single line, truncated with a trailing "…" when
-//! it exceeds the text column (N4), painted at `font-medium` (500) with the
-//! embedded Inter Medium face. Description: paragraph text at 22.75px
-//! (`leading-relaxed`); paragraphs are separated by 4px in base and 20px in
-//! nova (16px `mb-4` + 4px grid gap).
+//! Title: `line-clamp-1` — a single line, truncated with a trailing "…"
+//! when it exceeds the text column (N4, settled spec §3.3), painted at
+//! `font-medium` (500) with the embedded Inter Medium face. The
+//! truncation is measured-and-elided by the port (D5: the visual
+//! requirement is preserved exactly; only the mechanism is a port
+//! implementation).
+//!
+//! Behaviour — S10-verified (`reports/alert-s10-report.md` §2–§5):
+//! the alert root is never a Tab stop and has no keyboard, click, hover,
+//! focus, active, disabled, or animation behaviour of its own
+//! (spec §4/§6/§7); focus inside an alert belongs to the nested action
+//! button, which keeps the button line's behaviour. S6 legs (Tab walk,
+//! clicks, Space, press-in/release-out no-activation, hover
+//! endpoint-only, wheel) PASS in all 4 configs; S7 regression PASS
+//! (determinism 0, flicker 0, focus rings 660 nova / 556 vega, budgets
+//! inside limits); R8 round-trip byte-identical; demo click counters
+//! PASS (9/9 deltas, 10/10 digits — empty S10 §3, cited). Timing is
+//! UNRESOLVED in every video leg and the render floor is NOT VERIFIED
+//! (2.05 fps, pipeline-capped) — the same standing caveat as S7, not
+//! defects.
+//!
+//! Deviations and OPEN items — current dispositions (frozen spec §10/§11):
+//! D1 `role="alert"` live-region announcement is NOT conveyed (no ARIA
+//! tree in egui) — PROPOSED deviation (platform limit). D2
+//! `tracking-tight` (−0.35px/char) is NOT conveyed (no letter-spacing
+//! in egui) — limitation. D3 `text-balance`/`text-pretty` wrapping is
+//! NOT conveyed — limitation. D4 uniform action placement — DECIDED by
+//! S8 §3.2 (see above); the source question behind OPEN-1 is answered
+//! by that decision and carried to the Expert Reviewer in the wave pack.
+//! D6 the icon slot is restricted to the `Icon` enum, always 16px
+//! (the source accepts any `<svg>` child) — documented port scope.
+//! OPEN-2 (`cn()` merge semantics) stays OPEN — it never closes on
+//! substitute reasoning. OPEN-3 (`md:text-pretty` breakpoint) stays
+//! OPEN — immaterial, `text-pretty` is N/A in egui either way.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;

@@ -8131,7 +8131,7 @@ pub fn alert_demo(ui: &mut egui::Ui) {
         "Alert — callout for user attention. Active recipe: {recipe} (style: {}, mode: {mode}). Title 14px/500, 20px line-height; description 14px, 22.75px line-height; padding 10/8 nova, 16/12 base; radius 10px.",
         theme.style.name()
     ));
-    ui.label("D1: role=\"alert\" live-region announcement is NOT conveyed (no ARIA tree in egui). D2: tracking-tight (-0.35px/char) is NOT conveyed (no letter-spacing in egui). D4 (proposed): the action slot is a nova-only source rule; the port renders it in all styles — reviewer decides. D7: the 72px action reservation applies from frame 2 (one-frame settle). No hover/focus/disabled states, no animation (spec §4/§6).");
+    ui.label("D1: role=\"alert\" live-region announcement is NOT conveyed (no ARIA tree in egui). D2: tracking-tight (-0.35px/char) is NOT conveyed (no letter-spacing in egui). D4 (decided, S8 §3.2): the action slot is a nova-only source rule; the port renders it in all styles and reserves 72px in all styles — a documented port extension (uniform action placement). D7: the 72px action reservation applies from frame 2 (one-frame settle). No hover/focus/disabled states, no animation (spec §4/§6).");
 
     // Right padding implied by the laid-out geometry: outer width minus the
     // text column, left padding, icon column + gap, and the 2px border.
@@ -8224,9 +8224,10 @@ pub fn alert_demo(ui: &mut egui::Ui) {
             AlertDescription::new("The API will be unavailable Sunday 02:00–04:00 UTC.").show(ui);
         });
 
-    // 2. With an action — nova reserves pr-18 = 72px TOTAL (spec §3.4).
+    // 2. With an action — 72px TOTAL reservation in all styles
+    // (spec §3.4; S8 §3.2 D4: uniform action placement).
     ui.add_space(12.0);
-    ui.label("2. With an action — right clearance 72px total in nova (spec §3.4); D4: the action also renders in non-nova styles (reviewer decides)");
+    ui.label("2. With an action — right clearance 72px total in all styles (spec §3.4; S8 §3.2 D4: uniform action placement)");
     ui.add_space(4.0);
     let action = Alert::new()
         .id_salt("alert_demo_action")
