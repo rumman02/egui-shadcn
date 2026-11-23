@@ -8,9 +8,12 @@
 //!
 //! The optional icon slot sits left of the title/description column; the
 //! optional [`AlertAction`] paints at the alert's top-right corner (nova
-//! `absolute top-2 right-2`). `AlertAction` is a nova-era slot: only the
-//! nova recipe reserves `pr-18` for it — 72px TOTAL right padding, not 72px
-//! additional — so non-nova styles keep the text at full width.
+//! `absolute top-2 right-2`). `AlertAction` is a nova-era slot: the nova
+//! recipe reserves `pr-18` for it — 72px TOTAL right padding, not 72px
+//! additional. S8 decision §3.2 (D4, a documented port extension):
+//! the 72px reservation applies in ALL styles, so base titles wrap
+//! within the reserved column instead of running under the opaque
+//! action button.
 //!
 //! Title: `line-clamp-1` — a single line, truncated with a trailing "…" when
 //! it exceeds the text column (N4), painted at `font-medium` (500) with the
@@ -71,10 +74,12 @@ pub(crate) fn icon_gap(style: Style) -> f32 {
 /// Right padding when an action is present —
 /// `has-data-[slot=alert-action]:pr-18` is 72px TOTAL, not 72px additional:
 /// the `:has()` selector's higher specificity replaces the right side of
-/// `px-2.5` (spec §3.4). Nova only; other styles keep the base right
-/// padding (the base recipe has no action slot).
+/// `px-2.5` (spec §3.4). S8 decision §3.2 (D4, a documented port
+/// extension — "uniform action placement in all styles"): the 72px
+/// reservation applies in every style, not just nova — in base the title
+/// was cut mid-word under the opaque action button with no "…".
 pub(crate) fn right_padding(style: Style, has_action: bool) -> f32 {
-    if has_action && style == Style::Nova {
+    if has_action {
         72.0
     } else {
         padding_x(style)
@@ -207,9 +212,8 @@ impl Alert {
         // `has-data-[slot=alert-action]:pr-18` — 72px TOTAL right padding
         // for the action; read from the previous frame (self-correcting),
         // so on first paint with an action the reservation applies from
-        // frame 2 (D7, one-frame settle). The slot is nova-only (the base
-        // recipe has no action slot), so other styles keep the text at
-        // full width.
+        // frame 2 (D7, one-frame settle). S8 decision §3.2 (D4): the
+        // reservation applies in all styles, not just nova.
         let has_action: bool = ui
             .ctx()
             .data_mut(|d| d.get_temp(id.with("has_action")).unwrap_or(false));
@@ -579,12 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn right_padding_is_72_total_with_action_nova() {
+    fn right_padding_is_72_total_with_action() {
         // `pr-18` REPLACES the right padding (72px total) — it does not add
-        // to it. The audit's 82px reading was wrong (spec §3.4).
+        // to it. The audit's 82px reading was wrong (spec §3.4). S8
+        // decision §3.2 (D4): the reservation applies in all styles.
         assert_eq!(right_padding(Style::Nova, true), 72.0);
         assert_eq!(right_padding(Style::Nova, false), 10.0);
-        assert_eq!(right_padding(Style::Vega, true), 16.0);
+        assert_eq!(right_padding(Style::Vega, true), 72.0);
         assert_eq!(right_padding(Style::Vega, false), 16.0);
     }
 
@@ -751,6 +756,47 @@ mod tests {
                 title_rect.top()
             );
         }
+    }
+
+    #[test]
+    fn base_title_wraps_within_reserved_action_column() {
+        // S8 decision §3.2 (D4): the 72px action reservation applies in
+        // all styles, so a long base title elides within the reserved
+        // column instead of running under the opaque action button.
+        // The reservation is read from the previous frame (D7 one-frame
+        // settle), so the second pass is the settled one.
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(Style::Vega)
+            .build(Mode::Light)
+            .install(&ctx);
+        let title = "This is a very long alert title that must truncate with an ellipsis";
+        let mut widths: Vec<f32> = Vec::new();
+        for _ in 0..2 {
+            let title_rect = std::cell::Cell::new(Rect::NOTHING);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("alert_d4_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                Alert::new().show(ui, |ui| {
+                    title_rect.set(AlertTitle::new(title).show(ui).rect);
+                    AlertAction::new().show(ui, |_ui| {});
+                });
+            });
+            out.textures_delta.clear();
+            widths.push(title_rect.get().width());
+        }
+        // Frame 1 has no reservation yet (full width); frame 2 reserves
+        // 72px: 400 − 16 (left) − 72 (right) = 312px.
+        assert!(widths[0] > 312.0, "frame 1 width: {}", widths[0]);
+        assert!(
+            widths[1] <= 312.0,
+            "frame 2 (settled) base title width with action: {}",
+            widths[1]
+        );
     }
 
     #[test]
