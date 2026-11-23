@@ -928,7 +928,21 @@ impl ItemContent {
         // row's current height (`ui.cursor().height()` — the tallest
         // thing allocated on the line so far, i.e. the media box, or 0
         // with no media) so it starts at the row top.
+        // ITM-05 (spec §2.7 `flex-1`): the content column must grow to
+        // fill the row, pushing the actions to the item's right edge.
+        // The allocated width `w` alone does not do that — the
+        // wrapping row advances by each child's `min_rect` (egui 0.37
+        // `ui.rs:2337-2338` `scope_dyn` → `advance_cursor_after_rect`,
+        // `layout.rs:751-754`), and this Ui's min_rect is its
+        // max-content width (title `w-fit` + description galley), so
+        // the actions landed immediately after the content, ~545px
+        // from the right edge. Expand the min_rect to `w` — the same
+        // `set_min_width` pattern ITM-02 uses at the root row (it only
+        // expands the min_rect; the wrap/justify bookkeeping and the
+        // title/description wrap budgets, which read
+        // `available_width()`, are unaffected).
         let inner = ui.allocate_ui(Vec2::new(w, ui.cursor().height()), |ui| {
+            ui.set_min_width(w);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = content_gap;
                 content(ui)
@@ -2478,6 +2492,77 @@ mod tests {
     }
 
     #[test]
+    fn actions_push_to_right_edge() {
+        // ITM-05 (spec §2.7 `flex-1`): the content column grows to fill
+        // the row, pushing the actions to the item's right edge. Pre-fix
+        // the content sized to max-content (title `w-fit` + description
+        // galley), so the actions sat immediately after the content —
+        // the §8 Launch button at x 548–610 in a frame spanning to
+        // 1191. Root cause (egui 0.37 `ui.rs:2337-2338`,
+        // `layout.rs:751-754`): the wrapping row advances by each
+        // child's `min_rect`, and the content Ui's min_rect is its
+        // max-content width — the width `ItemContent` allocates never
+        // reaches the row.
+        let check = |name: &str, button_right: f32, item_right: f32, inset: f32| {
+            let want = item_right - inset;
+            assert!(
+                (button_right - want).abs() < 0.5,
+                "{name}: actions must end at the item's right edge minus the content inset ({want}), got {button_right}"
+            );
+        };
+
+        let build = |ui: &mut Ui| {
+            let mut button = Rect::NOTHING;
+            let mut content_rect = Rect::NOTHING;
+            let item = Item::new()
+                .interactive(true)
+                .variant(ItemVariant::Outline)
+                .id_salt("actions_right_edge")
+                .show(ui, |ui| {
+                    ItemMedia::icon(Icon::ChevronsRight).show(ui);
+                    content_rect = ItemContent::new()
+                        .show(ui, |ui| {
+                            ItemTitle::new("Launch checklist").show_with(ui, |ui| {
+                                crate::components::badge::Badge::new("Ready").show(ui);
+                            });
+                            ItemDescription::new("The item hovers like the source's anchor rows.")
+                                .show(ui);
+                        })
+                        .response
+                        .rect;
+                    ItemActions::new().show(ui, |ui| {
+                        button = crate::components::button::Button::new("Launch")
+                            .size(crate::components::button::ButtonSize::Sm)
+                            .show(ui)
+                            .rect;
+                    });
+                })
+                .response
+                .rect;
+            (item, button, content_rect)
+        };
+
+        // Gallery column width (frame 173–1191): wide enough that the
+        // description fits on one line, so max-content is much narrower
+        // than the row — pre-fix the button sat ~545px from the right
+        // edge. Frame 2 (settled `actions_w` reservation).
+        //
+        // The content inset is pad + the Outline border: egui's
+        // `Frame::total_margin` is inner_margin + stroke.width +
+        // outer_margin (`frame.rs:362-366`), and the Outline stroke
+        // is 1.0 (`resolve_item_colors`), so the content area ends at
+        // item_right − pad − 1 (12 + 1 nova, 16 + 1 vega) — not at
+        // item_right − pad.
+        let (item_rect, button_rect, _content_rect) = render_twice(1018.0, 600.0, build).1;
+        check("nova", button_rect.right(), item_rect.right(), 13.0);
+
+        let vega = Preset::default().with_style(Style::Vega);
+        let (item_rect, button_rect, _content_rect) =
+            render_twice_with_preset(vega, 1018.0, 600.0, build).1;
+        check("vega", button_rect.right(), item_rect.right(), 17.0);
+    }
+
+    #[test]
     fn description_link_runs_underlined_with_offset() {
         // N10 (pure): a link segment produces one underline run, 4px below
         // the link glyphs' baseline, with a hit rect 2px wider each side.
@@ -2643,11 +2728,22 @@ mod tests {
             (item, button.expect("nested button rendered"))
         };
 
-        // Frame 1: render, record rects + ids; nothing focused yet.
+        // Frame 1: render; nothing focused yet. Frame 2: re-render and
+        // record the SETTLED rects — the button's position depends on
+        // the `actions_w` reservation (ITM-02/ITM-05), which is 0 on
+        // frame 1, so on frame 1 the button sits past the item's right
+        // edge and only lands at its settled position from frame 2.
+        // Clicking at the frame-1 position would press outside the
+        // settled item. Same one-frame settle class as ITM-04/D7.
         let mut item_rect = Rect::NOTHING;
         let mut item_id = egui::Id::NULL;
         let mut button_rect = Rect::NOTHING;
         let mut button_id = egui::Id::NULL;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut make_ui(ctx);
+            let _r = build(ui);
+        });
+        out.textures_delta.clear();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
             let ui = &mut make_ui(ctx);
             let (item, button) = build(ui);
@@ -2664,7 +2760,7 @@ mod tests {
             "the nested button must sit away from the item centre"
         );
 
-        // Frames 2-3: press + release on the nested button = a click.
+        // Frames 3-4: press + release on the nested button = a click.
         let center = button_rect.center();
         let mut out = ctx.run_ui(click_event(center, true), |ctx| {
             let ui = &mut make_ui(ctx);
