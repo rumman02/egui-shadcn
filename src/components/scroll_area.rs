@@ -183,7 +183,7 @@ impl ScrollArea {
             Self::themed_scroll_visuals(&mut ui.style_mut().visuals, p.border);
 
             let mut area =
-                egui::ScrollArea::new([self.vertical, self.horizontal]).auto_shrink([false, false]);
+                egui::ScrollArea::new([self.horizontal, self.vertical]).auto_shrink([false, false]);
             if let Some(h) = self.height {
                 area = area.max_height(h);
             }
