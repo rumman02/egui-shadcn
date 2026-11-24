@@ -9959,6 +9959,11 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
         d.get_temp(controlled_store)
             .unwrap_or_else(|| "account".to_owned())
     });
+    let manual_store = egui::Id::unique("tabs_demo_manual");
+    let mut manual: String = ui.ctx().data_mut(|d| {
+        d.get_temp(manual_store)
+            .unwrap_or_else(|| "overview".to_owned())
+    });
 
     ui.label("Default variant (bg-muted pill list)");
     ui.add_space(4.0);
@@ -10086,12 +10091,158 @@ pub fn tabs_demo(ui: &mut egui::Ui) {
 
     ui.add_space(12.0);
     ui.label(
-        "Keyboard: Arrow keys move focus between triggers and select them (automatic activation); \
-         Home/End jump; Enter or Space activates the focused trigger.",
+        "Manual activation (N5) — arrows/Home/End move focus only; Enter/Space or click selects \
+         (default is automatic)",
+    );
+    ui.add_space(4.0);
+    Tabs::controlled(&mut manual)
+        .activation_mode(egui_shadcn_ui::components::tabs::TabsActivationMode::Manual)
+        .id_salt("tabs_demo_manual")
+        .show(ui, |ui| {
+            TabsList::new().show(ui, |ui| {
+                TabsTrigger::new("overview", "Overview").show(ui);
+                TabsTrigger::new("analytics", "Analytics").show(ui);
+                TabsTrigger::new("reports", "Reports").show(ui);
+            });
+            TabsContent::new("overview").show(ui, |ui| {
+                ui.label("Overview panel.");
+            });
+            TabsContent::new("analytics").show(ui, |ui| {
+                ui.label("Analytics panel.");
+            });
+            TabsContent::new("reports").show(ui, |ui| {
+                ui.label("Reports panel.");
+            });
+        });
+    ui.small(format!(
+        "manual selected = {manual:?} — arrow keys move focus without changing this value"
+    ));
+
+    ui.add_space(12.0);
+    ui.label(
+        "Long label (§9.1) — labels never wrap; a long label widens its trigger and flex-1 widens \
+         ALL triggers equally. No ellipsis, no clamp.",
+    );
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_long_label").show(ui, |ui| {
+        TabsList::new().show(ui, |ui| {
+            TabsTrigger::new("long", "A very long tab label that never wraps").show(ui);
+            TabsTrigger::new("short", "Short").show(ui);
+            TabsTrigger::new("ok", "OK").show(ui);
+        });
+        TabsContent::new("long").show(ui, |ui| {
+            ui.label("Long-label panel.");
+        });
+        TabsContent::new("short").show(ui, |ui| {
+            ui.label("Short panel.");
+        });
+        TabsContent::new("ok").show(ui, |ui| {
+            ui.label("OK panel.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label(
+        "Many tabs (§9.2) — the source defines no overflow rule; the list widens/overflows, no \
+         scrolling or dropdown invented.",
+    );
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_many").show(ui, |ui| {
+        TabsList::new().show(ui, |ui| {
+            TabsTrigger::new("tab1", "Tab 1").show(ui);
+            TabsTrigger::new("tab2", "Tab 2").show(ui);
+            TabsTrigger::new("tab3", "Tab 3").show(ui);
+            TabsTrigger::new("tab4", "Tab 4").show(ui);
+            TabsTrigger::new("tab5", "Tab 5").show(ui);
+            TabsTrigger::new("tab6", "Tab 6").show(ui);
+            TabsTrigger::new("tab7", "Tab 7").show(ui);
+            TabsTrigger::new("tab8", "Tab 8").show(ui);
+        });
+        TabsContent::new("tab1").show(ui, |ui| {
+            ui.label("First of eight panels.");
+        });
+        TabsContent::new("tab2").show(ui, |ui| {
+            ui.label("Second of eight panels.");
+        });
+        TabsContent::new("tab3").show(ui, |ui| {
+            ui.label("Third of eight panels.");
+        });
+        TabsContent::new("tab4").show(ui, |ui| {
+            ui.label("Fourth of eight panels.");
+        });
+        TabsContent::new("tab5").show(ui, |ui| {
+            ui.label("Fifth of eight panels.");
+        });
+        TabsContent::new("tab6").show(ui, |ui| {
+            ui.label("Sixth of eight panels.");
+        });
+        TabsContent::new("tab7").show(ui, |ui| {
+            ui.label("Seventh of eight panels.");
+        });
+        TabsContent::new("tab8").show(ui, |ui| {
+            ui.label("Eighth of eight panels.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label(
+        "Icon-only triggers (§9.12) — an icon with an empty label; no rule in the source, port \
+         behaviour (the 6px gap is omitted when the label is empty).",
+    );
+    ui.add_space(4.0);
+    Tabs::new().id_salt("tabs_demo_icon_only").show(ui, |ui| {
+        TabsList::new().show(ui, |ui| {
+            TabsTrigger::new("search", "").icon(Icon::Search).show(ui);
+            TabsTrigger::new("user", "").icon(Icon::User).show(ui);
+            TabsTrigger::new("files", "").icon(Icon::FileText).show(ui);
+        });
+        TabsContent::new("search").show(ui, |ui| {
+            ui.label("Search panel.");
+        });
+        TabsContent::new("user").show(ui, |ui| {
+            ui.label("User panel.");
+        });
+        TabsContent::new("files").show(ui, |ui| {
+            ui.label("Files panel.");
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Content-heavy (§9.10) — content is flex-1 and takes the remaining space.");
+    ui.add_space(4.0);
+    Tabs::new()
+        .id_salt("tabs_demo_content_heavy")
+        .show(ui, |ui| {
+            TabsList::new().show(ui, |ui| {
+                TabsTrigger::new("heavy", "Heavy").show(ui);
+                TabsTrigger::new("light", "Light").show(ui);
+            });
+            TabsContent::new("heavy").show(ui, |ui| {
+                for i in 1..=10 {
+                    ui.label(format!(
+                        "Content line {i} of 10 — the panel grows with its content."
+                    ));
+                }
+                ui.label("A very wide line of content that stretches across the panel width.");
+            });
+            TabsContent::new("light").show(ui, |ui| {
+                ui.label("One short line.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label(
+        "Keyboard: automatic activation (default) — Arrow keys move focus between triggers and select \
+         them; Home/End jump; Enter or Space activates the focused trigger. Manual activation (see \
+         above) — arrows move focus only. Arrow keys stop at the ends (no wrap — OPEN-1, clamping is \
+         current behaviour, not a requirement); the first trigger is selected by default (OPEN-3, port \
+         behaviour, not source truth); icon triggers keep a 6px pad-x (OPEN-4).",
     );
 
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(controlled_store, controlled));
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(controlled_store, controlled);
+        d.insert_temp(manual_store, manual);
+    });
 }
 
 pub fn breadcrumb_demo(ui: &mut egui::Ui) {
