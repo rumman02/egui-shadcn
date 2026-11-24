@@ -8309,10 +8309,10 @@ pub fn progress_demo(ui: &mut egui::Ui) {
     let store = egui::Id::unique("progress_demo_value");
     let mut value: f32 = ui.ctx().data_mut(|d| d.get_temp(store).unwrap_or(30.0));
 
-    ui.label("Progress — determinate value bar (Radix Progress). Non-interactive: no keys, no Tab stop, no hover/focus/disabled/invalid recipe (spec §7). Track 8px base / 4px nova; track fill primary @ 20% base, muted nova; indicator primary. N6: square cut at partial fill, pill only at 100%. Clamp is port-side (D3, contingent on OPEN-2 Radix clamping — reviewer decides). Fill animates 150ms; linear-vs-bezier is an S7 item, not spec. No label/value slots (OPEN-3); no indeterminate state (falsy → empty bar); max has no visual effect.");
+    ui.label("Progress — determinate value bar (Radix Progress). Non-interactive: no keys, no Tab stop, no hover/focus/disabled/invalid recipe (spec §7). Track 8px base / 4px nova; track fill primary @ 20% base, muted nova; indicator primary. N6: square cut at partial fill, pill only at 100%. Clamp is port-side (D3, APPROVED defensive deviation, S8 §1). Fill animates 150ms cubic-bezier(0.4, 0, 0.2, 1) (PRG-01, S10-verified). No label/value slots (OPEN-3); no indeterminate state (falsy → empty bar); max has no visual effect.");
     ui.add_space(8.0);
 
-    ui.label("1. Interactive — the fill animates over 150ms (shadcn transition-all; S7: linear vs cubic-bezier(0.4, 0, 0.2, 1))");
+    ui.label("1. Interactive — the fill animates over 150ms (shadcn transition-all; cubic-bezier(0.4, 0, 0.2, 1), PRG-01)");
     ui.add_space(4.0);
     let resp = Progress::new(value).show(ui);
     ui.small(format!(

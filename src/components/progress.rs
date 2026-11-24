@@ -1,29 +1,80 @@
-//! shadcn `progress.tsx` — an animated value bar.
+//! shadcn `progress.tsx` — an animated value bar (Radix `Progress`).
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/progress.tsx`:
 //! `relative h-2 w-full overflow-hidden rounded-full bg-primary/20` with a
 //! `bg-primary` indicator that slides to `value%` (`transition-all`).
-//! The nova style overrides the track to `bg-muted h-1`.
+//! The nova style overrides the track to `bg-muted h-1` (LAYER: silence
+//! keeps the base value, so `overflow-hidden` / `relative` / `w-full` and
+//! the indicator's `h-full w-full flex-1 transition-all` survive under
+//! nova — frozen spec `~/workspace/batch-c/specs/progress-spec.md` §0/§2.2).
 //!
-//! Frozen spec (`~/workspace/batch-c/specs/progress-spec.md`, Batch C S0):
-//! - The indicator carries NO rounding class: at partial fill its right end
-//!   is a SQUARE cut; only at 100%, when the fill meets the track edge, does
-//!   the track's `rounded-full` shape the pill end (N6, spec §3.3).
-//! - `value || 0` coerces falsy values (0, NaN, null) to an empty bar; there
-//!   is no indeterminate visual state (spec §4.2).
-//! - Out-of-range values are clamped to 0..=100 by the port
-//!   (`fill_fraction`); the literal `.tsx` translate math does NOT clamp, so
-//!   the clamp is a port-side decision (deviation D3, contingent on OPEN-2 —
-//!   whether Radix clamps upstream — reviewer decides).
-//! - No label/value slots: the nova `.cn-progress-label` /
-//!   `.cn-progress-value` classes have no `.tsx` consumer and are NOT built
-//!   (spec §2.3, OPEN-3).
+//! Verified final state (all values S10-verified, S10 report
+//! `~/workspace/batch-c/reports/progress-s10-report.md`; S10 supersedes
+//! S5/S6 where they differ):
+//!
+//! - Geometry: track 8px base / 4px nova (`h-2` / `h-1`); `rounded-full`
+//!   (4px / 2px effective radius); track fill primary @ 20% base, muted
+//!   nova; indicator fill primary, full opacity, both styles. The
+//!   indicator is always full track width, translated left by
+//!   `-(100 - value)%`, so the visible fill is `value%` from the left
+//!   edge. Settled endpoints on the demo track: fill30 = 305px,
+//!   fill40 = 407px in every config (S10 §1).
+//! - N6 (spec §3.3): the indicator carries NO rounding class — at partial
+//!   fill its right end is a SQUARE cut; only at 100%, when the fill meets
+//!   the track edge, does the track's `rounded-full` shape the pill end.
+//! - `value || 0` coerces falsy values (0, NaN, null) to an empty bar;
+//!   there is no indeterminate visual state (spec §4.2).
+//! - Animation (PRG-01, fixed S9 `fe6c6db`): `transition-all` is 150ms
+//!   cubic-bezier(0.4, 0, 0.2, 1), driven by the shared
+//!   `animate_value_eased` helper (`Easing::EaseInOut`) on top of egui's
+//!   linear `animate_value_with_time`. S10 distribution verdict (20
+//!   transitions per config, 6330 frames): combined mid-band share 20.2%
+//!   (43/213) vs the S7 linear baseline 51.7% (152/294) — end-dominant in
+//!   every config; 0 overshoot in 793 distinct frames; endpoints exact.
+//!   Mid-flight re-targets continue from the displayed value (no snap).
+//!   The linear `animate_value` (accordion, collapsible) is untouched and
+//!   `animate_value_eased` is called only by `progress.rs:161` (S10 §2).
+//! - Value clamping (D3): the port clamps out-of-range values to 0..=100
+//!   (`fill_fraction`); the literal `.tsx` translate math does NOT clamp
+//!   (v=120 shifts the indicator right 20%; v=-10 hides it). **D3 is
+//!   APPROVED as a deliberate defensive deviation (S8 §1)** — Radix does
+//!   not clamp upstream (OPEN-2 settled at S6 from the Radix source), so
+//!   the clamp stays; it is not a defect.
 //! - Progress is non-interactive: no hover, focus, pressed, disabled, or
-//!   invalid recipe, and it takes no Tab stop (spec §7).
-//! - `transition-all` is 150ms with the `cubic-bezier(0.4, 0, 0.2, 1)` curve;
-//!   the fill animates through the shared `animate_value_eased` helper,
-//!   which applies that curve on top of egui's (linear)
-//!   `animate_value_with_time` (PRG-01, spec §6).
+//!   invalid recipe, and it takes no Tab stop (spec §7). Activation
+//!   counting is resolved via the §1 value readout (S10 §3, S6 legs
+//!   re-run: R2 clicks exactly-once 4/4, R3 Space/Return, R8 boundaries;
+//!   ring counts match S6 exactly in every config).
+//! - Focus rings (S10 §5): settled focus+hover ring 72px nova / 88px
+//!   vega; focus-only 468 nova / 466–488 vega. OBS-PRG-S7-01 (ring ~6.5×
+//!   fainter under hover) is decided NO CHANGE (S8 §3.10): the ring IS
+//!   present under hover, just fainter — a property of the button's hover
+//!   fill interacting with the ring paint, and the buttons are
+//!   button-line owned, not progress-owned.
+//! - Budgets (S10 §7): idle CPU ≤0.05%, animating 72–132% (<150%), RSS
+//!   growth 0.0%; determinism 0; round-trips byte-identical. Render floor
+//!   NOT VERIFIED (2.2–2.4 fps Tab-driven, pipeline-capped — the standing
+//!   S7 caveat, never a defect).
+//! - No label/value slots: the nova `.cn-progress-label` /
+//!   `.cn-progress-value` classes have no `.tsx` consumer and are NOT
+//!   built (spec §2.3, OPEN-3). `max` has no visual effect (the transform
+//!   hardcodes the 100 scale, spec §4.4).
+//! - Token divergence (spec §5.4): light `--primary` is `oklch(0% 0 0)`
+//!   in `globals.css` vs `oklch(0.205 0 0)` in `themes.ts` (dark agrees at
+//!   0.922). The effective light primary consumed by the Rust `Palette`
+//!   is the `themes.ts` value per the standing R1 reading — **CONTESTED**
+//!   (card S11 evidence: the R1 phrase appears only as settlement labels
+//!   in the parity matrix, while Batch F verified `globals.css` as the
+//!   source); goes to S12 / Expert Reviewer, not an S11 edit.
+//!
+//! Deviations / OPEN inventory (frozen spec §10/§11, current disposition):
+//! D1 (`data-slot` dropped) PROPOSED; D2 (no ARIA tree) PROPOSED; D3
+//! (clamp) APPROVED defensive deviation (S8 §1); D4 (`className` has no
+//! Rust equivalent) NOTE. OPEN-1 (`cn()` merge semantics) stays OPEN;
+//! OPEN-2 (upstream clamping) settled — Radix does not clamp; OPEN-3
+//! (label/value consumer) none found, slots not built; OPEN-4
+//! (`data-state="indeterminate"`) no visual consequence; OPEN-5
+//! (`max != 100` usage) none in the snapshot.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -60,10 +111,11 @@ pub(crate) fn indicator_color(p: &crate::theme::Palette) -> Color32 {
 /// The source's `value || 0` coerces NaN to 0, so NaN maps to an empty
 /// bar (f32::clamp would otherwise pass NaN through).
 ///
-/// The clamp itself is a port-side decision (deviation D3, spec §4.4 / §10):
-/// the literal `.tsx` translate math does NOT clamp (v=120 shifts the
-/// indicator right by 20%; v=-10 hides it entirely). Whether Radix clamps
-/// upstream is OPEN-2; the reviewer decides D3 once it is settled.
+/// The clamp itself is a port-side decision (deviation D3, spec §4.4 / §10),
+/// **APPROVED as a deliberate defensive deviation (S8 §1)**: the literal
+/// `.tsx` translate math does NOT clamp (v=120 shifts the indicator right
+/// by 20%; v=-10 hides it entirely), and Radix does not clamp upstream
+/// (OPEN-2 settled at S6 from the Radix source).
 pub(crate) fn fill_fraction(value: f32) -> f32 {
     if value.is_nan() {
         0.0
