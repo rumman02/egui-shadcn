@@ -1,4 +1,4 @@
-//! shadcn `table.tsx` — a compound table layout.
+//! shadcn `table.tsx` — a compound table layout, verified final state (S11).
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/table.tsx`: `Table` wraps
 //! `TableHeader` / `TableBody` / `TableFooter` sections of `TableRow`s made
@@ -7,33 +7,125 @@
 //! text-muted-foreground`). Rows have `border-b`, `hover:bg-muted/50`,
 //! `has-aria-expanded:bg-muted/50` and `data-[state=selected]:bg-muted`;
 //! the footer is `border-t bg-muted/50 font-medium`; the body's last row
-//! drops its border.
+//! drops its border. Nova == base under LAYER (spec §0 correction 1, §2.10):
+//! the nova class lists omit `has-aria-expanded:bg-muted/50` (row) and the
+//! checkbox `translate-y-[2px]` (head/cell), but silence keeps the base
+//! values, so the effective recipes are identical in both styles.
 //!
-//! Columns: give [`TableHead`]/[`TableCell`] an explicit `.width(f32)` to
-//! align columns across rows; cells without a width take the remaining
-//! space (make the last cell flexible, like `w-auto` vs `w-1/4`).
+//! ## Geometry (S10-verified, all 4 configs; S10 §2)
+//!
+//! Head height 40.0 px (`h-10`, `TABLE_HEAD_HEIGHT`); plain-text body row
+//! 36.0 px (14px text, 20px line-height, 8px padding top/bottom). The §1
+//! first body row reads 36.0 px nova / 38.0 px vega — the 2px is the Status
+//! badge pill being taller under vega (a Batch A observation, not a table
+//! defect). Checkbox cells: head cell 40.0 x 40.0 px (`h-10`, `pr-0`), body
+//! cell 40.0 x 36.0 px, body row 36.0 px (the checkbox does not grow the
+//! row). Caption gap 16.0 px (`mt-4`, caller-spaced per D3). Fills, light:
+//! bg 255 / hover `fill50` 250 / selected 245; dark: bg 10 / `fill50` 24 /
+//! selected 38; border light 229 / dark 35. Vega geometry sits +8px below
+//! nova (checkbox head y 617 vs 609; §4 rows 1128/1164/1200 vs
+//! 1120/1156/1192).
+//!
+//! ## Columns (S3 column fix)
+//!
+//! Column widths are content-driven in the source (no `w-*` on head/cell);
+//! the Rust `.width(f32)` builder is an additive extension (spec §8). A
+//! width-less head/cell takes `ui.available_width()` — the full remaining
+//! row width — so the demo gives the first columns explicit widths (220.0 /
+//! 110.0 / 130.0 / 90.0 px); without them only the first column renders and
+//! later columns are pushed off-screen (pre-existing at `f2e6d00`, frozen
+//! in the old page-27 goldens as a single column — S3 report §"Findings
+//! fixed", item 1). S11 re-freezes page 27 as the four-column render.
+//!
+//! ## States (S10 §2, §4)
+//!
+//! Hover fill `bg-muted/50`; selected fill opaque `bg-muted` — **selected
+//! wins** over hover and over expanded (S10 §4, R2/R3: clicks toggle once,
+//! 3/3 per config). Expanded rows render `bg-muted/50` via
+//! [`TableRow::expanded`]; `expanded(bool)` is the state carrier (S8 §3.6:
+//! OPEN-5 CLOSED, Batch G data-table owns the expander control and the
+//! expanded-row rendering). The `aria-expanded` trigger placement is
+//! SETTLED factually (S8 §3.6, OPEN-2): TanStack `RowExpanding.ts` (8.21.3)
+//! is headless state only and `aria-expanded` sits on a DESCENDANT expander
+//! control (e.g. an IconButton inside a cell), never on the `<tr>`.
+//!
+//! ## Keyboard and click (TBL-01, S10 §1–§2, §4)
+//!
+//! Rows have no keyboard behaviour of their own (spec §7.1): no Tab stops,
+//! no arrow-key navigation, no Enter/Space activation, no focus ring.
+//! Interactive rows are click-only — `Sense::CLICK`, never focusable (S9
+//! `dbaa5bc`): the S6 driver re-run shows 80 Tab stops, `cb:row2` → wrap to
+//! `chrome:theme-toggle`, **zero** `row:s4-*` stops, `row_tab_stop: False`
+//! in every config. Pointer clicks select exactly once (R2 3/3); a click
+//! selects but does NOT focus a row (OBS-TBL-S7-01, unchanged). Space on a
+//! focused checkbox toggles it once; Return NEVER toggles (CHK-INT-03, Batch
+//! B ruling). Cells holding a checkbox take `pr-0` and a 2px downward shift
+//! via [`TableCell::checkbox_cell`] / [`TableHead::checkbox_cell`] (N8,
+//! S10 R3 7/7 incl. select-all).
+//!
+//! ## Borders, tracker, animation (S10 §2–§3)
+//!
+//! The body/footer last-row border drop (`border-0`) is learned over two
+//! frames, so the very first frame after a resize paints the final row's
+//! bottom border one frame late. Header rows always keep their bottom
+//! borders (spec §4.5, N9 — the tracker applies to body/footer sections
+//! only; S10 R0 border checks 10/10 in every config). The
+//! `transition-colors` 150ms fade (§6) renders as an instant recolour:
+//! egui has no per-property CSS transitions, so row backgrounds are set per
+//! frame (documented limitation D2, not a defect; S10 D2 legs show 0
+//! intermediates in all 8 distribution videos). R1 latency is met within
+//! the probe's poll granularity in the quiet-window re-probe (S10 §3b:
+//! 36/40 measurements ≤300ms; the four over-budget readings 305–350ms are
+//! each within one poll interval). Render floor NOT VERIFIED (1.6–2.2 fps,
+//! pipeline-capped — the standing S7 caveat, never a defect). Round-trips
+//! are byte-identical, md5 `8deb5c691e656959c70aa022468537cc` — identical to
+//! the S7 baseline (S10 §3).
+//!
+//! ## Tokens (spec §5.1, §5.4)
+//!
+//! `--foreground` light `oklch(0% 0 0)` / dark `oklch(0.985 0 0)`;
+//! `--muted` light `oklch(0.97 0 0)` / dark `oklch(0.269 0 0)`;
+//! `--muted-foreground` light `oklch(0.556 0 0)` / dark `oklch(0.708 0 0)`;
+//! `--border` light `oklch(0.922 0 0)` / dark `oklch(1 0 0 / 10%)`. No
+//! `dark:` variant exists for any table part; light/dark differences are
+//! token-value differences only. **Light `--foreground` is CONTESTED:**
+//! `globals.css:102` says `oklch(0% 0 0)` while `themes.ts:11` says
+//! `oklch(0.145 0 0)` — the spec §5.4 claim that the two sources agree
+//! exactly is wrong for this token (verified first-hand at S11; same
+//! divergence card S11 recorded). All other table tokens agree exactly.
+//! The disposition goes to S12 / Expert Reviewer; the effective value the
+//! port consumes is the `themes.ts` value per the standing R1 reading.
+//!
+//! ## Deviations and OPEN items (current dispositions)
+//!
+//! D1 PROPOSED (no ARIA tree in egui: state via builder booleans instead
+//! of attributes; no visual difference). D2 limitation (instant recolour,
+//! §"Borders, tracker, animation" above). D3 NOTE, cross-batch (caption
+//! `mt-4` is caller-spaced here; the `TableCaption` slot is Batch A's
+//! `typography.rs`, OPEN-6). D4 PROPOSED (Rust extension
+//! [`TableRow::interactive`] — rows are not buttons in the source; TBL-01
+//! makes interactive rows click-only with no focus model invented).
+//! OPEN-1 OPEN (`cn()` class attachment — the `cn` build is outside the
+//! snapshot). OPEN-2 SETTLED (see "States" above). OPEN-3 OPEN (when the
+//! nova `-aria` rules apply; effective values identical either way).
+//! OPEN-4 OPEN (`transition-colors` easing; 150ms duration is a framework
+//! default). OPEN-5 CLOSED (S8 §3.6, see "States" above). OPEN-6 OPEN,
+//! cross-batch (caption slot fix belongs to Batch A). OPEN-7: the evidence
+//! now exists (S3 §2 checkbox-cell demo + S10 R3 7/7 rendered judgement);
+//! closure is for S12 / the reviewer, not an S11 edit. OPEN-8 OPEN
+//! (`cn()` merge semantics — never closes on substitute reasoning). S5
+//! O1–O3 all ACCEPTED at S8 §3.6 (first-column 13px vs 9px offset,
+//! selected-over-expanded not renderable, caption ink gap 28px vs `mt-4`
+//! 16px — demo/Batch A question), no change.
 //!
 //! The source wraps the table in `overflow-x-auto`; for wide tables wrap
 //! this component in
 //! [`ScrollArea`](crate::components::ScrollArea)::new().horizontal(true).
 //! Rows only sense hover by default (they are not buttons in the source);
 //! call [`TableRow::interactive`] to make rows clickable for
-//! click-to-select recipes. Expanded rows render `bg-muted/50` via
-//! [`TableRow::expanded`]; cells holding a checkbox take `pr-0` and a 2px
-//! downward shift via [`TableCell::checkbox_cell`] /
-//! [`TableHead::checkbox_cell`]. The caption is the typography
+//! click-to-select recipes. The caption is the typography
 //! [`TableCaption`](crate::components::typography::TableCaption) slot (the
 //! source adds `mt-4`, so give it 16px of space above).
-//!
-//! Known gap: the body/footer's last-row border drop (`border-0`) is
-//! learned over two frames, so the very first frame after a resize paints
-//! the final row's bottom border one frame late. Header rows always keep
-//! their bottom borders (spec §4.5, N9) — the tracker applies to
-//! body/footer sections only.
-//!
-//! The `transition-colors` 150ms fade (§6) renders as an instant recolour:
-//! egui has no per-property CSS transitions, so row backgrounds are set per
-//! frame (documented limitation D2, not a defect).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -463,9 +555,12 @@ impl TableRow {
 
     /// Marks the row expanded (`has-aria-expanded:bg-muted/50`). The
     /// source defines the style rule only — expansion state is owned by the
-    /// consumer (data-table, Batch G); this builder is the port mapping
-    /// (spec §4.4, OPEN-2/OPEN-5: the `aria-expanded` placement is open,
-    /// the requirement is frozen). Selected still wins over expanded.
+    /// consumer (data-table, Batch G); this builder is the state carrier
+    /// (S8 §3.6: OPEN-5 CLOSED, Batch G owns the expander control and the
+    /// expanded-row rendering). The `aria-expanded` trigger placement is
+    /// SETTLED (S8 §3.6, OPEN-2): it sits on a DESCENDANT expander control,
+    /// never on the `<tr>` (TanStack `RowExpanding.ts` 8.21.3). Selected
+    /// still wins over expanded.
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = expanded;
         self
@@ -475,6 +570,10 @@ impl TableRow {
     /// `clicked()` (and click/pointer cursor) for the whole row. The source
     /// marks up clickable rows with links/buttons in the docs examples, so
     /// this stays opt-in and the default keeps hover-only sensing.
+    /// Interactive rows are click-only, never focusable (`Sense::CLICK`,
+    /// TBL-01, S9 `dbaa5bc`): no Tab stop, no Space/Enter activation, no
+    /// focus ring — S10 re-verified 80 Tab stops with zero row stops in
+    /// every config.
     pub fn interactive(mut self, interactive: bool) -> Self {
         self.interactive = interactive;
         self

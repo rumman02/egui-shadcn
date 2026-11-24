@@ -8364,7 +8364,7 @@ pub fn progress_demo(ui: &mut egui::Ui) {
 
 pub fn table_demo(ui: &mut egui::Ui) {
     ui.label("Table primitive — header / body / footer, rows, cells, caption. This is the shadcn Table primitive, NOT data-table (Batch G): no sorting, pagination, or filtering here.");
-    ui.label("Honest notes: expanded rows render bg-muted/50 but the trigger placement is OPEN-2 (consumer-owned state); checkbox cells use the additive .checkbox_cell builders (N8); row recolour is instant, not the 150ms transition-colors fade (limitation D2, easing OPEN-4); the caption's mt-4 is caller-spaced here because the TableCaption slot is Batch A's (D3).");
+    ui.label("Honest notes: expanded rows render bg-muted/50; the trigger placement is settled (S8 §3.6) — aria-expanded sits on a descendant expander control, never on the <tr> (TanStack RowExpanding.ts 8.21.3), and expanded(bool) is the state carrier (OPEN-5 CLOSED, Batch G owns the expander control + rendering); checkbox cells use the additive .checkbox_cell builders (N8); row recolour is instant, not the 150ms transition-colors fade (limitation D2, easing OPEN-4); the caption's mt-4 is caller-spaced here because the TableCaption slot is Batch A's (D3).");
     ui.add_space(8.0);
 
     ui.label("§1 Invoices table (hover rows, one selected row, footer totals)");
@@ -8508,7 +8508,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("§3 Expanded row (N7) — rendering case only; trigger placement is OPEN-2");
+    ui.label("§3 Expanded row (N7) — rendering case only; trigger placement settled (S8 §3.6)");
     ui.add_space(4.0);
     let mut plain_row_h = 0.0;
     Table::new().show(ui, |ui| {
@@ -8539,7 +8539,7 @@ pub fn table_demo(ui: &mut egui::Ui) {
         });
     });
     ui.small(format!(
-        "measured: plain-text body row height {plain_row_h:.1} px (14px text + 8px padding top/bottom). Expanded row fill: bg-muted/50 (same value as hover); selected wins over expanded (opaque bg-muted). No expander control is shown — the expanded state is consumer-owned (OPEN-2/OPEN-5)."
+        "measured: plain-text body row height {plain_row_h:.1} px (14px text + 8px padding top/bottom). Expanded row fill: bg-muted/50 (same value as hover); selected wins over expanded (opaque bg-muted). No expander control is shown — the expanded state is consumer-owned (S8 §3.6: aria-expanded on a descendant control; expanded(bool) is the state carrier)."
     ));
 
     ui.add_space(12.0);
