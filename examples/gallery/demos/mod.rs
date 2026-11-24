@@ -8569,7 +8569,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
         egui::load::SizedTexture::new(texture.id(), texture.size_vec2()),
     );
 
-    ui.label("Item — list-row primitive (shadcn item.tsx + nova .cn-item*). Non-interactive rows: no keys, no Tab stop, no click; hover fill is anchor-only (D4: Item::interactive(bool) is the port mapping of asChild + <a>). No disabled/selected/invalid/pressed states exist in the source — none invented. Group size is a Rust extension (D5) approximating the has-data-[size] gap rule; the link API is S1's additive .link()/.text() choice (OPEN-3, reviewer decides); a second ItemContent is NOT flex-none (limitation); the focus ring does not animate (D6).");
+    ui.label("Item — list-row primitive (shadcn item.tsx + nova .cn-item*). Non-interactive rows: no keys, no Tab stop, no click; hover fill is anchor-only (D4: Item::interactive(bool) is the port mapping of asChild + <a>). No disabled/selected/invalid/pressed states exist in the source — none invented. Group size is a Rust extension (D5) approximating the has-data-[size] gap rule; the link API is S1's additive .link()/.text() choice (OPEN-3, reviewer decides); a second ItemContent is NOT flex-none (limitation); the focus ring does not animate (§6 / D8 — instant recolour in egui).");
     ui.add_space(8.0);
 
     ui.label("Composition — outline items in a group (media/content/actions)");
@@ -8672,7 +8672,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
         .rect
         .height();
     ui.small(format!(
-        "item heights: default {:.1} / sm {:.1} / xs {:.1} px (spec model 64.3 / 64.3 / 53.3 — FINDING F1: the render is ~37px taller; egui's horizontal layout floors every title row at the 36px interact-size height and centres the content in the row — S5/S8 to judge)",
+        "item heights: default {:.1} / sm {:.1} / xs {:.1} px (spec model 66.25 / 66.25 / 55.25 border-inclusive — ITM-01 FIXED, S10-verified: frames at the spec model in all 4 configs)",
         h_default, h_sm, h_xs
     ));
 
@@ -8800,7 +8800,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
     });
     let without_icon_off = without_icon.inner.min.y - without_icon.response.rect.min.y;
     ui.small(format!(
-        "icon top − item top: with description {:.1} px; without {:.1} px; shift {:.1} px — the 32px icon centred in the 36px row lands exactly on the shifted position, so the icon cannot discriminate N12; the image above is the discriminating case (expected shift 2.0)",
+        "icon top − item top: with description {:.1} px; without {:.1} px; shift {:.1} px — N12 verified (S10): the icon sits at py+border without a description and shifts exactly 2.0 with one; the image above is the discriminating case (expected shift 2.0)",
         with_icon_off,
         without_icon_off,
         with_icon_off - without_icon_off

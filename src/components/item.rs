@@ -4,6 +4,10 @@
 //! recipe as the baseline (`rounded-lg border`, sizes `px-3 py-2.5 gap-2.5`
 //! default/sm and `px-2.5 py-2 gap-2` for the nova-only `xs`). Variants:
 //! `default` (transparent), `outline` (bordered), `muted` (`bg-muted/50`).
+//! Nova `.cn-item*` rules layer over the base recipe (LAYER, settled:
+//! silence keeps the base value; see the frozen spec §0 and the
+//! shadow-xs ruling evidence). There is no Radix primitive behind item —
+//! the only Radix import is `Slot`, for `asChild` polymorphism (spec §1).
 //!
 //! Slots: [`ItemMedia`] (icon box or image), [`ItemContent`] (title +
 //! description), [`ItemActions`] (right-aligned inside the item, like the
@@ -11,13 +15,192 @@
 //! full-width rows, [`ItemGroup`] (vertical list with a per-size gap) and
 //! [`ItemSeparator`].
 //!
-//! Rebuilt (Batch C S1) to the frozen S0 spec: the item root wraps
-//! (`flex flex-wrap`, N13), the media shifts down 2px and top-aligns when
-//! a description is present (N12), the title wraps at the content width
-//! and is `font-medium` (N11), description links underline with a 4px
-//! offset and recolour to primary on hover (N10), descriptions clamp to
-//! two lines with an ellipsis (D9), and the nova group gap keys off the
-//! contained items' sizes (§2.4).
+//! # Verified final state (Batch C S10 + re-verification, all 4 configs)
+//!
+//! Every statement below is verified in the gallery unless marked as a
+//! spec value or a limitation. S10 supersedes S5/S6 where they differ.
+//!
+//! ## Geometry — frames at the spec model (S10 §Geometry, reverify §ITM-04/05)
+//!
+//! Frames stretch to the available width (ITM-02, S9 `9724f9e`): the full
+//! 1019px gallery column, §4/§6 at their 360px scope. Frame heights match
+//! the spec model in all 4 configs — nova icon+desc 66, title-only 41,
+//! §4 98, §5 66, §6 87; vega icon+desc 78, title-only 53, §4 110 (19px
+//! galley rounding, −1), §5 78, §6 99; §3 without-image 62 nova / 74 vega
+//! and without-icon 54 nova / 66 vega against the S10-corrected models
+//! (the S5 models for those two frames were superseded: the pre-fix
+//! narrow frame wrapped the title onto two lines). §7 Header/Footer rows
+//! render at the corrected model **111 nova / 141 vega** (ITM-04, S9
+//! `1117d1d`; the defect file's 109/133 was wrong — the footer row is the
+//! Sm button's *outer* rect, 28 nova / 32 vega, and the vega badge/button
+//! are taller than nova's, 22/32 vs 20/28). Actions sit at the item's
+//! right edge (ITM-05, S9 `dd546a5`): §8 Launch ends 13px from the frame
+//! edge under nova, 16px under vega (pad + the 1px Outline border);
+//! Comp2 Follow moved with it. §7 Manage was already right-aligned and
+//! is unchanged.
+//!
+//! ## The five S9 fixes — what changed and why
+//!
+//! * **ITM-01** (S9 `15aa1f0`): every frame rendered ~37px too tall because
+//!   the root row, title row and content used `ui.horizontal`, whose 36px
+//!   `interact_size` floor centred the content in a 36px row. The rows now
+//!   allocate at content height (`allocate_ui_with_layout`, Center
+//!   cross-align preserved); the N12 shifted media box allocates normally
+//!   and re-interacts at row top + 2 instead of `allocate_rect`.
+//! * **ITM-02** (S9 `9724f9e`): `ui.set_min_width(ui.available_width())`
+//!   in the root-row closure and in `ItemGroup::show` — the `Frame` sizes
+//!   to its content, so without this the item hugged its content width.
+//! * **ITM-03** (S9 `38cdc4e`): `Item::show` calls `response.request_focus()`
+//!   on click (the `Button` shape, `button.rs:1175-1177`), placed before
+//!   the ring paint, so the ring paints on the click frame. Clicking the
+//!   nested Launch button focuses the *item* row, not the button: egui's
+//!   click is exclusive and the item's later-registered `interact` wins
+//!   the hit-test tie, so the button never receives the click (verified
+//!   against vendored egui 0.37 source and empirically).
+//! * **ITM-04** (S9 `1117d1d`): `ItemHeader`/`ItemFooter` moved from
+//!   `ui.horizontal` to `allocate_ui_with_layout` at the reserved actions
+//!   height (the ITM-01 mechanism); `ItemActions` records its measured
+//!   height into temp data so the row reserves it next frame, plus a
+//!   0-width spacer at the reserved height that forces the row's
+//!   `min_rect` to span the full row height. One-frame settle: frame 1
+//!   reads 99 nova / 123 vega, settled from frame 2.
+//! * **ITM-05** (S9 `dd546a5`): one line in `ItemContent::show`,
+//!   `ui.set_min_width(w)` — the wrapping row advances by each child's
+//!   `min_rect`, and the content Ui's `min_rect` was its max-content
+//!   width, so the allocated flex width never reached the row and the
+//!   actions landed right after the content's ink. Same `set_min_width`
+//!   pattern as ITM-02; wrap budgets read `available_width()` and are
+//!   unaffected.
+//!
+//! The `actions_w` / `actions_h` reservations are two-frame measurements:
+//! any measurement that depends on them (actions position, §7 height)
+//! settles from frame 2 — the same one-frame-settle class as alert D7.
+//!
+//! ## Interaction — anchor model, click-to-focus, keyboard
+//!
+//! Interactive rows are anchor rows (spec §7, D4): `Item::interactive(bool)`
+//! is the explicit opt-in standing in for `asChild` + `<a>`. Only an
+//! interactive row takes a Tab stop, paints a hover fill, or reports a
+//! click; a plain `div` row takes no focus and reports no clicks. The R1
+//! stop map is 82 stops, identical in all 4 configs and unchanged by the
+//! S9 fixes (S10 §R1, reverify §R1). Clicking an interactive item toggles
+//! it exactly once (R2 2/2 each config); Space and Return each toggle
+//! exactly once after a click (R3, OBS-ITM-S6-2 resolved — egui activates
+//! a focused click widget on Space/Enter, which differs from the browser's
+//! Enter-only link activation and is recorded as part of D4, not as a
+//! source requirement). The nested Launch button never takes focus and
+//! there is no button focus ring (S10 §R7: the button-region diff bbox is
+//! exactly the region — the item hover fill — so `classify_ring` mislabels
+//! it; no button ring exists). Focus ring: 3px `ring/50` outside the
+//! border box, never affecting layout; settled ring counts 4351 nova /
+//! 4453 vega (S10 motion R2). Hover fill is endpoint-only: 41 plateaus, 0
+//! intermediates in every config (S7/S10 distribution videos); vega/light
+//! hover delta is 5 grey levels (250 vs 255), below diff tol 8 — use
+//! tol=2 / ±1 classification (OBS-ITM-S7-5).
+//!
+//! ## Settled edge cases (spec §9 N10–N13)
+//!
+//! * **N10** — description links: a direct `<a>` child renders `underline`
+//!   + 4px offset and recolours to `text-primary` on hover. Satisfied at
+//!     S1 via the additive [`ItemDescription::link`]/[`ItemDescription::text`]
+//!     builder (OPEN-3); no dedicated link builder is required by the spec.
+//! * **N11** — title wrap: the title wraps at the content width
+//!   (`flex w-fit`); the icon never wraps below the text, staying on the
+//!   same flex line, vertically centred. §4's 4-line title row is
+//!   312.1×76.0 (nova) at 19.25px/line (S10 §Geometry).
+//! * **N12** — media with description: the media shifts 2px down and
+//!   top-aligns. Rendered: icon top − item top 13.0 with description /
+//!   11.0 without, shift exactly 2.0 (S10 §Geometry); the icon now
+//!   genuinely sits at pad+border 11.0 without a description.
+//! * **N13** — `flex-wrap`: the root row wraps; header/footer are
+//!   `basis-full`, each occupying a full line by construction.
+//! * Description clamps to 2 lines with an ellipsis (`line-clamp-2`,
+//!   spec §2.9; D9 satisfied at S1 — truncation with "…" implemented,
+//!   not a deviation). Title is always `font-medium` (500) at 19.25px
+//!   leading; description always `font-normal` (400) at 21px leading.
+//! * Group gap keys off the contained items' `data-size` (spec §2.4):
+//!   16px default, 10px with an `sm` item, 8px with an `xs` item
+//!   (xs wins on mixed sizes). `ItemGroup::size()` is a Rust extension
+//!   (D5) applying one size to the whole group; mixed-size groups are
+//!   OPEN-1.
+//! * `xs` exists only under nova (spec §2.3). Under base styles the port
+//!   applies the nova-xs geometry as an extension.
+//!
+//! ## States — none invented
+//!
+//! No disabled, selected, invalid, pressed or empty state is defined in
+//! the source; none is invented (spec §4). No ARIA tree exists in egui
+//! (D2). `:focus-visible` modality: the ring paints on ANY egui focus,
+//! keyboard or pointer — only the trigger condition differs (D1).
+//! `data-*` attributes are dropped; their values survive as `ItemCtx` /
+//! builder state (D3). `transition-colors duration-100` recolours
+//! instantly in egui — no per-property CSS transitions (D8, platform
+//! limitation); the 3px ring is a `box-shadow`, outside the
+//! `transition-colors` set, so it appears instantly even in the browser
+//! (spec §6). `text-balance` has no egui equivalent (D7, limitation).
+//! A second `ItemContent` is NOT `flex-none` (spec §2.7 says the second
+//! content does not grow) — a recorded limitation: every content grows
+//! via the ITM-05 `set_min_width(w)`.
+//!
+//! ## Tokens (spec §5)
+//!
+//! `--foreground` light `oklch(0% 0 0)` (`globals.css:102`) / dark
+//! `oklch(0.985 0 0)`; `--muted` 0.97 / 0.269; `--muted-foreground`
+//! 0.556 / 0.708; `--accent` 0.97 / 0.371 (dark Position A, SEL-VIS-03 —
+//! `themes.ts:56` says 0.269); `--border` 0.922 / `oklch(1 0 0 / 10%)`;
+//! `--ring` 0.708 / 0.556; `--primary` 0% / 0.922. **Light
+//! `--foreground` is CONTESTED** (verified first-hand at S11):
+//! `globals.css:102` says `oklch(0% 0 0)` while `themes.ts:11` says
+//! `oklch(0.145 0 0)` — the spec §5.4 claim that the two sources agree
+//! exactly is wrong for this token (same divergence card S11 and table
+//! S11 recorded). **Light `--primary` is CONTESTED the same way**
+//! (`globals.css:107` `oklch(0% 0 0)` vs `themes.ts:17` `oklch(0.205 0 0)`;
+//! progress S11 recorded it too). All other item tokens agree exactly
+//! between the two sources. Both go to S12 / Expert Reviewer; the
+//! effective value the port consumes is the `themes.ts` value per the
+//! standing R1 reading.
+//!
+//! ## Deviations and OPEN inventory — current dispositions
+//!
+//! D1 PROPOSED (`:focus-visible` modality), D2 PROPOSED (no ARIA tree),
+//! D3 PROPOSED (`data-*` dropped), D4 PROPOSED (`asChild` →
+//! `interactive(bool)` + Space/Enter activation), D5 PROPOSED
+//! (`ItemGroup::size()` extension), D6 PROPOSED
+//! (`ItemTitle::show_with` extension) — all six await the Expert
+//! Reviewer. D7/D8 are recorded limitations (no approval needed). D9 is
+//! satisfied (line-clamp implemented at S1), not a deviation. OPEN-1
+//! OPEN (mixed-size group gap), OPEN-2 OPEN (standing `cn()` merge
+//! semantics — never closes on substitute reasoning), OPEN-3 OPEN (the
+//! `.link()`/`.text()` builder was S1's additive choice; whether it
+//! closes the item is the reviewer's), OPEN-4 OPEN (cross-wave,
+//! dropdown-menu `p-0`, Batch F), OPEN-5 OPEN (folds into OPEN-1).
+//!
+//! ## Observations carried to the Expert Reviewer / S12 (not defects)
+//!
+//! * **OBS-ITM-S10-01** — vega `xs` frames sit +3.75px over S5's derived
+//!   model (vega §1 Xs 66 vs 62.25; §2 xs 41 vs 37.25): the port applies
+//!   the nova-default py-10, not the nova-xs py-8, under vega. Base `xs`
+//!   has no defined geometry (spec §2.3), so there is no spec value to
+//!   violate; S12 defines it (62.25, 66, or pure-base 78.25).
+//! * **OBS-ITM-S10-RV-01** — Launch ends exactly 1px right of
+//!   Manage/Follow in both styles (nova inset 13 vs 14; vega 16 vs 17);
+//!   the gallery item is 1019px wide vs the headless replay's 1018px
+//!   root — fractional-layout rounding, same class as the S10-accepted
+//!   vega §4 −1px galley rounding.
+//!
+//! ## Standing caveats (not defects)
+//!
+//! Render floor NOT VERIFIED in all 4 configs (wiggle 1.93–2.03 fps,
+//! Tab-driven 2.0–2.4 fps — pipeline-capped, same class as S7). Timing
+//! is UNRESOLVED at video level (presentation ~0.65 fps under load);
+//! the distribution analysis (41 plateaus, 0 intermediates) is the
+//! decisive instant-change evidence. Latency readings are poll upper
+//! bounds, not measured latencies (worst on 152–283ms, worst off
+//! 211–304ms at S10; the vega/dark 304ms reading is a 4ms overage on a
+//! poll upper bound under load 3.74). Budgets hold: idle 0.0%,
+//! animating 91.71–131.18% (<150%), RSS −1.09%..+0.25%, flicker 7×0,
+//! determinism 0, round-trips byte-identical (standalone md5
+//! `f34b9b9e967eaad14a50e7c7f22e0482`).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -869,7 +1052,12 @@ impl ItemMedia {
 
 /// `ItemContent` — the flexible middle column (`flex-1 flex-col gap-1`).
 /// It yields the width the item's [`ItemActions`] reserve (measured last
-/// frame, self-correcting).
+/// frame, self-correcting), and grows to fill the row, pushing the actions
+/// to the item's right edge (ITM-05, S9 `dd546a5`: `ui.set_min_width(w)` —
+/// the wrapping row advances by each child's `min_rect`, and without it
+/// the content sized to max-content and the actions sat mid-frame).
+/// A second `ItemContent` is NOT `flex-none` (spec §2.7) — a recorded
+/// limitation: every content grows the same way.
 #[derive(Clone, Debug, Default)]
 pub struct ItemContent {
     id_salt: Option<String>,
@@ -1205,7 +1393,9 @@ impl ItemActions {
 }
 
 /// `ItemHeader` — a full-width row above the main slots
-/// (`items-center justify-between gap-2`).
+/// (`items-center justify-between gap-2`). It sizes to its content height
+/// (ITM-04, S9 `1117d1d`): the row reserves the measured actions height
+/// and settles from frame 2; §7 header is 20 nova / 22 vega.
 #[derive(Clone, Debug, Default)]
 pub struct ItemHeader {
     id_salt: Option<String>,
@@ -1297,7 +1487,10 @@ impl ItemHeader {
 }
 
 /// `ItemFooter` — a full-width row below the main slots
-/// (`items-center justify-between gap-2`).
+/// (`items-center justify-between gap-2`). It sizes to its content height
+/// (ITM-04, S9 `1117d1d`): the row reserves the measured actions height
+/// and settles from frame 2; §7 footer is the Sm button's outer rect,
+/// 28 nova / 32 vega.
 #[derive(Clone, Debug, Default)]
 pub struct ItemFooter {
     id_salt: Option<String>,
