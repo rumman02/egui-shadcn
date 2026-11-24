@@ -1755,6 +1755,28 @@ mod tests {
             }
         }
 
+        // Document-start/end keys are platform-specific: on macOS egui
+        // treats Ctrl as the Emacs modifier, so Ctrl+Home/Ctrl+End are
+        // ignored (move_single_cursor returns early for any Ctrl+key
+        // that is not an Emacs key); the macOS equivalents are Cmd+Up /
+        // Cmd+Down (ArrowUp/ArrowDown + COMMAND move to the document
+        // start/end). Elsewhere they are Ctrl+Home / Ctrl+End.
+        fn doc_start() -> (egui::Key, egui::Modifiers) {
+            if cfg!(target_os = "macos") {
+                (egui::Key::ArrowUp, egui::Modifiers::COMMAND)
+            } else {
+                (egui::Key::Home, egui::Modifiers::CTRL)
+            }
+        }
+
+        fn doc_end() -> (egui::Key, egui::Modifiers) {
+            if cfg!(target_os = "macos") {
+                (egui::Key::ArrowDown, egui::Modifiers::COMMAND)
+            } else {
+                (egui::Key::End, egui::Modifiers::CTRL)
+            }
+        }
+
         fn cursor_index(ctx: &egui::Context, id: egui::Id) -> usize {
             TextEditState::load(ctx, id)
                 .and_then(|s| s.cursor.char_range())
@@ -1788,13 +1810,10 @@ mod tests {
             let (_, focused) = frame(&ctx, egui::RawInput::default(), &mut text);
             assert!(focused, "focused after request {style:?}");
 
-            // Ctrl+Home: caret to the start.
-            let _ = frame(
-                &ctx,
-                key_event(egui::Key::Home, true, egui::Modifiers::CTRL),
-                &mut text,
-            );
-            assert_eq!(cursor_index(&ctx, id), 0, "Ctrl+Home to start {style:?}");
+            // Document start: caret to the start.
+            let (doc_key, doc_modifiers) = doc_start();
+            let _ = frame(&ctx, key_event(doc_key, true, doc_modifiers), &mut text);
+            assert_eq!(cursor_index(&ctx, id), 0, "doc-start to start {style:?}");
 
             // PageDown: one page = the 5 visible rows in the 118px box.
             // The box is content-sized, so the viewport IS the whole
@@ -1848,13 +1867,10 @@ mod tests {
                 "clamped paging changes no text {style:?}"
             );
 
-            // Ctrl+End, then PageDown at the bottom clamps.
-            let _ = frame(
-                &ctx,
-                key_event(egui::Key::End, true, egui::Modifiers::CTRL),
-                &mut text,
-            );
-            assert_eq!(cursor_index(&ctx, id), 16, "Ctrl+End to end {style:?}");
+            // Document end, then PageDown at the bottom clamps.
+            let (doc_key, doc_modifiers) = doc_end();
+            let _ = frame(&ctx, key_event(doc_key, true, doc_modifiers), &mut text);
+            assert_eq!(cursor_index(&ctx, id), 16, "doc-end to end {style:?}");
             let _ = frame(
                 &ctx,
                 key_event(egui::Key::PageDown, true, egui::Modifiers::NONE),
@@ -1869,11 +1885,8 @@ mod tests {
             // Shift+PageDown extends the selection from the start to
             // the document end (mirrors Shift+ArrowDown selection
             // semantics): sorted range 0..16 in the 16-char text.
-            let _ = frame(
-                &ctx,
-                key_event(egui::Key::Home, true, egui::Modifiers::CTRL),
-                &mut text,
-            );
+            let (doc_key, doc_modifiers) = doc_start();
+            let _ = frame(&ctx, key_event(doc_key, true, doc_modifiers), &mut text);
             let _ = frame(
                 &ctx,
                 key_event(egui::Key::PageDown, true, egui::Modifiers::SHIFT),
