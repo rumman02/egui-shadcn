@@ -1,22 +1,121 @@
-//! shadcn `resizable.tsx` — draggable panel groups.
+//! shadcn `resizable.tsx` — draggable split-panel groups.
 //!
 //! Ported from `apps/v4/registry/new-york-v4/ui/resizable.tsx` (the
-//! `react-resizable-panels` wrapper): a [`ResizablePanelGroup`] lays out
+//! `react-resizable-panels` v4 wrapper): a [`ResizablePanelGroup`] lays out
 //! [`ResizablePanel`] children separated by [`ResizableHandle`]s. Handles
-//! are `bg-border` 1px lines with an optional `with_handle` grip chip
-//! (base: `h-4 w-3 rounded-xs border bg-border` + grip glyph; nova: a plain
-//! `h-6 w-1 rounded-lg bg-border` pill); they support pointer dragging and
-//! Arrow-key resizing when focused, with per-panel `min`/`max` fraction
-//! clamps. Fractions persist in the egui context keyed by the group's id
-//! salt.
+//! are `bg-border` 1px lines with a 4px centred hit band and an optional
+//! `with_handle` grip chip (base: `h-4 w-3 rounded-xs border bg-border` +
+//! 10px grip glyph; nova: a plain `h-6 w-1 rounded-lg bg-border` pill,
+//! 4x24 on a vertical bar / 24x4 on a horizontal bar). Focus ring: 1px
+//! `ring` token, 1px offset, no outline (spec §2–§3).
 //!
-//! Scope notes: keyboard resize steps by 5% of the group length (an
-//! approximation of `react-resizable-panels`' keyboard increments —
-//! OPEN-2, not spec truth); sizes are fractional — the source's pixel
-//! `defaultSize`/`minSize` and collapsible panels are out of scope
-//! (D4). The base grip chip's border is `currentColor` (foreground),
-//! per the frozen spec §0 correction 5; the nova pill is borderless
-//! (OPEN-11 frozen value).
+//! Verified final state (S10 re-verification, `resizable-s10-report.md`,
+//! all four configs — nova/vega x light/dark — on commit `ca94bc0`):
+//! rest geometry equals S7 exactly in every config — §1 handle x 393,
+//! §1 177 rows nova / 155 vega (y 245–421 / 245–399); §3 handles at
+//! 319 / 466; §4 y 889–924 nova / 893–928 vega; §6 y 1265–1300 nova /
+//! 1286–1321 vega; §2 handles y 537 / 604 nova, 541 / 608 vega;
+//! §5 y 1094 nova / 1115 vega. All five S9/S10 fixes verified FIXED in
+//! all four configs: RSZ-01 arrow-key focus leak, RSZ-02 cascade,
+//! RSZ-03 partner-line jitter, RSZ-04 restoring-drag shortfall, RSZ-05
+//! panel-height collapse.
+//!
+//! Keyboard (S6/S10 verified): Tab reaches every handle (85-stop walk,
+//! S10 R1); Arrow keys resize by exactly 5% of the group length per
+//! press — the library value (`onKeyDown.ts` ±5pp), NOT an
+//! approximation: OPEN-2 CLOSED at S8 §3.8. While a handle is focused
+//! its arrows are locked to resizing by an `EventFilter` (the egui
+//! `Slider` mechanism) plus `consume_key` (RSZ-01, `1312d54`); a
+//! wrong-axis key moves neither the line nor the focus, and repeated
+//! presses step again. Known limitation, shared with egui's
+//! `Slider`/`TextEdit`: an arrow arriving in the very first pass after
+//! focus is gained can still move focus. Home / End / Enter / F6 /
+//! Space / PageUp / PageDown are no-ops — the library defines Home,
+//! End, Enter and F6 (R10 OPEN-3 SETTLED) but S8 §3.8 decided DO NOT
+//! ADD this wave (no `collapsible` API, so Enter would be a no-op; F6
+//! duplicates Tab): a known scope gap for the Expert Reviewer, not a
+//! defect. Clicking a handle does NOT focus it — the library's
+//! pointerdown `preventDefault()` suppresses focus-on-mousedown, so
+//! this is a documented equivalence (R10 OPEN-4 SETTLED), not a
+//! divergence. Clicking does clear existing keyboard focus
+//! (OBS-RSZ-S6-1), ACCEPTED at S8 §3.8 as documented behaviour — the
+//! frozen spec does not pin what a click does to focus.
+//!
+//! Drag (S10 verified): a pointer press anywhere on the 4px hit band
+//! starts a drag; the split moves with the pointer and converges
+//! exactly on release (RSZ-04, `67c7d5c` — per-frame `drag_delta()`
+//! drops the sub-6px first step, so the handle applies only the
+//! not-yet-applied part of `total_drag_delta()`). When the immediate
+//! neighbour hits its limit the excess CASCADES outward across panels
+//! (RSZ-02, `d6e9d0e`): S8 §3.1 corrects frozen spec §10 edge case 2
+//! from "excess is dropped" to the library's cascade
+//! (`adjustLayoutByDelta.ts`); the S12 spec amendment records it.
+//! Handle-1-max lands at (519, 520) in all four configs. Restoring
+//! drags land exactly — h1 +50 → (369, 466), h1 −50 → (319, 466),
+//! h2 +25 → (319, 491), h2 −25 → (319, 466) — and the non-dragged
+//! partner line reads its settled value in every distinct frame
+//! (RSZ-03, `e05dbeb`: per-frame fraction snapshot, since `adjust()`
+//! mutates the live fractions mid-layout). R1 net-zero: end state
+//! (319, 466) = rest, devs empty. Panels occupy exactly their fraction
+//! width (RSZ-02) and their height comes from content (RSZ-05,
+//! `ca94bc0`: single-pass, width-confined child Ui; the RSZ-02
+//! `allocate_exact_size` arm froze horizontal panels at the 36px
+//! `Ui::horizontal` seed height).
+//!
+//! States: the source defines NO hover, dragging, or disabled visuals
+//! (spec §4.2/§4.4/§4.5) — a hovered or dragged handle looks exactly
+//! like a resting one. Resize cursors on hover are a Rust extension
+//! (E1). No animation: resizes apply immediately (spec §6). Budgets
+//! (S10): idle CPU 0.0%, animating 85–118%, RSS −2.78%…+1.11%,
+//! flicker zero, determinism zero. Render floor NOT VERIFIED (2.2–3.2
+//! fps measured, pipeline-capped — the standing S7 pattern, not a
+//! component defect). Timing UNRESOLVED in video legs (same caveat).
+//!
+//! Deviations (frozen spec §11 — all PROPOSED, for the Expert
+//! Reviewer): D1 `:focus-visible` modality — the ring shows on any egui
+//! focus, not keyboard-only (geometry and colours unchanged); D2
+//! `data-slot` attributes dropped (no egui analogue); D3 no ARIA tree
+//! — `aria-orientation` / `role="separator"` are unexpressible in egui,
+//! orientation is the `ResizableOrientation` enum instead; D4
+//! fraction-only sizing — pixel `defaultSize`/`minSize`/`maxSize` and
+//! `collapsible` panels are out of scope (the pixel half is a real
+//! scope-out: R10 OPEN-10 SETTLED — the library DOES accept pixels).
+//! E1 resize cursors on hover — extension, confirmation only.
+//!
+//! OPEN inventory (frozen spec §12; R10 library-source evidence at S6,
+//! `resizable-s6-report.md` R10): OPEN-1 `cn()` merge semantics STAYS
+//! OPEN (S8 §3.8 — never closes on substitute reasoning); OPEN-2
+//! keyboard step CLOSED at S8 §3.8 (5% is the library value); OPEN-3
+//! Home/End/Enter/F6 SETTLED from the library source but NOT ADDED
+//! this wave (S8 §3.8 scope gap); OPEN-4 handle focusability SETTLED
+//! (`tabIndex={0}`, DOM order, click-does-not-focus equivalence);
+//! OPEN-5 default direction SETTLED (horizontal); OPEN-6 initial
+//! layout SETTLED (equal split — the port's first frame matches);
+//! OPEN-7 v4 prop surface SETTLED (the audit's `autoSaveId` /
+//! `storage` / `onLayout` / `onCollapse` / `onExpand` / `onDragging`
+//! names are v2-era and do not exist in v4); OPEN-8 nesting SETTLED
+//! in principle, runtime-unverified (no nested demo); OPEN-9 drag
+//! mechanics SETTLED (percentage deltas from the pointerdown layout,
+//! window-level pointer listeners, cascade clamp, no animation);
+//! OPEN-10 pixel sizes SETTLED (accepted by the library — D4's pixel
+//! half does NOT close as N/A); OPEN-11 nova pill border STAYS OPEN
+//! (S8 §3.8: KEEP the frozen borderless value).
+//!
+//! Tokens (spec §5): `border` and `ring` agree between `globals.css`
+//! and `themes.ts` — no divergence for this component's own tokens.
+//! The base chip border and glyph use `currentColor` (foreground,
+//! spec §0 correction 5, accepted at sign-off — NOT the `border`
+//! token). Note: the light `--foreground` value itself is CONTESTED
+//! wave-wide (card/table S11: `globals.css` `oklch(0% 0 0)` vs
+//! `themes.ts` `oklch(0.145 0 0)`) — carried to S12 / Expert Reviewer.
+//!
+//! Scope notes: sizes are fractional (D4); panel/handle counts and
+//! limits are learned across frames — the first frame uses an equal
+//! split (OPEN-6, matches the library); fractions persist in the egui
+//! context keyed by the group's id salt (the port's mapping of the
+//! library's persistence); nested groups are supported in principle
+//! by the group stack (OPEN-8, unverified); a handle whose group state
+//! was evicted degrades to a static 1px line.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -349,6 +448,9 @@ fn adjust(ui: &Ui, id: Id, idx: usize, d: f32) -> f32 {
 }
 
 /// A shadcn resizable panel group. See the [module docs](self) for an example.
+/// Horizontal by default — the library default (R10 OPEN-5 SETTLED).
+/// Fractions persist per group id salt; the first frame lays panels out
+/// at an equal split (OPEN-6, matches the library).
 #[derive(Clone, Debug, Default)]
 pub struct ResizablePanelGroup {
     orientation: ResizableOrientation,
@@ -463,6 +565,9 @@ impl ResizablePanelGroup {
 }
 
 /// A resizable panel: a flexible child of [`ResizablePanelGroup`].
+/// Its size is a fraction of the group (`.min` / `.max` clamp it); its
+/// width is exactly its fraction (RSZ-02) and its height comes from its
+/// content (RSZ-05).
 #[derive(Clone, Copy, Debug)]
 pub struct ResizablePanel {
     min: f32,
@@ -617,6 +722,9 @@ fn chip_border_color(p: &crate::theme::Palette) -> Color32 {
 
 /// A draggable separator between panels: a 1px `bg-border` line with an
 /// optional grip chip. Drag it, or focus it and use the Arrow keys.
+/// Arrow steps are 5% of the group length — the library value (OPEN-2
+/// CLOSED at S8 §3.8). Clicking does not focus it (R10 OPEN-4
+/// equivalence: the library's pointerdown `preventDefault()`).
 #[derive(Clone, Debug, Default)]
 pub struct ResizableHandle {
     with_handle: bool,

@@ -9237,7 +9237,7 @@ pub fn resizable_demo(ui: &mut egui::Ui) {
     ui.label(format!(
         "Resizable — draggable split-panel groups (style: {style_name}). Base recipe: 1px bg-border handle line, 4px centred hit band, grip chip (base 12x16 / 16x12 with a 1px currentColor border and 10px grip glyph; nova 4x24 / 24x4 plain bg-border pill, no border, no glyph). Focus ring: 1px ring token, 1px offset, no outline."
     ));
-    ui.label("Honest notes: D4 — fraction-only sizing (no collapsible panels, no pixel min/max). OPEN-2 — the 5% arrow-key step is a documented approximation, NOT spec truth. OPEN-11 — the nova pill is kept borderless (S8 decides). OPEN-6 — equal split is the port's first-frame choice, not a spec value. E1 — resize cursors on hover are an extension. D1 — the focus ring shows on any egui focus, not keyboard-only. No hover/drag/disabled visuals in the source.");
+    ui.label("Honest notes: D4 — fraction-only sizing (no collapsible panels, no pixel min/max). OPEN-2 — the 5% arrow-key step is the library value (CLOSED at S8 §3.8). OPEN-11 — the nova pill is kept borderless (KEEP at S8 §3.8). OPEN-6 — equal split is the port's first-frame choice, not a spec value. E1 — resize cursors on hover are an extension. D1 — the focus ring shows on any egui focus, not keyboard-only. No hover/drag/disabled visuals in the source.");
 
     ui.add_space(12.0);
     ui.label("§1 Horizontal group (drag the handle; grip chip shown)");
@@ -9391,7 +9391,7 @@ pub fn resizable_demo(ui: &mut egui::Ui) {
     let b_chip = egui::Rect::from_center_size(b_hit.center(), egui::Vec2::new(b_cw, b_ch));
     if nova {
         ui.label(format!(
-            "measured: chip {:.1} x {:.1} at x={:.1} y={:.1} — nova pill, borderless by the frozen OPEN-11 value (no border token, no foreground stroke; S8 decides)",
+            "measured: chip {:.1} x {:.1} at x={:.1} y={:.1} — nova pill, borderless by the frozen OPEN-11 value (no border token, no foreground stroke; S8 §3.8: KEEP borderless)",
             b_cw, b_ch, b_chip.min.x, b_chip.min.y
         ));
     } else {
@@ -9478,7 +9478,7 @@ pub fn resizable_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("S5/S6 handoff: judge the §4 chip border colour (foreground vs border token) and the §5 pill (borderless, no glyph) in all 4 configs; page-31 goldens are pre-rebuild baseline — expect a diff on the base chip border colour only. §6 is the Tab target; the 5% arrow-key step is OPEN-2 (fetch the react-resizable-panels source).");
+    ui.label("S5/S6 handoff: judge the §4 chip border colour (foreground vs border token) and the §5 pill (borderless, no glyph) in all 4 configs; §6 is the Tab target; the 5% arrow-key step is the library value (OPEN-2 CLOSED at S8 §3.8).");
 }
 
 pub fn dropdown_menu_demo(ui: &mut egui::Ui) {
