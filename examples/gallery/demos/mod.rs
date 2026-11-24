@@ -10292,6 +10292,41 @@ pub fn breadcrumb_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("Long trail — wraps onto following lines (B1, §9.1/§9.2: crumbs wrap at list level; a single unbreakable word is the only overflow case, no truncation rule)");
+    ui.add_space(4.0);
+    Breadcrumb::new().show(ui, |ui| {
+        BreadcrumbList::new().show(ui, |ui| {
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Home").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Getting Started with the Design System").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Components and Primitives").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Navigation and Hierarchy Patterns").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Breadcrumb Navigation Pages").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbLink::new("Advanced Configuration Options").show(ui);
+            });
+            BreadcrumbSeparator::new().show(ui);
+            BreadcrumbItem::new().show(ui, |ui| {
+                BreadcrumbPage::new("Current Page").show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
     ui.label("Custom separator icon (the source accepts arbitrary children)");
     ui.add_space(4.0);
     Breadcrumb::new().show(ui, |ui| {
@@ -10307,7 +10342,7 @@ pub fn breadcrumb_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Hover a link — it brightens (hover:text-foreground).");
+    ui.label("Hover a link — it brightens (hover:text-foreground). Focus: a focused link paints a 3px ring/50 ring (N9 — settled deviation D1, an accessibility improvement, kept, not a defect).");
 
     let clicked_store = egui::Id::unique("breadcrumb_demo_clicked");
     let mut clicks: u32 = ui
