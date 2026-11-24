@@ -8717,7 +8717,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
 }
 
 pub fn scroll_area_demo(ui: &mut egui::Ui) {
-    ui.label("Scroll area — the scrollbar OVERLAYS the viewport (D3: it takes no layout width), the thumb is self-painted 8px wide with radius 4 inside the 10px bar (D4), and there is NO thumb hover state in either style (the audit's nova hover claim was wrong). The viewport is one Tab stop: on focus it paints a 3px ring/50 plus a 1px solid outline (D2: egui cannot tell keyboard from pointer focus, so the ring shows on any focus). OPEN-1 (scrollbar `type` default), OPEN-2 (no keyboard scrolling wired yet) and OPEN-4 (hide-when-fitting) stay OPEN — S6 fetches the Radix source. The scoped `bg_fill = border` leaks into nested content widgets (S1 observation for S8/foundation, not a defect of this line). Select and native-select use the BARE egui ScrollArea, not this wrapper — do not re-judge them here.");
+    ui.label("Scroll area — the scrollbar OVERLAYS the viewport (D3: it takes no layout width), the thumb is self-painted 8px wide with radius 4 inside the 10px bar (D4), and there is NO thumb hover state in either style (the audit's nova hover claim was wrong). The viewport is one Tab stop: on focus it paints a 3px ring/50 plus a 1px solid outline (D2: egui cannot tell keyboard from pointer focus, so the ring shows on any focus). OPEN-1 (always-visible bar, RATIFIED at S8 §3.7 as a deliberate deviation from Radix type='hover'), OPEN-2 (no keyboard scrolling wired — DO NOT wire, S8 §3.7; arrows move focus) and OPEN-4 (bar hides when content fits — settled at S10, the bar does not paint in §7). The scoped `bg_fill = border` is RATIFIED at S8 §3.7 as the correct port of the no-visible-track rule. Select and native-select use the BARE egui ScrollArea, not this wrapper — do not re-judge them here.");
     ui.add_space(8.0);
 
     ui.label("§1 Vertical (fixed height, themed 10px scrollbar)");
@@ -8810,7 +8810,7 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
     ));
 
     ui.add_space(12.0);
-    ui.label("§5 Thumb size — very long content, thumb floored at the 12px minimum");
+    ui.label("§5 Thumb size — very long content, thumb floored at the 18px minimum");
     ui.add_space(4.0);
     let thumb = ScrollArea::new()
         .height(160.0)
@@ -8823,9 +8823,9 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
         });
     let vp = thumb.response.rect;
     let content_h = thumb.inner;
-    let expect = (vp.height() * vp.height() / content_h).max(12.0);
+    let expect = (vp.height() * vp.height() / content_h).max(18.0);
     ui.small(format!(
-        "content {:.1}px in a {:.1}px viewport — expected thumb length {:.1}px (12.0 minimum, OPEN-3: egui default, no source basis)",
+        "content {:.1}px in a {:.1}px viewport — expected thumb length {:.1}px (18.0 minimum, OPEN-3: Radix Math.max(thumbSize, 18), settled at S8 §3.7)",
         content_h,
         vp.height(),
         expect
@@ -8859,7 +8859,7 @@ pub fn scroll_area_demo(ui: &mut egui::Ui) {
             ui.label("Just a couple of lines — the scrollbar only appears when needed.");
             ui.label("Second line.");
         });
-    ui.small("OPEN-4: whether the bar hides when content fits is Radix behaviour not in the .tsx — S6 fetches the source; judge the rendered result, not this label.");
+    ui.small("OPEN-4 settled at S10: the bar does not paint when content fits (matches Radix).");
 }
 
 pub fn tabs_demo(ui: &mut egui::Ui) {

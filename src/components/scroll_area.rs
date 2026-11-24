@@ -5,6 +5,112 @@
 //! `rounded-full bg-border` and whose track is `w-2.5` (10px) with `p-px`
 //! padding.
 //!
+//! # Verified final state (S10, all 4 configs)
+//!
+//! Every statement below is verified in
+//! `batch-c/reports/scroll-area-s10-report.md` (S10) or decided in
+//! `batch-c/reports/s8-decisions.md` §3.7 (S8 gate); S10 supersedes S5/S6
+//! where they differ.
+//!
+//! ## Geometry (S10 §1, identical in all 4 configs)
+//!
+//! Five vertical thumb runs, same y-positions in every config: §1
+//! (251–274, 24px), §3 (619–636, 18px), §4 (831–905, 75px), §5
+//! (1126–1141, 16px by the S6 method / 18px painted span), §6 (1358–1377,
+//! 20px). §2 horizontal thumb: 487px (nova) / 416px (vega), y537–544.
+//! Viewport heights are exact (ring height − 9): §3 140px, §5 160px,
+//! §6 140px, §7 80px; focus rings measure 1028×(h+1).
+//!
+//! ## The three S9 changes (all PASS at S10)
+//!
+//! * **SCA-01** (`63d1158`, P1): the axes passed to egui's
+//!   `ScrollArea::new` were swapped (`[vertical, horizontal]` instead of
+//!   `[horizontal, vertical]`); §1 now clips to its 160px viewport (only
+//!   Items 01–07 visible) and §1–§7 all sit above the fold.
+//! * **SCA-02** (`4ed09a5`, P2): `.height(h)` now pins the viewport at
+//!   exactly `h` (`max_height(h).min_scrolled_height(h)`); §6 renders
+//!   140px and §7 80px (both sat on egui's 64px `min_scrolled_size`
+//!   floor pre-fix, measured headless at exactly 64.0px).
+//! * **Thumb minimum 18px** (`8637868`, S8 §3.7 OPEN-3): the single
+//!   constant `THUMB_MIN_LENGTH` went 12.0 → 18.0, feeding both egui's
+//!   `handle_min_length` and the self-painted thumb clamp. S10 measured
+//!   §3 18 (TRUE 20 light / 19 dark), §5 16 (TRUE 18 light / 17 dark —
+//!   the painted span is 18 rows in both), §6 20 (TRUE 22): the 18px
+//!   minimum holds on the painted span in all 4 configs.
+//!
+//! ## Interaction (S10 §2, all 4 configs)
+//!
+//! * Track-click: the thumb **jumps** to the click point (|centre − click|
+//!   = 0.5px in all 4 configs) and the viewport defocuses (egui native
+//!   behaviour, kept per S8 §3.7 — Radix's jump-then-drag is NOT
+//!   implemented).
+//! * Drags and wheel are exact and restore exactly: §1 down60
+//!   (57,80)→(117,140) + back; §2 right100 + back; §6 down40 + back;
+//!   wheel down3 +39/+38 + back.
+//! * Arrow keys move **focus**, never content (S8 §3.7 OPEN-2 — Radix has
+//!   no keyboard table; the port's viewport is focusable and egui's
+//!   directional focus navigation takes the arrows). The thumb never
+//!   moves on any key.
+//! * Tab walk: 39–40 stops; landmarks 107 §3 / 109 §4 / 110 button /
+//!   111 §5 / 112 §6 / 113 §7 all match, with reversal.
+//!
+//! ## States
+//!
+//! * **No hover state** (spec §4.2): the thumb is `bg-border` at rest,
+//!   on hover, and while dragging — the audit's nova `hover:bg-accent`
+//!   claim was wrong (zero hits in `style-nova.css`). S10 confirmed
+//!   zero-change over 20 transitions per thumb per config.
+//! * **Always-visible bar** (OPEN-1): a deliberate deviation from Radix's
+//!   `type='hover'` default, RATIFIED at S8 §3.7 — a 600ms hide delay
+//!   fits egui's immediate-mode model poorly.
+//! * **Bar hides when content fits** (OPEN-4): the bar does NOT paint in
+//!   §7 at rest or focused (zero bar pixels, all 4 configs, S10 §6) —
+//!   `scrollbar_thumb_rect` returns `None` when content fits, matching
+//!   Radix. The S8 record's contrary sentence was factually wrong and is
+//!   corrected at S12.
+//! * **Track**: no visible track (`extreme_bg_color = TRANSPARENT`, the
+//!   source's `border-l-transparent`); `bg_fill = border` RATIFIED at
+//!   S8 §3.7 as the correct port (spec §4.1/§3.4).
+//!
+//! ## Deviations and OPEN items (current dispositions)
+//!
+//! D1 (no ARIA tree), D2 (`:focus-visible` modality — ring shows on any
+//! egui focus), D3 (overlay → layout width), D4 (thumb 10px vs source
+//! 8px), D5 (no standalone `ScrollBar` export) — all PROPOSED, no
+//! approval line filled; they go to the Expert Reviewer in the wave
+//! pack. OPEN-1 RATIFIED (deliberate deviation); OPEN-2 DO NOT wire
+//! arrow-key scrolling; OPEN-3 ADOPTED (18px, S9 `8637868`); OPEN-4
+//! settled at S10 (bar hides when content fits — actual behaviour, not
+//! a deviation); OPEN-5 (radius inheritance mechanism) stays OPEN.
+//!
+//! ## Carried, not fixed
+//!
+//! **SCA-03** (P2, `batch-c/reports/defects/SCA-03.md`): the §4 inner
+//! button is a Tab stop (108) but when focused paints NO visible
+//! indicator and the viewport does NOT scroll to reveal it
+//! (whole-window diff vs rest exactly 0px) — egui 0.37 has no
+//! auto-scroll-to-focused-widget. The frozen spec has no rule requiring
+//! focused descendants to scroll into view, so any fix is a new
+//! behaviour addition; carried to the wave pack / Expert Reviewer for a
+//! fix-shape decision.
+//!
+//! ## Budgets and standing caveats (S10 §5)
+//!
+//! Idle CPU 0.0%, animating 107–131% (<150%), RSS −2.42%..+0.9% with no
+//! monotonic growth (the S7 RSS watch, +4.93% nova/light, is RESOLVED).
+//! Determinism 0, flicker 0, round-trips byte-identical. Render floor
+//! NOT VERIFIED (2.2–3.87 fps, pipeline-capped) and timing legs
+//! UNRESOLVED in every video leg — the wave-wide pattern, not a
+//! component defect.
+//!
+//! ## Tokens
+//!
+//! Thumb `bg-border` (light `oklch(0.922 0 0)`, dark
+//! `oklch(1 0 0 / 10%)`); focus ring `ring/50` (light
+//! `oklch(0.708 0 0)`, dark `oklch(0.556 0 0)`). No token disagreement
+//! exists for this component (`border`/`ring` agree across
+//! `globals.css` and `themes.ts`, spec §5).
+//!
 //! The scrollbar is egui's *floating* bar, so it overlays the viewport and
 //! takes no layout width (N14a — the viewport is `size-full`), and its
 //! outer edge is flush with the Root edge (`bar_outer_margin = 0`, N14b).
@@ -64,7 +170,8 @@ const THUMB_RADIUS: u8 = 4;
 /// default with no source basis.
 const THUMB_MIN_LENGTH: f32 = 18.0;
 
-/// A shadcn scroll area. See the [module docs](self) for an example.
+/// A shadcn scroll area. See the [module docs](self) for the S10-verified
+/// final state (geometry, interaction, deviations and OPEN dispositions).
 #[derive(Clone, Debug)]
 pub struct ScrollArea {
     vertical: bool,
@@ -112,6 +219,8 @@ impl ScrollArea {
     /// (SCA-02), so `show` also sets `min_scrolled_height` to the same
     /// value. With `auto_shrink([false, false])` the viewport then
     /// renders at exactly this height even when the content is shorter.
+    /// S10-verified: §6 renders 140px and §7 80px in all 4 configs
+    /// (both sat on egui's 64px floor pre-fix).
     pub fn height(mut self, height: f32) -> Self {
         self.height = Some(height);
         self
@@ -180,6 +289,13 @@ impl ScrollArea {
     }
 
     /// Renders the scroll area around its contents.
+    ///
+    /// S10-verified interaction (all 4 configs): track-click jumps the
+    /// thumb to the click point (|centre − click| = 0.5px) and defocuses
+    /// the viewport; drags and wheel moves are exact and restore exactly;
+    /// arrow keys move focus, never content (S8 §3.7 OPEN-2); the viewport
+    /// is one Tab stop and on focus paints the 3px `ring/50` ring plus the
+    /// 1px solid outline (settled ring 9528 / ring50 9188, S10 §5).
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
@@ -266,7 +382,10 @@ impl ScrollArea {
 /// Computes the thumb rect for one axis, mirroring egui 0.37's
 /// `calculate_handle_rect` (`containers/scroll_area.rs`) with the source's
 /// `p-px` inset applied: the thumb is 8px wide inside the 10px bar
-/// (`rounded-full` → radius 4), 1px inside the bar on every side.
+/// (`rounded-full` → radius 4), 1px inside the bar on every side, and
+/// floored at the 18px Radix minimum (`THUMB_MIN_LENGTH`, OPEN-3 settled
+/// at S8 §3.7; S10 measured §3 18 / §5 18 painted / §6 20 in all 4
+/// configs).
 ///
 /// `viewport` is the scroll area's inner rect (== the Root rect for the
 /// floating bar); `content_size` / `offset` are the along-axis content size
@@ -275,7 +394,8 @@ impl ScrollArea {
 /// the area is scrolled out of view in a parent (spec §9 item 3).
 ///
 /// Returns `None` when the content fits (no bar), matching egui's
-/// `content_is_too_large` check.
+/// `content_is_too_large` check — S10 confirmed §7 paints no bar at rest
+/// or focused (OPEN-4 settled: the bar hides when content fits).
 pub(crate) fn scrollbar_thumb_rect(
     vertical: bool,
     viewport: Rect,
