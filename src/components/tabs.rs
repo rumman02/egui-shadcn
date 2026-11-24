@@ -20,7 +20,9 @@
 //! ArrowDown/ArrowUp (vertical) move focus to the next/previous enabled
 //! trigger and select it, Home/End jump to the first/last enabled trigger,
 //! and Enter/Space activate the focused trigger. Tab keeps egui's own
-//! traversal.
+//! traversal. With `.activation_mode(TabsActivationMode::Manual)` the arrow
+//! keys (and Home/End) move focus only — the selection does not follow until
+//! Enter/Space or a click activates the focused trigger.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -67,6 +69,17 @@ pub enum TabsOrientation {
     Horizontal,
     /// Triggers in a column, content to the right.
     Vertical,
+}
+
+/// Activation behaviour, mirroring Radix `activationMode` (`tabs.tsx`
+/// passes the prop through; the source default is `"automatic"`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabsActivationMode {
+    /// Arrow keys move focus AND select (Radix default).
+    #[default]
+    Automatic,
+    /// Arrow keys move focus only; Enter/Space (or a click) selects.
+    Manual,
 }
 
 /// Height of the trigger list (nova `h-8`), horizontal orientation.
@@ -116,6 +129,7 @@ fn vertical_indicator_rect(rect: Rect) -> Rect {
 struct TabsRoot {
     value_id: Id,
     orientation: TabsOrientation,
+    activation_mode: TabsActivationMode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +137,7 @@ struct TabsListScope {
     value_id: Id,
     variant: TabsVariant,
     orientation: TabsOrientation,
+    activation_mode: TabsActivationMode,
 }
 
 fn root_stack_id() -> Id {
@@ -194,6 +209,7 @@ fn selected_after_click(current: Option<&str>, value: &str) -> String {
 pub struct Tabs<'a> {
     controlled: Option<&'a mut String>,
     orientation: TabsOrientation,
+    activation_mode: TabsActivationMode,
     id_salt: Option<String>,
 }
 
@@ -209,6 +225,7 @@ impl<'a> Tabs<'a> {
         Self {
             controlled: None,
             orientation: TabsOrientation::Horizontal,
+            activation_mode: TabsActivationMode::Automatic,
             id_salt: None,
         }
     }
@@ -226,6 +243,14 @@ impl<'a> Tabs<'a> {
     /// Sets the layout direction (`orientation="vertical"`).
     pub fn orientation(mut self, orientation: TabsOrientation) -> Self {
         self.orientation = orientation;
+        self
+    }
+
+    /// Sets the activation behaviour (`activationMode="manual"`: arrow keys
+    /// move focus only; Enter/Space or a click selects. The default is
+    /// `automatic`, matching the source default).
+    pub fn activation_mode(mut self, mode: TabsActivationMode) -> Self {
+        self.activation_mode = mode;
         self
     }
 
@@ -256,6 +281,7 @@ impl<'a> Tabs<'a> {
             stack.push(TabsRoot {
                 value_id,
                 orientation: self.orientation,
+                activation_mode: self.activation_mode,
             });
             d.insert_temp(root_stack_id(), stack);
         });
@@ -337,6 +363,7 @@ impl TabsList {
             value_id: root.value_id,
             variant: self.variant,
             orientation: root.orientation,
+            activation_mode: root.activation_mode,
         };
         ui.ctx().data_mut(|d| {
             let mut stack: Vec<TabsListScope> = d.get_temp(list_stack_id()).unwrap_or_default();
@@ -347,7 +374,7 @@ impl TabsList {
                                                        // previous-frame results stay until this list finishes.
             d.insert_temp(
                 trigger_order_collect_id(scope.value_id),
-                Vec::<(String, bool)>::new(),
+                Vec::<(String, bool, Id)>::new(),
             );
             d.insert_temp(trigger_widths_collect_id(scope.value_id), Vec::<f32>::new());
         });
@@ -358,10 +385,22 @@ impl TabsList {
         let gap = list_gap(self.variant);
         match scope.orientation {
             TabsOrientation::Horizontal => {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    content(ui);
-                });
+                // The list row is exactly `h-8` (32px); the 25px triggers
+                // are centred in it (`items-center`), like the source.
+                // NOTE: `ui.horizontal` cannot do this — it allocates the
+                // child Ui with an initial height of
+                // `spacing().interact_size.y` (36px here), and
+                // `set_min_height` can only grow, never shrink, so the row
+                // would stay 36px. Allocating the row at the exact size
+                // reserves 32px in the parent instead.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), TABS_LIST_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        content(ui);
+                    },
+                );
             }
             TabsOrientation::Vertical => {
                 ui.vertical(|ui| {
@@ -375,8 +414,8 @@ impl TabsList {
         // widest natural trigger width (for the `flex-1` equal-width
         // stretch) for the next frame.
         ui.ctx().data_mut(|d| {
-            let order: Vec<(String, bool)> = d
-                .get_temp::<Vec<(String, bool)>>(trigger_order_collect_id(scope.value_id))
+            let order: Vec<(String, bool, Id)> = d
+                .get_temp::<Vec<(String, bool, Id)>>(trigger_order_collect_id(scope.value_id))
                 .unwrap_or_default();
             d.insert_temp(trigger_order_id(scope.value_id), order);
             let widths: Vec<f32> = d
@@ -411,8 +450,18 @@ impl TabsList {
                     TabsVariant::Default => theme.radius.lg_u8(),
                     TabsVariant::Line => 0,
                 };
+                // The background covers the full list rect. Horizontally the
+                // 25px triggers are centred in the 32px row, so the union
+                // needs 3px of padding plus the 0.5px `calc(100%-1px)`
+                // slack on each side; vertically the list is `h-fit`, so
+                // the 3px padding alone is exact.
+                let pad_y = if scope.orientation == TabsOrientation::Horizontal {
+                    LIST_PAD + 0.5
+                } else {
+                    LIST_PAD
+                };
                 let shape = egui::epaint::RectShape::filled(
-                    union.expand2(egui::vec2(LIST_PAD, LIST_PAD)),
+                    union.expand2(egui::vec2(LIST_PAD, pad_y)),
                     CornerRadius::same(radius),
                     bg,
                 );
@@ -529,11 +578,14 @@ impl TabsTrigger {
         };
 
         // Register this trigger in the roving-focus order and width list.
+        // The order carries the trigger's actual response id, so arrow-key
+        // traversal also reaches triggers with a custom `id_salt` (their id
+        // does not follow the default `value_id/trigger/value` pattern).
         ui.ctx().data_mut(|d| {
-            let mut order: Vec<(String, bool)> = d
-                .get_temp::<Vec<(String, bool)>>(trigger_order_collect_id(scope.value_id))
+            let mut order: Vec<(String, bool, Id)> = d
+                .get_temp::<Vec<(String, bool, Id)>>(trigger_order_collect_id(scope.value_id))
                 .unwrap_or_default();
-            order.push((self.value.clone(), self.disabled));
+            order.push((self.value.clone(), self.disabled, id));
             d.insert_temp(trigger_order_collect_id(scope.value_id), order);
             let mut widths: Vec<f32> = d
                 .get_temp::<Vec<f32>>(trigger_widths_collect_id(scope.value_id))
@@ -569,11 +621,13 @@ impl TabsTrigger {
         // Radix roving tabindex: arrows move focus to the next/previous
         // enabled trigger and — with the default `activationMode="automatic"`
         // — select it; Home/End jump to the first/last enabled trigger.
-        // While focused, the trigger claims the arrow keys via the focus lock
-        // filter so egui's own spatial navigation does not also move focus
-        // (Tab keeps the built-in traversal). `gained_focus()` is excluded so
-        // a trigger focused earlier in the same frame does not consume the
-        // same key press again.
+        // With `activationMode="manual"` the arrows (and Home/End) move
+        // focus only; Enter/Space (or a click) selects. While focused, the
+        // trigger claims the arrow keys via the focus lock filter so egui's
+        // own spatial navigation does not also move focus (Tab keeps the
+        // built-in traversal). `gained_focus()` is excluded so a trigger
+        // focused earlier in the same frame does not consume the same key
+        // press again.
         if response.has_focus() && !self.disabled {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(
@@ -589,18 +643,18 @@ impl TabsTrigger {
         }
         if response.has_focus() && !response.gained_focus() && !self.disabled {
             let horizontal = !vertical;
-            let order: Vec<(String, bool)> = ui.ctx().data_mut(|d| {
-                d.get_temp::<Vec<(String, bool)>>(trigger_order_id(scope.value_id))
+            let order: Vec<(String, bool, Id)> = ui.ctx().data_mut(|d| {
+                d.get_temp::<Vec<(String, bool, Id)>>(trigger_order_id(scope.value_id))
                     .unwrap_or_default()
             });
-            let enabled: Vec<&str> = order
+            let enabled: Vec<(&str, Id)> = order
                 .iter()
-                .filter(|(_, disabled)| !*disabled)
-                .map(|(value, _)| value.as_str())
+                .filter(|(_, disabled, _)| !*disabled)
+                .map(|(value, _, id)| (value.as_str(), *id))
                 .collect();
             let index = enabled
                 .iter()
-                .position(|v| *v == self.value.as_str())
+                .position(|(v, _)| *v == self.value.as_str())
                 .map(|i| i as i32);
             if let Some(index) = index {
                 let (next, prev, home, end) = ui.input(|i| {
@@ -633,20 +687,34 @@ impl TabsTrigger {
                 };
                 if let Some(target) = target {
                     if (0..=last).contains(&target) {
-                        let value = enabled[target as usize];
+                        let (value, target_id) = enabled[target as usize];
                         if value != self.value.as_str() {
-                            // Sibling ids follow the default trigger pattern;
-                            // a custom `id_salt` trigger opts out of
-                            // traversal.
-                            ui.memory_mut(|m| {
-                                m.request_focus(scope.value_id.with("trigger").with(value))
-                            });
+                            ui.memory_mut(|m| m.request_focus(target_id));
                             // Radix automatic activation: selecting follows
-                            // focus.
-                            write_selected(ui, scope.value_id, Some(value.to_owned()));
-                            response.mark_changed();
+                            // focus. In manual mode focus moves alone.
+                            if scope.activation_mode == TabsActivationMode::Automatic {
+                                write_selected(ui, scope.value_id, Some(value.to_owned()));
+                                response.mark_changed();
+                            }
                         }
                     }
+                }
+                if next || prev {
+                    // Cancel egui's pending spatial navigation for the arrow
+                    // key we just consumed. `begin_pass` sets a pending
+                    // focus direction for arrow keys unless the focused
+                    // widget's event filter locks them; the filter installs
+                    // one frame after focus moves (it requires
+                    // `had_focus_last_frame`), so in the frame right after
+                    // a roving move the direction is set and `end_pass`
+                    // would move focus a second time, past the roving
+                    // target. We own the arrow key (we move focus or clamp
+                    // at the edge), so the pending direction must go. When
+                    // the filter was locked the direction is already `None`
+                    // and this is a no-op. Home/End never set a direction,
+                    // so they need no cancel (clearing here would also drop
+                    // a same-frame Tab move).
+                    ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                 }
             }
         }
@@ -709,8 +777,11 @@ impl TabsTrigger {
                 );
             }
 
-            // `shadow-sm` on the active trigger (default variant, light).
-            if selected && scope.variant == TabsVariant::Default && !dark && !self.disabled {
+            // `shadow-sm` on the active trigger (default variant, both
+            // modes — the source carries no `dark:` qualifier, §0
+            // correction 4; `shadow_sm` already returns the
+            // mode-appropriate colour).
+            if selected && scope.variant == TabsVariant::Default && !self.disabled {
                 let sh = crate::utils::shadow::shadow_sm(dark);
                 painter.add(
                     egui::epaint::RectShape::filled(
@@ -815,7 +886,7 @@ impl TabsContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Preset;
+    use crate::theme::{Mode, Preset};
     use egui::PointerButton;
 
     struct Harness {
@@ -830,7 +901,15 @@ mod tests {
             Self { ctx, time: 0.0 }
         }
 
-        fn step(&mut self, events: Vec<egui::Event>, mut f: impl FnMut(&mut Ui)) {
+        fn step(&mut self, events: Vec<egui::Event>, f: impl FnMut(&mut Ui)) {
+            let _ = self.step_out(events, f);
+        }
+
+        fn step_out(
+            &mut self,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut Ui),
+        ) -> egui::FullOutput {
             self.time += 0.1;
             let input = egui::RawInput {
                 time: Some(self.time),
@@ -847,10 +926,15 @@ mod tests {
                 f(ui);
             });
             out.textures_delta.clear();
+            out
         }
 
         fn run(&mut self, f: impl FnMut(&mut Ui)) {
             self.step(Vec::new(), f);
+        }
+
+        fn run_out(&mut self, f: impl FnMut(&mut Ui)) -> egui::FullOutput {
+            self.step_out(Vec::new(), f)
         }
 
         fn click(&mut self, pos: Pos2, mut f: impl FnMut(&mut Ui)) {
@@ -891,6 +975,60 @@ mod tests {
         h.ctx
             .data_mut(|d| d.get_temp::<Option<String>>(Id::unique("tabs_test_ui").with(salt)))
             .flatten()
+    }
+
+    /// Blurred rect shapes — the `shadow-sm` is painted as one blurred rect.
+    fn blurred_rects(out: &egui::FullOutput) -> Vec<&egui::epaint::RectShape> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.blur_width > 0.0 => Some(rs),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Filled rect shapes (non-transparent fill, no stroke, no blur).
+    fn fill_rects(out: &egui::FullOutput) -> Vec<&egui::epaint::RectShape> {
+        out.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs)
+                    if rs.fill != Color32::TRANSPARENT
+                        && rs.stroke == Stroke::NONE
+                        && rs.blur_width == 0.0 =>
+                {
+                    Some(rs)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn palette(mode: Mode) -> crate::theme::Palette {
+        Preset::default().build(mode).palette
+    }
+
+    fn manual_tabs_ui(ui: &mut Ui, salt: &str) {
+        Tabs::new()
+            .id_salt(salt)
+            .activation_mode(TabsActivationMode::Manual)
+            .show(ui, |ui| {
+                TabsList::new().show(ui, |ui| {
+                    TabsTrigger::new("a", "Account").show(ui);
+                    TabsTrigger::new("b", "Password").show(ui);
+                    TabsTrigger::new("c", "Sessions").show(ui);
+                });
+                TabsContent::new("a").show(ui, |ui| {
+                    ui.label("account body");
+                });
+                TabsContent::new("b").show(ui, |ui| {
+                    ui.label("password body");
+                });
+                TabsContent::new("c").show(ui, |ui| {
+                    ui.label("sessions body");
+                });
+            });
     }
 
     fn tabs_ui(ui: &mut Ui, salt: &str) {
@@ -1273,6 +1411,324 @@ mod tests {
         assert!(
             (vrects[0].height() - 24.0).abs() < 0.5,
             "nova vertical trigger height is 24px"
+        );
+    }
+
+    #[test]
+    fn default_activation_mode_is_automatic() {
+        assert_eq!(
+            Tabs::new().activation_mode,
+            TabsActivationMode::Automatic,
+            "the default stays automatic, matching the source default"
+        );
+        let mut value = String::new();
+        let tabs = Tabs::controlled(&mut value);
+        assert_eq!(
+            tabs.activation_mode,
+            TabsActivationMode::Automatic,
+            "controlled tabs also default to automatic"
+        );
+    }
+
+    #[test]
+    fn manual_mode_arrows_move_focus_without_selecting() {
+        let mut h = Harness::new();
+        h.run(|ui| manual_tabs_ui(ui, "m1"));
+        let state_id = Id::unique("tabs_test_ui").with("m1");
+        let trigger = |value: &str| state_id.with("trigger").with(value);
+        h.focus(trigger("a"));
+        // Two plain frames: the order list is published at list end and the
+        // focus lock filter installs on the frame after focus.
+        h.run(|ui| manual_tabs_ui(ui, "m1"));
+        h.run(|ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(selected(&h, "m1").as_deref(), Some("a"));
+
+        h.key(Key::ArrowRight, |ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("b")),
+            "ArrowRight moves focus to the next trigger"
+        );
+        assert_eq!(
+            selected(&h, "m1").as_deref(),
+            Some("a"),
+            "arrow moves focus only in manual mode — selection does not follow"
+        );
+
+        h.key(Key::ArrowRight, |ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(trigger("c")));
+        assert_eq!(selected(&h, "m1").as_deref(), Some("a"));
+
+        h.key(Key::ArrowLeft, |ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(trigger("b")));
+        assert_eq!(selected(&h, "m1").as_deref(), Some("a"));
+
+        h.key(Key::End, |ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("c")),
+            "End moves focus only in manual mode"
+        );
+        assert_eq!(selected(&h, "m1").as_deref(), Some("a"));
+
+        h.key(Key::Home, |ui| manual_tabs_ui(ui, "m1"));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(trigger("a")),
+            "Home moves focus only in manual mode"
+        );
+        assert_eq!(selected(&h, "m1").as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn manual_mode_enter_space_selects() {
+        let mut h = Harness::new();
+        h.run(|ui| manual_tabs_ui(ui, "m2"));
+        let state_id = Id::unique("tabs_test_ui").with("m2");
+        let trigger = |value: &str| state_id.with("trigger").with(value);
+        h.focus(trigger("a"));
+        h.run(|ui| manual_tabs_ui(ui, "m2"));
+        h.run(|ui| manual_tabs_ui(ui, "m2"));
+
+        h.key(Key::ArrowRight, |ui| manual_tabs_ui(ui, "m2"));
+        assert_eq!(
+            selected(&h, "m2").as_deref(),
+            Some("a"),
+            "focus moved, selection did not follow"
+        );
+
+        // Enter activates the focused trigger (egui keyboard activation).
+        h.key(Key::Enter, |ui| manual_tabs_ui(ui, "m2"));
+        assert_eq!(
+            selected(&h, "m2").as_deref(),
+            Some("b"),
+            "Enter selects the focused trigger in manual mode"
+        );
+
+        h.key(Key::ArrowLeft, |ui| manual_tabs_ui(ui, "m2"));
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(trigger("a")));
+        assert_eq!(selected(&h, "m2").as_deref(), Some("b"));
+
+        // Space activates the focused trigger.
+        h.key(Key::Space, |ui| manual_tabs_ui(ui, "m2"));
+        assert_eq!(
+            selected(&h, "m2").as_deref(),
+            Some("a"),
+            "Space selects the focused trigger in manual mode"
+        );
+    }
+
+    #[test]
+    fn manual_mode_click_selects() {
+        let mut h = Harness::new();
+        let mut rects = [Rect::ZERO; 3];
+        // Settle first so the equal-width stretch has converged, then
+        // capture the trigger rects for the click positions.
+        for _ in 0..2 {
+            h.run(|ui| {
+                Tabs::new()
+                    .id_salt("m3")
+                    .activation_mode(TabsActivationMode::Manual)
+                    .show(ui, |ui| {
+                        TabsList::new().show(ui, |ui| {
+                            rects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                            rects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                            rects[2] = TabsTrigger::new("c", "Sessions").show(ui).rect;
+                        });
+                    });
+            });
+        }
+        h.click(rects[1].center(), |ui| manual_tabs_ui(ui, "m3"));
+        assert_eq!(
+            selected(&h, "m3").as_deref(),
+            Some("b"),
+            "click selects in manual mode"
+        );
+        h.click(rects[2].center(), |ui| manual_tabs_ui(ui, "m3"));
+        assert_eq!(selected(&h, "m3").as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn active_default_trigger_paints_shadow_sm_in_both_modes() {
+        // §0 correction 4 / §4.2: `shadow-sm` on the active default trigger
+        // in BOTH modes — the source carries no `dark:` qualifier.
+        for (mode, is_dark) in [(Mode::Light, false), (Mode::Dark, true)] {
+            let mut h = Harness::new();
+            if is_dark {
+                ShadcnTheme::set_mode(&h.ctx, Mode::Dark);
+            }
+            let mut rects = [Rect::ZERO; 2];
+            let mut out = None;
+            for _ in 0..3 {
+                out = Some(h.run_out(|ui| {
+                    Tabs::new().id_salt("shadow").show(ui, |ui| {
+                        TabsList::new().show(ui, |ui| {
+                            rects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                            rects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                        });
+                    });
+                }));
+            }
+            let out = out.expect("ran frames");
+            let expected = crate::utils::shadow::shadow_sm(is_dark).color;
+            let blurred = blurred_rects(&out);
+            assert_eq!(
+                blurred.len(),
+                1,
+                "exactly one blurred rect (the active trigger shadow) in {:?} mode, got {}",
+                mode,
+                blurred.len()
+            );
+            let sh = blurred[0];
+            assert_eq!(sh.fill, expected, "shadow colour in {:?} mode", mode);
+            // The shadow is the selected (first) trigger rect translated by
+            // the shadow offset [0, 1].
+            assert!(
+                (sh.rect.min.x - rects[0].min.x).abs() < 0.5,
+                "shadow x aligns with the selected trigger in {:?} mode",
+                mode
+            );
+            assert!(
+                (sh.rect.min.y - (rects[0].min.y + 1.0)).abs() < 0.5,
+                "shadow y is the trigger y + 1 in {:?} mode",
+                mode
+            );
+            assert!(
+                (sh.rect.width() - rects[0].width()).abs() < 0.5
+                    && (sh.rect.height() - rects[0].height()).abs() < 0.5,
+                "shadow size matches the selected trigger in {:?} mode",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_list_geometry_matches_spec() {
+        // §3.1/§3.2: nova horizontal list is 32px tall (`h-8`), the
+        // triggers 25px (`h-[calc(100%-1px)]`), centred in the row; the
+        // root gap to the content is 8px (`gap-2`).
+        let mut h = Harness::new();
+        let mut trigger_rects = [Rect::ZERO; 2];
+        let mut content_top = 0.0;
+        let mut list_top_y = 0.0;
+        let mut after_list_y = 0.0;
+        let mut out = None;
+        for _ in 0..3 {
+            out = Some(h.run_out(|ui| {
+                Tabs::new().id_salt("geo").show(ui, |ui| {
+                    list_top_y = ui.cursor().min.y;
+                    TabsList::new().show(ui, |ui| {
+                        trigger_rects[0] = TabsTrigger::new("a", "Account").show(ui).rect;
+                        trigger_rects[1] = TabsTrigger::new("b", "Password").show(ui).rect;
+                    });
+                    after_list_y = ui.cursor().min.y;
+                    TabsContent::new("a").show(ui, |ui| {
+                        content_top = ui.cursor().min.y;
+                        ui.label("account body");
+                    });
+                });
+            }));
+        }
+        let out = out.expect("ran frames");
+
+        assert!(
+            (trigger_rects[0].height() - 25.0).abs() < 0.5,
+            "nova horizontal trigger height is 25px, got {}",
+            trigger_rects[0].height()
+        );
+        assert!(
+            (trigger_rects[1].height() - 25.0).abs() < 0.5,
+            "nova horizontal trigger height is 25px, got {}",
+            trigger_rects[1].height()
+        );
+
+        // The list background is the filled rect in the `muted` token.
+        let muted = palette(Mode::Light).muted;
+        let list_bgs: Vec<&egui::epaint::RectShape> = fill_rects(&out)
+            .into_iter()
+            .filter(|rs| rs.fill == muted)
+            .collect();
+        assert_eq!(
+            list_bgs.len(),
+            1,
+            "exactly one muted list background, got {}",
+            list_bgs.len()
+        );
+        let bg = list_bgs[0];
+        assert!(
+            (bg.rect.height() - 32.0).abs() < 0.5,
+            "nova horizontal list height is 32px, got {}",
+            bg.rect.height()
+        );
+        // The background covers the full list rect, starting at the row top.
+        assert!(
+            (bg.rect.min.y - list_top_y).abs() < 0.5,
+            "list background starts at the row top, got bg top {} vs row top {}",
+            bg.rect.min.y,
+            list_top_y
+        );
+        assert!(
+            (trigger_rects[0].min.y - (list_top_y + 3.5)).abs() < 0.5,
+            "triggers are centred in the 32px row (0.5px slack each side)"
+        );
+        // The cursor after the list already sits `item_spacing` (8px) past
+        // the row, so row + gap = 32 + 8 = 40px from the row top.
+        assert!(
+            ((after_list_y - list_top_y) - 40.0).abs() < 0.5,
+            "list row (32px) + root gap (8px) is 40px, got {} (top {} bottom {})",
+            after_list_y - list_top_y,
+            list_top_y,
+            after_list_y
+        );
+        assert!(
+            ((content_top - list_top_y) - 40.0).abs() < 0.5,
+            "content starts 32px list + 8px root gap below the list top, got content_top {} vs list top {}",
+            content_top,
+            list_top_y
+        );
+    }
+
+    #[test]
+    fn salted_triggers_participate_in_arrow_traversal() {
+        // §8.2 flagged item: a trigger with a custom `id_salt` must still
+        // be reachable by arrow-key traversal (its response id does not
+        // follow the default `value_id/trigger/value` pattern).
+        let mut h = Harness::new();
+        let mut ids = [Id::NULL; 3];
+        let salted_ui = |ui: &mut Ui, salt: &str, ids: &mut [Id; 3]| {
+            Tabs::new().id_salt(salt).show(ui, |ui| {
+                TabsList::new().show(ui, |ui| {
+                    ids[0] = TabsTrigger::new("a", "Account").show(ui).id;
+                    ids[1] = TabsTrigger::new("b", "Password")
+                        .id_salt("salted-b")
+                        .show(ui)
+                        .id;
+                    ids[2] = TabsTrigger::new("c", "Sessions").show(ui).id;
+                });
+            });
+        };
+        h.run(|ui| salted_ui(ui, "s1", &mut ids));
+        h.focus(ids[0]);
+        h.run(|ui| salted_ui(ui, "s1", &mut ids));
+        h.run(|ui| salted_ui(ui, "s1", &mut ids));
+
+        h.key(Key::ArrowRight, |ui| salted_ui(ui, "s1", &mut ids));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(ids[1]),
+            "ArrowRight reaches the salted trigger"
+        );
+        h.key(Key::ArrowRight, |ui| salted_ui(ui, "s1", &mut ids));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(ids[2]),
+            "ArrowRight continues past the salted trigger"
+        );
+        h.key(Key::ArrowLeft, |ui| salted_ui(ui, "s1", &mut ids));
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(ids[1]),
+            "ArrowLeft returns to the salted trigger"
         );
     }
 }
