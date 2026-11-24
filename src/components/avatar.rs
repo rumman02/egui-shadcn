@@ -36,9 +36,9 @@
 //! to texture-or-fallback end-states only — no `delayMs` timing, no
 //! loading-status transitions. S6 fetched the public Radix source (`main`
 //! + `@radix-ui/react-avatar@1.1.3`) and SETTLED D3 as a documented
-//! equivalence for the end-states (image shown only when Loaded, fallback
-//! otherwise); the transition timing stays OPEN-1. Nothing animates
-//! (spec §6 — no transition class anywhere in the source).
+//!   equivalence for the end-states (image shown only when Loaded, fallback
+//!   otherwise); the transition timing stays OPEN-1. Nothing animates
+//!   (spec §6 — no transition class anywhere in the source).
 //!
 //! Group counts size off the member avatars (`group-has-data-[size]`,
 //! spec §3.6, audit N5): all-default / no members / outside a group →
