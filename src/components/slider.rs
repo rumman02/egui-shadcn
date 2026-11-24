@@ -88,7 +88,7 @@
 //! \[6,9\] nova / \[8,12\] base, adjacent to the box edge ±0.5px feather,
 //! colour `ring/50`; vega-dark judged from row profiles. Disabled
 //! (SLD-VIS-02, S10-verified): the whole control composites as a group
-//! fade — Range 139 light / 120 dark exact, thumb fill uniform
+//! fade — Range 127 light / 120 dark exact, thumb fill uniform
 //! (max_dev 0), muted Track unchanged, no ring on any disabled thumb.
 //! The S5 regression is confined to rows 6–7 (the disabled rows);
 //! rows 0–5 and 8–9 are byte-identical to S5.
@@ -1484,12 +1484,13 @@ mod tests {
             }
         }
         // Exact S5 group-fade composites for the default preset (the
-        // values S5/S10 judge in captures): Range 139 light / 120 dark,
-        // thumb fill 255 light / 133 dark.
+        // values S5/S10 judge in captures): Range 127 light / 120 dark,
+        // thumb fill 255 light / 133 dark. (FND-D1: light primary is now
+        // `oklch(0% 0 0)`, so the light Range composite moved 139 -> 127.)
         let light = palette(crate::theme::Mode::Light);
         let dark = palette(crate::theme::Mode::Dark);
         let lr = disabled_group_fade(color_alpha(light.primary, 0.5), light.background);
-        assert_eq!((lr.r(), lr.g(), lr.b()), (139, 139, 139));
+        assert_eq!((lr.r(), lr.g(), lr.b()), (127, 127, 127));
         let dr = disabled_group_fade(color_alpha(dark.primary, 0.5), dark.background);
         assert_eq!((dr.r(), dr.g(), dr.b()), (120, 120, 120));
         let lf = disabled_group_fade(color_alpha(Color32::WHITE, 0.5), light.background);

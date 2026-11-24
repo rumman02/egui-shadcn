@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(theme.palette.background, Color32::WHITE);
         assert_eq!(
             theme.palette.foreground,
-            Oklch::parse("oklch(0.145 0 0)").unwrap().to_color32()
+            Oklch::parse("oklch(0% 0 0)").unwrap().to_color32()
         );
     }
 

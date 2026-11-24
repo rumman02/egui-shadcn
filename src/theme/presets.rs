@@ -509,7 +509,12 @@ impl Preset {
     /// the merged `foreground`, following the `globals.css` `var()` chain.
     /// In dark mode with a neutral base, `accent` resolves to the docs-site
     /// value `oklch(0.371 0 0)` (`globals.css:156`) instead of the registry
-    /// data's `0.269` (see the override below).
+    /// data's `0.269` (see the override below). In light mode with a neutral
+    /// base, `foreground` / `card-foreground` / `popover-foreground` /
+    /// `primary` resolve to the docs-site value `oklch(0% 0 0)`
+    /// (`globals.css:102-107`) instead of the registry data's `0.145` /
+    /// `0.205` (see the override below; `primary` only when no accent theme
+    /// overlays its own primary).
     pub fn slots(&self, mode: crate::theme::Mode) -> Slots {
         let base = find_theme(self.base_color.name()).unwrap_or(&NEUTRAL_FALLBACK);
         // A theme that names a base color means "no accent" — the base color
@@ -560,6 +565,34 @@ impl Preset {
                         slots[i] = chart_slots[i];
                     }
                 }
+            }
+        }
+        // Light neutral foregrounds: the registry data (`themes.ts`) carries
+        // `oklch(0.145 0 0)` for the neutral light foreground /
+        // card-foreground / popover-foreground and `oklch(0.205 0 0)` for
+        // primary, but the docs site's stylesheet renders `oklch(0% 0 0)`
+        // for all four (snapshot `apps/v4/app/globals.css:102-107`). Per the
+        // coordinator ruling of 2026-11-24 (FND-D1, Expert Review decision:
+        // globals.css wins), the rendered reference governs these slots:
+        // override at resolve time so the generated theme data and its
+        // fidelity tests stay untouched. Neutral + light only — every other
+        // base keeps its `themes.ts` values, and the `gray` fallback
+        // resolves through neutral so it inherits the override. Placed
+        // before the light var() chain so `surface-foreground` /
+        // `code-foreground` follow the overridden foreground, matching the
+        // globals.css chain (`--surface-foreground: var(--foreground)`).
+        // Chromatic accent themes carry a `primary` key but no foreground
+        // keys (verified by parsing `themes.ts`): the three foreground
+        // slots always resolve from the base, while `primary` is overridden
+        // only when no accent theme overlays its own primary.
+        if matches!(mode, crate::theme::Mode::Light) && base.name == "neutral" {
+            slots[crate::theme::colors::slot::FOREGROUND] = "oklch(0% 0 0)";
+            slots[crate::theme::colors::slot::CARD_FOREGROUND] = "oklch(0% 0 0)";
+            slots[crate::theme::colors::slot::POPOVER_FOREGROUND] = "oklch(0% 0 0)";
+            let accent_carries_primary =
+                accent.is_some_and(|a| !a.light[crate::theme::colors::slot::PRIMARY].is_empty());
+            if !accent_carries_primary {
+                slots[crate::theme::colors::slot::PRIMARY] = "oklch(0% 0 0)";
             }
         }
         // Light mode resolves the globals.css var() chain
@@ -1008,7 +1041,7 @@ mod tests {
         let light = p.slots(crate::theme::Mode::Light);
         assert_eq!(light[slot::DESTRUCTIVE_FOREGROUND], "oklch(0.97 0.01 17)");
         assert_eq!(light[slot::CODE], "oklch(0.98 0 0)");
-        assert_eq!(light[slot::CODE_FOREGROUND], "oklch(0.145 0 0)");
+        assert_eq!(light[slot::CODE_FOREGROUND], "oklch(0% 0 0)");
         assert_eq!(light[slot::SURFACE], "oklch(0.98 0 0)");
         assert_eq!(light[slot::SELECTION], "oklch(0% 0 0)");
         let dark = p.slots(crate::theme::Mode::Dark);
@@ -1065,14 +1098,16 @@ mod tests {
         // globals.css light mode: --surface-foreground: var(--foreground)
         // and --code-foreground: var(--surface-foreground), so both resolve
         // through the ACTIVE theme's foreground. Expected values are the
-        // themes.ts light foregrounds per base color.
+        // themes.ts light foregrounds per base color — except neutral and
+        // gray, which resolve to the docs-site value `oklch(0% 0 0)` per
+        // the FND-D1 override (globals.css wins).
         use crate::theme::colors::slot;
         let cases = [
-            (BaseColor::Neutral, "oklch(0.145 0 0)"),
+            (BaseColor::Neutral, "oklch(0% 0 0)"),
             (BaseColor::Stone, "oklch(0.147 0.004 49.25)"),
             (BaseColor::Zinc, "oklch(0.141 0.005 285.823)"),
             // "gray" is not a registry theme; it falls back to neutral.
-            (BaseColor::Gray, "oklch(0.145 0 0)"),
+            (BaseColor::Gray, "oklch(0% 0 0)"),
             (BaseColor::Mauve, "oklch(0.145 0.008 326)"),
             (BaseColor::Olive, "oklch(0.153 0.006 107.1)"),
             (BaseColor::Mist, "oklch(0.148 0.004 228.8)"),
@@ -1204,5 +1239,96 @@ mod tests {
         let dark = preset.slots(crate::theme::Mode::Dark);
         assert_eq!(dark[slot::ACCENT], "oklch(0.371 0 0)");
         assert_eq!(dark[slot::PRIMARY], "oklch(0.424 0.199 265.638)");
+    }
+
+    #[test]
+    fn light_neutral_foregrounds_resolve_to_globals_css_values() {
+        // FND-D1, coordinator ruling 2026-11-24 (Expert Review decision:
+        // globals.css wins): the neutral light foreground, card-foreground,
+        // popover-foreground and primary resolve to the docs-site value
+        // `oklch(0% 0 0)` (snapshot globals.css:102-107), not the registry
+        // data's 0.145 / 0.205. The var() chain carries the overridden
+        // foreground into surface-foreground / code-foreground. Dark is
+        // unchanged, and the `gray` fallback resolves through neutral so it
+        // inherits the override.
+        use crate::theme::colors::slot;
+        let p = Preset::default_preset();
+        let light = p.slots(crate::theme::Mode::Light);
+        assert_eq!(light[slot::FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::CARD_FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::POPOVER_FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::PRIMARY], "oklch(0% 0 0)");
+        assert_eq!(light[slot::SURFACE_FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::CODE_FOREGROUND], "oklch(0% 0 0)");
+        let dark = p.slots(crate::theme::Mode::Dark);
+        assert_eq!(dark[slot::FOREGROUND], "oklch(0.985 0 0)");
+        assert_eq!(dark[slot::CARD_FOREGROUND], "oklch(0.985 0 0)");
+        assert_eq!(dark[slot::POPOVER_FOREGROUND], "oklch(0.985 0 0)");
+        assert_eq!(dark[slot::PRIMARY], "oklch(0.922 0 0)");
+        let gray = Preset::default_preset().with_base_color(BaseColor::Gray);
+        let gray_light = gray.slots(crate::theme::Mode::Light);
+        assert_eq!(gray_light[slot::FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(gray_light[slot::PRIMARY], "oklch(0% 0 0)");
+    }
+
+    #[test]
+    fn light_neutral_primary_override_yields_to_accent_theme() {
+        // Chromatic accent themes carry a `primary` key but no foreground
+        // keys, so the foreground override still applies under an accent
+        // overlay while the accent's own primary wins.
+        use crate::theme::colors::slot;
+        let preset = Preset::default_preset()
+            .with_base_color(BaseColor::Neutral)
+            .with_theme_color(ThemeColor::Blue);
+        let light = preset.slots(crate::theme::Mode::Light);
+        assert_eq!(light[slot::FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::CARD_FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::POPOVER_FOREGROUND], "oklch(0% 0 0)");
+        assert_eq!(light[slot::PRIMARY], "oklch(0.488 0.243 264.376)");
+    }
+
+    #[test]
+    fn light_foregrounds_unchanged_for_other_base_colors() {
+        // The FND-D1 override is neutral-only: every other base keeps its
+        // themes.ts light foreground and primary verbatim.
+        use crate::theme::colors::slot;
+        let cases = [
+            (
+                BaseColor::Stone,
+                "oklch(0.147 0.004 49.25)",
+                "oklch(0.216 0.006 56.043)",
+            ),
+            (
+                BaseColor::Zinc,
+                "oklch(0.141 0.005 285.823)",
+                "oklch(0.21 0.006 285.885)",
+            ),
+            (
+                BaseColor::Mauve,
+                "oklch(0.145 0.008 326)",
+                "oklch(0.212 0.019 322.12)",
+            ),
+            (
+                BaseColor::Olive,
+                "oklch(0.153 0.006 107.1)",
+                "oklch(0.228 0.013 107.4)",
+            ),
+            (
+                BaseColor::Mist,
+                "oklch(0.148 0.004 228.8)",
+                "oklch(0.218 0.008 223.9)",
+            ),
+            (
+                BaseColor::Taupe,
+                "oklch(0.147 0.004 49.3)",
+                "oklch(0.214 0.009 43.1)",
+            ),
+        ];
+        for (base, foreground, primary) in cases {
+            let preset = Preset::default_preset().with_base_color(base);
+            let light = preset.slots(crate::theme::Mode::Light);
+            assert_eq!(light[slot::FOREGROUND], foreground, "{base:?} foreground");
+            assert_eq!(light[slot::PRIMARY], primary, "{base:?} primary");
+        }
     }
 }
