@@ -83,16 +83,24 @@
 //! settled at S10 (bar hides when content fits — actual behaviour, not
 //! a deviation); OPEN-5 (radius inheritance mechanism) stays OPEN.
 //!
-//! ## Carried, not fixed
+//! ## Fixed post-wave
 //!
-//! **SCA-03** (P2, `batch-c/reports/defects/SCA-03.md`): the §4 inner
-//! button is a Tab stop (108) but when focused paints NO visible
-//! indicator and the viewport does NOT scroll to reveal it
-//! (whole-window diff vs rest exactly 0px) — egui 0.37 has no
-//! auto-scroll-to-focused-widget. The frozen spec has no rule requiring
-//! focused descendants to scroll into view, so any fix is a new
-//! behaviour addition; carried to the wave pack / Expert Reviewer for a
-//! fix-shape decision.
+//! **SCA-03** (P2, `batch-c/reports/defects/SCA-03.md`, fixed on branch
+//! `sca-03-fix`): the §4 inner button is a Tab stop (108) but when
+//! focused painted NO visible indicator and the viewport did NOT scroll
+//! to reveal it (whole-window diff vs rest exactly 0px) — egui 0.37 has
+//! no auto-scroll-to-focused-widget. Fix shape (b), decided by the
+//! Expert Reviewer (spec §11 rule): the component tracks the focused
+//! descendant each frame and, on a focus *change* to a descendant
+//! outside the viewport, scrolls the minimum amount to bring it into
+//! view via `Ui::scroll_to_rect` (browser behaviour). The descendant
+//! test is geometric — the focused widget's rect (from
+//! `Context::read_response`) must lie inside the area's content span
+//! and its clip-intersected `interact_rect` inside the viewport — so a
+//! non-descendant whose screen rect merely overlaps the content span
+//! (the "Focus viewport" button below §4) never scrolls the area. The
+//! offset is never re-asserted while focus is unchanged, so user
+//! scrolling is never fought; rest renders are unchanged.
 //!
 //! ## Budgets and standing caveats (S10 §5)
 //!
@@ -288,6 +296,103 @@ impl ScrollArea {
         visuals.widgets.active.bg_fill = border;
     }
 
+    /// SCA-03 (spec §11 rule): scroll a focused descendant into view.
+    ///
+    /// Called at the end of the content closure, after the content has
+    /// run so the focused widget's rect is registered this pass.
+    /// `Ui::scroll_to_rect` sets a pass-state scroll target that this
+    /// area's own `show` post-processing consumes (it is the innermost
+    /// scroll area finishing after the call), scrolling the minimum
+    /// amount to reveal the rect (`align: None`) — the target rect is
+    /// expanded by the 4px focus-ring margin so the ring itself clears
+    /// the viewport edge instead of being clipped by it.
+    ///
+    /// The focused widget's rect comes from
+    /// [`egui::Context::read_response`] (egui 0.37 has no public
+    /// id-to-rect lookup besides it); its `interact_rect` is the
+    /// clip-intersected rect. A widget is treated as a descendant only
+    /// when, on every enabled axis, its rect lies inside this area's
+    /// content span (`ui.min_rect()`, the allocated-content bounding
+    /// box) AND its interact rect lies inside the viewport — or is
+    /// empty, when the widget is fully clipped out. The second half is
+    /// what rejects non-descendants whose screen rect merely overlaps
+    /// the content span: e.g. the "Focus viewport" button just below
+    /// §4 keeps its full interact rect, which sticks out of the
+    /// viewport, so it is not a descendant and never scrolls this area.
+    ///
+    /// Acts only on a focus *change* (the last focused id is kept in
+    /// temp data per instance, keyed by the content Ui id), so the
+    /// offset is never re-asserted while focus is unchanged and user
+    /// scrolling is never fought. Fully-visible descendants, the
+    /// viewport itself, and off-screen areas are no-ops.
+    fn auto_scroll_focused_into_view(&self, ui: &mut Ui) {
+        let focused = ui.memory(|m| m.focused());
+        let key = ui.scope_id().with("sca03_last_focused");
+        let last: Option<egui::Id> = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<Option<egui::Id>>(key))
+            .flatten();
+        // Record the current focus every frame so a change is seen once.
+        ui.ctx().data_mut(|d| d.insert_temp(key, focused));
+        let Some(focused) = focused else { return };
+        if last == Some(focused) {
+            return; // only on focus change, never continuously
+        }
+        let Some(response) = ui.ctx().read_response(focused) else {
+            return;
+        };
+        let rect = response.rect;
+        let interact = response.interact_rect;
+        // The content Ui's clip rect is the viewport (egui's ScrollArea
+        // sets it to the inner rect intersected with the parent clip).
+        let viewport = ui.clip_rect();
+        if !viewport.is_positive() {
+            return; // the whole area is off-screen; scrolling it reveals nothing
+        }
+        if viewport.contains_rect(rect) {
+            return; // already fully visible
+        }
+        if rect.contains_rect(viewport) {
+            return; // the viewport itself (or a widget covering it)
+        }
+        let content = ui.min_rect();
+        for d in 0..2 {
+            let enabled = if d == 0 {
+                self.horizontal
+            } else {
+                self.vertical
+            };
+            if !enabled {
+                continue;
+            }
+            // The widget must lie inside this area's content span.
+            if !(content.min[d] <= rect.min[d] && rect.max[d] <= content.max[d]) {
+                return;
+            }
+            // ... and be clipped consistently with this viewport: a
+            // non-empty interact rect must lie inside the viewport.
+            // An empty interact rect (fully clipped out) passes.
+            if interact.min[d] < interact.max[d]
+                && !(viewport.min[d] <= interact.min[d] && interact.max[d] <= viewport.max[d])
+            {
+                return;
+            }
+        }
+        // Scroll the widget into view — expanded by the focus-ring
+        // margin so the ring itself is visible, not just the widget.
+        // `scroll_to_rect` with `align: None` scrolls the minimum
+        // amount to reveal the target; scrolling the bare widget rect
+        // parks its edge flush with the viewport edge, and the ring
+        // (painted ~4px outside the widget, the same expand(4.0) as
+        // the viewport's own focus ring) is clipped by the viewport's
+        // clip rect — in the gallery the §4 button's ring lost its
+        // whole bottom edge that way. The expansion applies only when
+        // a scroll is already happening (the fully-visible early
+        // return above uses the bare rect), so visible descendants
+        // still never scroll.
+        ui.scroll_to_rect(rect.expand(4.0), None);
+    }
+
     /// Renders the scroll area around its contents.
     ///
     /// S10-verified interaction (all 4 configs): track-click jumps the
@@ -329,7 +434,18 @@ impl ScrollArea {
                     ui.set_min_width(w);
                     ui.set_max_width(w);
                 }
-                content(ui)
+                let r = content(ui);
+                // SCA-03 (spec §11): auto-scroll a focused descendant
+                // into view. egui has no auto-scroll-to-focused-widget,
+                // so the component tracks the focused descendant each
+                // frame and, on a focus *change* to a descendant outside
+                // the viewport, scrolls the minimum amount to reveal it
+                // (browser behaviour for overflow containers). Runs after
+                // the content so the focused widget's rect is registered
+                // this pass; `scroll_to_rect` is consumed by this area's
+                // own `show` post-processing (innermost finishing area).
+                self.auto_scroll_focused_into_view(ui);
+                r
             });
 
             // Paint the thumbs. egui's own handle is invisible in every
@@ -713,6 +829,295 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn focused_descendant_outside_viewport_scrolls_into_view() {
+        // SCA-03 (spec §11): a focused descendant below the viewport
+        // scrolls the minimum amount into view on the focus change, and
+        // the offset then stays put while focus is unchanged.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let button_id = std::cell::Cell::new(egui::Id::NULL);
+
+        // One frame at `time`; returns (viewport rect, button rect).
+        // The Ui id is stable across frames (Id::new, not unique) so
+        // the per-instance last-focused tracking persists.
+        let frame = |time: f64| -> (Rect, Rect) {
+            let mut vp = Rect::NOTHING;
+            let mut btn = Rect::NOTHING;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("sca03_scroll_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                let area = ScrollArea::new()
+                    .height(120.0)
+                    .id_salt("sca03_scroll")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                        let r = ui.button("Inner button");
+                        button_id.set(r.id);
+                        btn = r.rect;
+                        // Trailing content so the button is not the last
+                        // item: at the maximum offset the 4px ring margin
+                        // would be clamped away (the offset cannot exceed
+                        // content - viewport), so the margin is only
+                        // reachable with slack below the button.
+                        ui.label("Trailing — slack so the ring margin is reachable");
+                    });
+                vp = area.response.rect;
+            });
+            out.textures_delta.clear();
+            (vp, btn)
+        };
+
+        // Frame 1: rest. The button sits below the 120px viewport.
+        let (vp, btn0) = frame(0.0);
+        assert_eq!(vp.height(), 120.0, "viewport is 120px");
+        assert!(
+            btn0.min.y > vp.max.y,
+            "button starts below the viewport: button {btn0:?}, viewport {vp:?}"
+        );
+
+        // Focus the button, then drive frames with an advancing clock
+        // until the scroll animation (<= 0.3s) settles.
+        ctx.memory_mut(|m| m.request_focus(button_id.get()));
+        let mut last = (vp, btn0);
+        for step in 1..=20 {
+            last = frame(0.05 * step as f64);
+        }
+        let (vp, btn) = last;
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(button_id.get()),
+            "button keeps focus"
+        );
+        // Fully visible...
+        assert!(
+            btn.min.y >= vp.min.y - 0.5 && btn.max.y <= vp.max.y + 0.5,
+            "button revealed in viewport: button {btn:?}, viewport {vp:?}"
+        );
+        // ... with the minimum scroll: the button sits at the bottom
+        // edge (egui adds one item spacing), not at the top — plus the
+        // 4px ring margin, so the focus ring clears the viewport edge
+        // (the trailing label gives the scroll slack to reach it; for
+        // a last item the margin is clamped away by the max offset).
+        let gap = vp.max.y - btn.max.y;
+        assert!(
+            (2.0..=12.0).contains(&gap),
+            "minimum scroll + ring margin: button bottom {gap:.2}px above viewport bottom"
+        );
+        assert!(
+            btn.min.y >= vp.min.y + 40.0,
+            "did not overshoot to the top: button {btn:?}, viewport {vp:?}"
+        );
+
+        // Focus unchanged: five more frames move nothing (no
+        // re-assertion, no fight with the settled offset).
+        for step in 21..=25 {
+            let next = frame(0.05 * step as f64);
+            assert_eq!(next, last, "offset stable while focus is unchanged");
+        }
+    }
+
+    #[test]
+    fn focus_on_non_descendant_does_not_scroll() {
+        // SCA-03 guard: a focused widget OUTSIDE the area whose screen
+        // rect merely overlaps the content span (the "Focus viewport"
+        // button just below §4) must not scroll this area. Its interact
+        // rect is its full rect, which sticks out of the viewport.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let inner_id = std::cell::Cell::new(egui::Id::NULL);
+        let outer_id = std::cell::Cell::new(egui::Id::NULL);
+
+        let frame = |time: f64| -> (Rect, Rect, Rect) {
+            let mut vp = Rect::NOTHING;
+            let mut inner = Rect::NOTHING;
+            let mut outer = Rect::NOTHING;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("sca03_nondesc_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                let area = ScrollArea::new()
+                    .height(120.0)
+                    .id_salt("sca03_nondesc")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                        let r = ui.button("Inner button");
+                        inner_id.set(r.id);
+                        inner = r.rect;
+                    });
+                vp = area.response.rect;
+                let r = ui.button("Outside button");
+                outer_id.set(r.id);
+                outer = r.rect;
+            });
+            out.textures_delta.clear();
+            (vp, inner, outer)
+        };
+
+        let (vp, inner0, outer0) = frame(0.0);
+        // The outer button overlaps the content span (below the
+        // viewport) but is not a descendant of the area.
+        assert!(
+            outer0.min.y > vp.max.y && outer0.min.y < inner0.min.y,
+            "outer button overlaps the content span: outer {outer0:?}, inner {inner0:?}"
+        );
+
+        ctx.memory_mut(|m| m.request_focus(outer_id.get()));
+        for step in 1..=10 {
+            let (vp2, inner2, _) = frame(0.05 * step as f64);
+            assert_eq!(vp2, vp, "viewport unmoved");
+            assert_eq!(
+                inner2, inner0,
+                "area did not scroll for a non-descendant (step {step})"
+            );
+        }
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(outer_id.get()),
+            "outer button keeps focus"
+        );
+    }
+
+    #[test]
+    fn focus_on_visible_descendant_does_not_scroll() {
+        // SCA-03: a focused descendant already inside the viewport
+        // needs no scroll; the offset stays 0.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let top_id = std::cell::Cell::new(egui::Id::NULL);
+        let inner_id = std::cell::Cell::new(egui::Id::NULL);
+
+        let frame = |time: f64| -> (Rect, Rect) {
+            let mut top = Rect::NOTHING;
+            let mut inner = Rect::NOTHING;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("sca03_visible_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                ScrollArea::new()
+                    .height(120.0)
+                    .id_salt("sca03_visible")
+                    .show(ui, |ui| {
+                        let r = ui.button("Top button");
+                        top_id.set(r.id);
+                        top = r.rect;
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                        let r = ui.button("Inner button");
+                        inner_id.set(r.id);
+                        inner = r.rect;
+                    });
+            });
+            out.textures_delta.clear();
+            (top, inner)
+        };
+
+        let (top0, inner0) = frame(0.0);
+        ctx.memory_mut(|m| m.request_focus(top_id.get()));
+        for step in 1..=10 {
+            let (top, inner) = frame(0.05 * step as f64);
+            assert_eq!(top, top0, "visible button unmoved (step {step})");
+            assert_eq!(inner, inner0, "offset stayed 0 (step {step})");
+        }
+    }
+
+    #[test]
+    fn focused_descendant_scrolls_horizontally_into_view() {
+        // SCA-03 on the horizontal axis (§2 shape): a focused button
+        // past the right edge scrolls the minimum amount into view.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let last_id = std::cell::Cell::new(egui::Id::NULL);
+
+        let frame = |time: f64| -> (Rect, Rect) {
+            let mut vp = Rect::NOTHING;
+            let mut last = Rect::NOTHING;
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::new("sca03_hscroll_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                let area = ScrollArea::new()
+                    .vertical(false)
+                    .horizontal(true)
+                    .height(60.0)
+                    .id_salt("sca03_hscroll")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for i in 0..30 {
+                                let r = ui.button(format!("Tag {i}"));
+                                if i == 29 {
+                                    last_id.set(r.id);
+                                    last = r.rect;
+                                }
+                            }
+                            // Trailing slack so the 4px ring margin is
+                            // reachable (see the vertical test).
+                            ui.label("end");
+                        });
+                    });
+                vp = area.response.rect;
+            });
+            out.textures_delta.clear();
+            (vp, last)
+        };
+
+        let (vp, last0) = frame(0.0);
+        assert!(
+            last0.min.x > vp.max.x,
+            "last tag starts past the right edge: tag {last0:?}, viewport {vp:?}"
+        );
+
+        ctx.memory_mut(|m| m.request_focus(last_id.get()));
+        let mut settled = (vp, last0);
+        for step in 1..=20 {
+            settled = frame(0.05 * step as f64);
+        }
+        let (vp, last) = settled;
+        assert!(
+            last.min.x >= vp.min.x - 0.5 && last.max.x <= vp.max.x + 0.5,
+            "last tag revealed in viewport: tag {last:?}, viewport {vp:?}"
+        );
+        let gap = vp.max.x - last.max.x;
+        assert!(
+            (2.0..=16.0).contains(&gap),
+            "minimum horizontal scroll + ring margin: tag right edge {gap:.2}px from viewport right"
+        );
     }
 
     #[test]
