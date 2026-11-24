@@ -8013,6 +8013,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
     ui.label("Title weights: 600 base / 500 nova (Inter SemiBold / Medium, embedded). Nova edge: 1px border + 1px ring (foreground/10) + shadow-sm; base edge: 1px border + shadow-sm. Footer children sit with gap 0. Honest notes: D1 — the header action is a top-right overlay, so a taller-than-header action does not grow the header. D3 — base unstyled content 14-vs-16px is a theme-level note, not a card defect. OPEN-1 — the sm title rule (14px) is frozen; its group/card attachment is the port's CardCtx size stack.");
     let title_lh = if nova { 22.0 } else { 16.0 };
 
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("card_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
+
     ui.add_space(16.0);
     ui.label("1. Default — two-button footer (gap 0; nova footer band bleeds to the card's bottom inner edge)");
     ui.add_space(4.0);
@@ -8031,10 +8040,16 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.ctx().data_mut(|d| d.insert_temp(store, name));
         });
         CardFooter::new().show(ui, |ui| {
-            Button::new("Create").show(ui);
-            Button::new("Cancel")
+            if Button::new("Create").show(ui).clicked() {
+                clicks += 1;
+            }
+            if Button::new("Cancel")
                 .variant(ButtonVariant::Outline)
-                .show(ui);
+                .show(ui)
+                .clicked()
+            {
+                clicks += 1;
+            }
         });
     });
     ui.label(format!(
@@ -8051,11 +8066,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
             CardTitle::new("Notifications").show(ui);
             CardDescription::new("Control how you receive updates.").show(ui);
             CardAction::new().show(ui, |ui| {
-                Button::new("")
+                if Button::new("")
                     .size(ButtonSize::IconSm)
                     .variant(ButtonVariant::Outline)
                     .icon_start(Icon::MoreHorizontal)
-                    .show(ui);
+                    .show(ui)
+                    .clicked()
+                {
+                    clicks += 1;
+                }
             });
         });
         CardContent::new().show(ui, |ui| {
@@ -8075,9 +8094,13 @@ pub fn card_demo(ui: &mut egui::Ui) {
             ui.label("All resources will be removed immediately.");
         });
         CardFooter::new().show(ui, |ui| {
-            Button::new("Delete project")
+            if Button::new("Delete project")
                 .variant(ButtonVariant::Destructive)
-                .show(ui);
+                .show(ui)
+                .clicked()
+            {
+                clicks += 1;
+            }
         });
     });
 
@@ -8188,6 +8211,15 @@ pub fn card_demo(ui: &mut egui::Ui) {
         lines,
         title_lh
     ));
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
+    ));
 }
 
 /// A generated gradient texture for the card demo's image slot (cached in
@@ -8239,6 +8271,15 @@ pub fn alert_demo(ui: &mut egui::Ui) {
         theme.style.name()
     ));
     ui.label("D1: role=\"alert\" live-region announcement is NOT conveyed (no ARIA tree in egui). D2: tracking-tight (-0.35px/char) is NOT conveyed (no letter-spacing in egui). D4 (decided, S8 §3.2): the action slot is a nova-only source rule; the port renders it in all styles and reserves 72px in all styles — a documented port extension (uniform action placement). D7: the 72px action reservation applies from frame 2 (one-frame settle). No hover/focus/disabled states, no animation (spec §4/§6).");
+
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("alert_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
 
     // Right padding implied by the laid-out geometry: outer width minus the
     // text column, left padding, icon column + gap, and the 2px border.
@@ -8346,7 +8387,9 @@ pub fn alert_demo(ui: &mut egui::Ui) {
                 .show(ui)
                 .rect;
             AlertAction::new().show(ui, |ui| {
-                Button::new("Renew").size(ButtonSize::Sm).show(ui);
+                if Button::new("Renew").size(ButtonSize::Sm).show(ui).clicked() {
+                    clicks += 1;
+                }
             });
             (text_w, t, d)
         });
@@ -8372,10 +8415,14 @@ pub fn alert_demo(ui: &mut egui::Ui) {
                 .show(ui)
                 .rect;
             AlertAction::new().show(ui, |ui| {
-                Button::new("Free up space")
+                if Button::new("Free up space")
                     .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Destructive)
-                    .show(ui);
+                    .show(ui)
+                    .clicked()
+                {
+                    clicks += 1;
+                }
             });
             (text_w, t, d)
         });
@@ -8521,6 +8568,15 @@ pub fn alert_demo(ui: &mut egui::Ui) {
         expected_right(true),
         narrow_btn.left() - narrow_t.right(),
         action_note
+    ));
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
     ));
 }
 
@@ -9120,9 +9176,36 @@ pub fn table_demo(ui: &mut egui::Ui) {
 }
 
 pub fn empty_demo(ui: &mut egui::Ui) {
-    ui.label("Bordered empty state with icon media, actions and inputs");
+    // Header: recipe position, stated honestly (spec §§0, 2, 10, 11).
+    let theme = ShadcnTheme::of_ui(ui);
+    let nova = theme.style == Style::Nova;
+    let recipe = if nova { "nova" } else { "base" };
+    let mode = if theme.mode.is_dark() {
+        "dark"
+    } else {
+        "light"
+    };
+    let title_size = if nova { 14.0 } else { 18.0 };
+    let title_lh = if nova { 20.0 } else { 28.0 };
+    ui.label(format!(
+        "Empty — a static placeholder with no behaviour of its own. Active recipe: {recipe} (style: {}, mode: {mode}). Title {title_size}px / {title_lh}px line-height, weight 500 (Inter Medium, embedded); description 14px / 22.75px line-height.",
+        theme.style.name()
+    ));
+    ui.label("Honest notes: D1 — EmptyFooter (§5) is an invented slot, not exported by empty.tsx; kept as a documented extension pending the Expert Reviewer (prefer EmptyContent). D4 — the 48px padding in §2 is a manual override for md:p-12, not a media query: egui has no md breakpoint. OPEN-1 — the other 7 styles are not frozen here. OPEN-2 — cn() merge semantics are unknown. OPEN-3 — the dashed-border geometry (6px dash / 4px gap) is a reasonable rendering, not a frozen value. OPEN-4 — free-form media sizing follows the S1 contract (the box takes its content's size; the mb-2 8px sits below it). Nothing animates; no keys or Tab stops — the only interaction is the link hover in §3.");
+
+    // S9 (§3.9): activation-counting readout for S10. One counter per demo,
+    // persisted in temp storage; every button below adds exactly 1 on a
+    // click. The readout label sits at the end of the demo, below all
+    // measured content, so it shifts no section geometry.
+    let count_id = egui::Id::unique("empty_demo_click_count");
+    let mut clicks: u32 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(count_id).unwrap_or_default());
+
+    ui.add_space(16.0);
+    ui.label("§1 Default — 24px padding (p-6), icon media, actions");
     ui.add_space(4.0);
-    Empty::new().bordered(true).show(ui, |ui| {
+    let default_empty = Empty::new().bordered(true).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
             EmptyMedia::icon(Icon::Search).show(ui);
             EmptyTitle::new("No results found").show(ui);
@@ -9132,19 +9215,53 @@ pub fn empty_demo(ui: &mut egui::Ui) {
             .show(ui);
         });
         EmptyContent::new().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                Button::new("Clear filters").show(ui);
-                Button::new("Save search")
-                    .variant(ButtonVariant::Outline)
-                    .show(ui);
-            });
+            // EMP-02: centre the two-button row. `ui.horizontal` takes the
+            // full available width and left-aligns its children, so measure
+            // the row's content width (right edge of the last button minus
+            // left edge of the first) on one frame and reserve exactly that
+            // width from the next frame on; the parent top_down(Align::Center)
+            // layout then centres the reserved rect. Same one-frame-settle
+            // class as alert D7 / card CRD-01; settled frames are exact.
+            let row_width_id = egui::Id::unique("empty_demo_s1_action_row_width");
+            let row_width: Option<f32> = ui.ctx().data_mut(|d| d.get_temp(row_width_id));
+            let row = ui.allocate_ui_with_layout(
+                egui::Vec2::new(
+                    row_width.unwrap_or_else(|| ui.available_width()),
+                    ui.spacing().interact_size.y,
+                ),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let first = Button::new("Clear filters").show(ui);
+                    let last = Button::new("Save search")
+                        .variant(ButtonVariant::Outline)
+                        .show(ui);
+                    if first.clicked() {
+                        clicks += 1;
+                    }
+                    if last.clicked() {
+                        clicks += 1;
+                    }
+                    (first, last)
+                },
+            );
+            let measured = row.inner.1.rect.max.x - row.inner.0.rect.min.x;
+            ui.ctx().data_mut(|d| d.insert_temp(row_width_id, measured));
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; padding 24.0px; title {:.1}px / {:.1}px line-height; description 14px / 22.75px line-height; media icon box {}px, glyph {}px",
+        default_empty.response.rect.width(),
+        default_empty.response.rect.height(),
+        title_size,
+        title_lh,
+        if nova { 32 } else { 40 },
+        if nova { 16 } else { 24 },
+    ));
 
     ui.add_space(16.0);
-    ui.label("Form-style empty (new project)");
+    ui.label("§2 Wide padding — .padding(48.0), the md:p-12 approximation (D4)");
     ui.add_space(4.0);
-    Empty::new().bordered(true).show(ui, |ui| {
+    let wide_empty = Empty::new().bordered(true).padding(48.0).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
             EmptyMedia::icon(Icon::Plus).show(ui);
             EmptyTitle::new("No projects yet").show(ui);
@@ -9158,35 +9275,111 @@ pub fn empty_demo(ui: &mut egui::Ui) {
                 .width(240.0)
                 .show(ui);
             ui.ctx().data_mut(|d| d.insert_temp(store, name));
-            Button::new("Create project").show(ui);
+            if Button::new("Create project").show(ui).clicked() {
+                clicks += 1;
+            }
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; padding 48.0px — a manual override for md:p-12 (D4), NOT a media query: the same 48px applies at every width",
+        wide_empty.response.rect.width(),
+        wide_empty.response.rect.height(),
+    ));
 
     ui.add_space(16.0);
-    ui.label("Bare (no border) and free-form media");
+    ui.label(
+        "§3 Description link — underline, 4px offset, hover recolour to text-primary (S6 leg)",
+    );
     ui.add_space(4.0);
-    Empty::new().show(ui, |ui| {
+    let link_empty = Empty::new().bordered(true).show(ui, |ui| {
         EmptyHeader::new().show(ui, |ui| {
-            EmptyMedia::new().show_with(ui, |ui| {
-                let theme = ShadcnTheme::of_ui(ui);
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 8, theme.palette.muted);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "img",
-                    egui::FontId::proportional(12.0),
-                    theme.palette.muted_foreground,
-                );
-            });
-            EmptyTitle::new("Inbox is empty").show(ui);
-            EmptyDescription::new("Messages you receive will show up here.").show(ui);
+            EmptyMedia::icon(Icon::Message).show(ui);
+            EmptyTitle::new("No conversations yet").show(ui);
+            EmptyDescription::new("Check the ")
+                .link("docs")
+                .text(" for examples, or ")
+                .link("contact support")
+                .text(".")
+                .show(ui);
         });
-        EmptyFooter::new().show(ui, |ui| {
-            Button::new("Compose message").show(ui);
+        EmptyContent::new().show(ui, |ui| {
+            if Button::new("Start a conversation").show(ui).clicked() {
+                clicks += 1;
+            }
         });
     });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; link underline offset 4.0px below the baseline (spec §2.5 — S5 judges it rendered); hovering a link recolours it to text-primary (S6 leg)",
+        link_empty.response.rect.width(),
+        link_empty.response.rect.height(),
+    ));
+
+    ui.add_space(16.0);
+    ui.label("§4 Free-form media — 64×48 box, mb-2 gap below the media");
+    ui.add_space(4.0);
+    let media_empty = Empty::new().show(ui, |ui| {
+        let (media_rect, title_rect) = EmptyHeader::new()
+            .show(ui, |ui| {
+                let media = EmptyMedia::new().show_with(ui, |ui| {
+                    let theme = ShadcnTheme::of_ui(ui);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 8, theme.palette.muted);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "img",
+                        egui::FontId::proportional(12.0),
+                        theme.palette.muted_foreground,
+                    );
+                });
+                let title = EmptyTitle::new("Inbox is empty").show(ui);
+                EmptyDescription::new("Messages you receive will show up here.").show(ui);
+                (media.response.rect, title.rect)
+            })
+            .inner;
+        (media_rect, title_rect)
+    });
+    let (media_rect, title_rect) = media_empty.inner;
+    ui.label(format!(
+        "measured: container {:.1} x {:.1} px; media box {:.1} x {:.1} px (full-width allocation per the S1 OPEN-4 contract; content 64.0 x 48.0 centred); gap media→title {:.1} px = mb-2 8.0px + header gap 8.0px (spec §2.2 + §2.3; the mb-2 alone is unit-pinned at 8.0px in S1)",
+        media_empty.response.rect.width(),
+        media_empty.response.rect.height(),
+        media_rect.width(),
+        media_rect.height(),
+        title_rect.top() - media_rect.bottom(),
+    ));
+
+    ui.add_space(16.0);
+    ui.label("§5 Footer (D1) — EmptyFooter is an invented slot; kept as a documented extension, reviewer decides");
+    ui.add_space(4.0);
+    let footer_empty = Empty::new().bordered(true).show(ui, |ui| {
+        EmptyHeader::new().show(ui, |ui| {
+            EmptyMedia::icon(Icon::Send).show(ui);
+            EmptyTitle::new("Outbox is empty").show(ui);
+            EmptyDescription::new("Sent messages will appear here once you send your first one.")
+                .show(ui);
+        });
+        EmptyFooter::new().show(ui, |ui| {
+            if Button::new("Compose message").show(ui).clicked() {
+                clicks += 1;
+            }
+        });
+    });
+    ui.label(format!(
+        "measured: {:.1} x {:.1} px; footer is NOT exported by empty.tsx (D1) — prefer EmptyContent; the reviewer decides keep vs remove",
+        footer_empty.response.rect.width(),
+        footer_empty.response.rect.height(),
+    ));
+
+    // S9 (§3.9): activation-counting readout — one click on any button above
+    // adds exactly 1. Appended below all sections so no measured geometry
+    // moves.
+    ui.ctx().data_mut(|d| d.insert_temp(count_id, clicks));
+    ui.add_space(8.0);
+    ui.label(format!(
+        "Demo clicks: {clicks} (activation-counting readout — one click adds exactly 1)"
+    ));
 }
 
 pub fn item_demo(ui: &mut egui::Ui) {

@@ -8,9 +8,86 @@
 //! actions. The nova style tightens the gap to `gap-4`, the media icon box
 //! to `size-8` with a `size-4` icon and the title to `text-sm`.
 //!
-//! Scope notes: the source pads to 48px at the `md` breakpoint
-//! (`md:p-12`); the port uses the fixed nova `p-6` = 24px. [`EmptyFooter`]
-//! is an invented extension (see its docs).
+//! # Verified final state (S10, all 4 configs: nova/vega × light/dark)
+//!
+//! S10 verified every S9 fix from scratch and found no new defects
+//! (`batch-c/reports/empty-s10-report.md`):
+//!
+//! * **Centring (EMP-01, P1, fixed in `d9688ea`).** Title and description
+//!   ink centres sit on the container centre 682.5 within ±0.5px in every
+//!   section and config (descriptions 0.0/−1.0 in light; the dark −2.0/−3.0
+//!   readings are measurement artifacts of the muted range, S10 §1.1 —
+//!   the layout is identical across themes). The §1 two-button row centres
+//!   at 682.5 nova / 682.0 vega (EMP-02, P2, fixed demo-side in `5509579`,
+//!   measure-then-reserve with a one-frame settle, same class as alert D7).
+//! * **Description links (EMP-03, P2 — closes with EMP-01, no separate
+//!   code change).** Hovering either §3 link recolours both links to
+//!   `text-primary` (light core ≈ 40, dark core 228–229; S10 §2).
+//! * **Activation counting (S8 §3.9).** The demo's `Demo clicks: N`
+//!   readout (added in `aec45cd`) counts exactly once per click: 9/9
+//!   deltas and 10/10 distinct digits for card, alert and empty in all 4
+//!   configs (S10 §3).
+//! * **Regression (S10 §4).** Hover faces match the S7 baselines exactly
+//!   (23 → 69 nova/light, 23 → 46 vega/light, 229 → 185 nova/dark,
+//!   229 → 207 vega/dark); focus rings 964/936/940/936 px focused and 0
+//!   cleared (true rect `[560, 743, 805, 780]`, `pad_in = −2`, S10
+//!   OBS-EMP-S10-02); style/theme round-trips 5/5; determinism 0;
+//!   budgets idle 0.00%, animating 96–108%, RSS −0.17%..+1.11%, flicker 0.
+//!   Render floor stays NOT VERIFIED (1.85–2.4 fps, pipeline-capped — the
+//!   standing S7 caveat, never a component defect). Latency is marginal in
+//!   light (off-max 300–309 ms, within poll granularity — at budget, not a
+//!   defect).
+//!
+//! # Geometry
+//!
+//! Container gap 24px base / 16px nova; padding 24px (`p-6`); radius
+//! 10px base / 14px nova (`rounded-lg` / `rounded-xl`); header and
+//! content cap at `max-w-sm` = 384px with an 8px header gap and a 16px /
+//! 10px content gap. Media icon box 40px with a 24px glyph (base) or
+//! 32px with a 16px glyph (nova); the `mb-2` 8px sits BELOW the media.
+//! Title 18px / 28px line-height (base) or 14px / 20px (nova), weight
+//! 500 via the embedded Inter Medium face. Description 14px with a
+//! 22.75px line-height (`text-sm/relaxed`, 1.625 — spec §0 correction 1;
+//! the audit's 20.0 was wrong). Description links are underlined with a
+//! 4px offset and turn `text-primary` on hover.
+//!
+//! # Behaviour
+//!
+//! Nothing animates and there are no keys of its own (spec §§6–7): no
+//! Tab stop, no hover/focus/disabled recipe. Buttons placed inside
+//! [`EmptyContent`] keep their own keyboard behaviour (the button line
+//! owns it). Description links are hover-recolour only in this port.
+//!
+//! # Deviations and OPEN items (frozen spec §§10–11)
+//!
+//! * D1 (PROPOSED) — [`EmptyFooter`] is an invented slot, not exported by
+//!   `empty.tsx`; kept as a documented extension, the Expert Reviewer
+//!   decides keep vs remove (prefer [`EmptyContent`]).
+//! * D2 (PROPOSED) — `tracking-tight` (−0.025em) is not conveyed; egui
+//!   has no letter-spacing support.
+//! * D3 (PROPOSED) — `text-balance` is not conveyed; egui has no balanced
+//!   line-breaking, text wraps centred.
+//! * D4 (PROPOSED) — `md:p-12` does not respond to viewport width: fixed
+//!   24px padding (documented approximation); [`Empty::padding`] lets a
+//!   caller opt into 48px manually (egui has no `md` breakpoint).
+//! * OPEN-1 (OPEN) — recipes for the other 7 styles are not frozen here.
+//! * OPEN-2 (OPEN) — `cn()` merge semantics are unknown (the `cn()`
+//!   utility source is not in the snapshot).
+//! * OPEN-3 (OPEN) — exact `border-dashed` dash geometry is undefined;
+//!   the port's 6px dash / 4px gap rendering is reasonable, not frozen.
+//! * OPEN-4 (OPEN) — free-form media intrinsic sizing contract; the S1
+//!   contract is that the box takes its content's size.
+//!
+//! # Tokens
+//!
+//! Title text `foreground`, description text `muted-foreground`
+//! (0.556 light / 0.708 dark), link hover `primary`, media icon box
+//! `muted` (0.97 / 0.269) with a `foreground` glyph, border `border`
+//! when bordered. **Light `--foreground` is CONTESTED:** `globals.css`
+//! says `oklch(0% 0 0)` while `themes.ts` says `oklch(0.145 0 0)`; the
+//! port consumes the `themes.ts` value per the standing R1 reading
+//! (rendered light title ink ≈ 10, S5). The disposition goes to S12 /
+//! the Expert Reviewer (same divergence card S11 recorded).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -28,8 +105,9 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{ShadcnTheme, Style};
-use egui::{Align, Color32, FontId, InnerResponse, Margin, Pos2, Rect, Shape, Ui, Vec2};
+use crate::theme::fonts;
+use crate::theme::{Palette, ShadcnTheme, Style};
+use egui::{Align, Color32, FontId, InnerResponse, Margin, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 
 /// Media variants, mirroring the source `emptyMediaVariants`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,49 +151,221 @@ pub(crate) fn title_size(style: Style) -> f32 {
     }
 }
 
+/// The title font: `font-medium` (500) via the embedded Inter Medium face
+/// (spec §2.4, §4 — REQUIRED, not a deviation).
+pub(crate) fn title_font(style: Style) -> FontId {
+    fonts::medium(title_size(style))
+}
+
+/// The title line-height (base `text-lg` 28px, nova `text-sm` 20px, spec §3.3).
+pub(crate) fn title_line_height(style: Style) -> f32 {
+    match style {
+        Style::Nova => 20.0,
+        _ => 28.0,
+    }
+}
+
+/// The content slot's vertical gap (base `gap-4`, nova `gap-2.5`, spec §2.6).
+pub(crate) fn content_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => 10.0,
+        _ => 16.0,
+    }
+}
+
+/// The header's vertical gap (`gap-2`, spec §2.2).
+pub(crate) const HEADER_GAP: f32 = 8.0;
+
+/// The container padding when no override is set (`p-6` = 24px, spec §3.1).
+pub const EMPTY_DEFAULT_PADDING: f32 = 24.0;
+
 /// `max-w-sm` (24rem = 384px), shared by header/description/content.
 pub const EMPTY_MAX_WIDTH: f32 = 384.0;
 
-/// Lays out centered text (single- or multi-line) within the ui.
-fn centered_text(
-    ui: &mut Ui,
-    text: &str,
-    size: f32,
-    color: Color32,
-    max_width: f32,
-    line_height: Option<f32>,
-) -> egui::Response {
-    let width = max_width.min(ui.available_width());
+/// `text-sm/relaxed` line-height: 14px × 1.625 = 22.75px (spec §2.5,
+/// §0 correction 1). The audit's 20.0 (`line_heights::SMALL`) is wrong:
+/// the `/relaxed` modifier overrides the `text-sm` default line-height
+/// with `--leading-relaxed` (1.625).
+pub(crate) const DESCRIPTION_LINE_HEIGHT: f32 = 22.75;
+
+/// `underline-offset-4`: a description link's underline sits 4px below the
+/// text baseline (spec §2.5; same value as the badge link variant).
+const LINK_UNDERLINE_OFFSET: f32 = 4.0;
+
+/// One inline segment of an [`EmptyDescription`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DescriptionSegment {
+    /// Plain description text (`text-muted-foreground`).
+    Text(String),
+    /// A direct-child link: underlined, 4px offset, `text-primary` on hover.
+    Link(String),
+}
+
+/// Builds the description [`egui::text::LayoutJob`] for the given segments.
+/// Plain segments paint in `base_color`; link segments in `link_color`. All
+/// segments share the `text-sm/relaxed` metrics (14px, 22.75px line-height).
+/// The caller sets `wrap.max_width`; `halign` is centred here.
+fn description_job(
+    segments: &[DescriptionSegment],
+    base_color: Color32,
+    link_color: Color32,
+) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    job.append(
-        text,
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::proportional(size),
-            color,
-            line_height,
-            ..egui::TextFormat::default()
-        },
-    );
+    for segment in segments {
+        let (text, color) = match segment {
+            DescriptionSegment::Text(text) => (text.as_str(), base_color),
+            DescriptionSegment::Link(text) => (text.as_str(), link_color),
+        };
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::proportional(crate::theme::tokens::type_scale::SM),
+                color,
+                line_height: Some(DESCRIPTION_LINE_HEIGHT),
+                ..egui::TextFormat::default()
+            },
+        );
+    }
     job.halign = Align::Center;
-    job.wrap.max_width = width;
-    let galley = ui.painter().layout_job(job);
+    job
+}
+
+/// Resolves a description link's colour: `text-primary` on hover, otherwise
+/// `text-muted-foreground` (spec §2.5).
+fn resolve_link_color(hovered: bool, p: &Palette) -> Color32 {
+    if hovered {
+        p.primary
+    } else {
+        p.muted_foreground
+    }
+}
+
+/// One painted underline for a link run on a single galley row, plus the
+/// pointer-hit rect for that run. Coordinates are relative to the galley's
+/// origin (the paint position).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LinkRun {
+    /// Underline endpoints, 4px below the row baseline.
+    from: Pos2,
+    to: Pos2,
+    /// Pointer-hit rect: the run's glyph span over the row's line box,
+    /// expanded 2px vertically for forgiving hover.
+    hit: Rect,
+}
+
+fn make_link_run(x0: f32, x1: f32, baseline: f32, row_top: f32, row_height: f32) -> LinkRun {
+    let y = baseline + LINK_UNDERLINE_OFFSET;
+    LinkRun {
+        from: Pos2::new(x0, y),
+        to: Pos2::new(x1, y),
+        hit: Rect::from_min_max(
+            Pos2::new(x0, row_top - 2.0),
+            Pos2::new(x1, row_top + row_height + 2.0),
+        ),
+    }
+}
+
+/// Finds the underline runs for the link segments of a laid-out description
+/// galley.
+///
+/// The glyphs of a [`egui::text::LayoutJob`] are laid out in char order
+/// (one glyph per char, `epaint::text::Row`), so a link's glyphs are the
+/// contiguous glyph range starting after the preceding segments' chars.
+/// The scan verifies each glyph's `chr` against the expected text; if the
+/// layout ever stops matching (a newline produces no glyph, a future
+/// shaping change merges glyphs), the galley yields no runs rather than a
+/// mis-painted underline. A link wrapping across rows underlines once per
+/// visual row.
+fn link_runs(galley: &egui::Galley, segments: &[DescriptionSegment]) -> Vec<LinkRun> {
+    let mut expected: Vec<(char, bool)> = Vec::new();
+    for segment in segments {
+        let (text, is_link) = match segment {
+            DescriptionSegment::Text(text) => (text.as_str(), false),
+            DescriptionSegment::Link(text) => (text.as_str(), true),
+        };
+        expected.extend(text.chars().map(|c| (c, is_link)));
+    }
+
+    let mut runs = Vec::new();
+    let mut idx = 0usize;
+    for placed in &galley.rows {
+        let row = &placed.row;
+        let mut run: Option<(f32, f32)> = None; // (x0, baseline)
+        let mut run_end_x = 0.0;
+        for glyph in &row.glyphs {
+            let Some(&(ch, is_link)) = expected.get(idx) else {
+                // More glyphs than expected chars: give up on underlines.
+                return Vec::new();
+            };
+            if glyph.chr != ch {
+                return Vec::new();
+            }
+            idx += 1;
+            if is_link {
+                let baseline = placed.pos.y + glyph.pos.y;
+                let x0 = placed.pos.x + glyph.pos.x;
+                let x1 = x0 + glyph.advance_width;
+                if run.is_none() {
+                    run = Some((x0, baseline));
+                }
+                run_end_x = x1;
+            } else if let Some((x0, baseline)) = run.take() {
+                runs.push(make_link_run(
+                    x0,
+                    run_end_x,
+                    baseline,
+                    placed.pos.y,
+                    row.size.y,
+                ));
+            }
+        }
+        if let Some((x0, baseline)) = run.take() {
+            runs.push(make_link_run(
+                x0,
+                run_end_x,
+                baseline,
+                placed.pos.y,
+                row.size.y,
+            ));
+        }
+    }
+    runs
+}
+
+/// Allocates the full available width at the galley's height and returns the
+/// centred paint origin, the allocated rect, and the response. Paints
+/// nothing; the caller paints the galley (and any underlines) at the origin.
+///
+/// S10-verified (EMP-01, `empty-s10-report.md` §1): title and description
+/// ink centres sit on the allocated rect's centre within ±0.5px in all 4
+/// configs.
+///
+/// The callers lay the job out with `halign = Align::Center`, so the
+/// galley's rect is centred on x = 0 (epaint: with
+/// `LayoutJob::halign == Align::Center`, `galley.rect.center() == 0.0`).
+/// Centring the galley therefore means putting the galley rect's centre on
+/// the allocated rect's centre. Offsetting by
+/// `(rect.width() - galley.size().x) * 0.5` instead assumes a left-aligned
+/// galley whose rect starts at 0 and double-counts the centring: the ink
+/// shifts left by half the galley width, so the widest row's right edge
+/// lands on the container centre (EMP-01).
+fn allocate_centered(ui: &mut Ui, galley: &egui::Galley) -> (Pos2, Rect, egui::Response) {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), galley.size().y),
         egui::Sense::hover(),
     );
-    if ui.is_rect_visible(rect) {
-        let x = rect.left() + (rect.width() - galley.size().x) * 0.5;
-        ui.painter().galley(Pos2::new(x, rect.min.y), galley, color);
-    }
-    response
+    let origin = Pos2::new(rect.center().x - galley.rect.center().x, rect.min.y);
+    (origin, rect, response)
 }
 
-/// A shadcn empty state container. See the [module docs](self) for an example.
+/// A shadcn empty state container. See the [module docs](self) for the
+/// S10-verified final state, geometry, deviations and an example.
 #[derive(Clone, Debug, Default)]
 pub struct Empty {
     bordered: bool,
     fill_height: bool,
+    padding: Option<f32>,
     id_salt: Option<String>,
 }
 
@@ -125,6 +375,7 @@ impl Empty {
         Self {
             bordered: false,
             fill_height: false,
+            padding: None,
             id_salt: None,
         }
     }
@@ -140,6 +391,20 @@ impl Empty {
     pub fn fill_height(mut self, fill_height: bool) -> Self {
         self.fill_height = fill_height;
         self
+    }
+
+    /// Overrides the container padding (`p-6` = 24px by default). Pass 48px
+    /// for the `md:p-12` rule at viewport widths ≥ 768px (spec §3.1, D4):
+    /// egui has no `md` breakpoint, so the caller opts in manually.
+    /// Padding is in whole points.
+    pub fn padding(mut self, padding: f32) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+
+    /// The effective container padding (the override, or the 24px default).
+    pub(crate) fn padding_value(&self) -> f32 {
+        self.padding.unwrap_or(EMPTY_DEFAULT_PADDING)
     }
 
     /// Sets a stable id salt.
@@ -163,7 +428,7 @@ impl Empty {
         let border_idx = painter.add(Shape::Noop);
 
         let inner = egui::Frame::new()
-            .inner_margin(Margin::same(24))
+            .inner_margin(Margin::same(self.padding_value() as i8))
             .show(ui, |ui| {
                 if self.fill_height {
                     ui.set_min_height(ui.available_height());
@@ -261,7 +526,7 @@ impl EmptyHeader {
             Vec2::new(EMPTY_MAX_WIDTH.min(ui.available_width()), 0.0),
             |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0; // gap-2
+                    ui.spacing_mut().item_spacing.y = HEADER_GAP;
                     content(ui)
                 })
                 .inner
@@ -272,7 +537,9 @@ impl EmptyHeader {
 }
 
 /// `EmptyMedia` — the media slot; [`EmptyMediaVariant::Icon`] draws a
-/// `bg-muted` rounded box around the icon.
+/// `bg-muted` rounded box around the icon. Icon box 40px / glyph 24px
+/// (base) or 32px / 16px (nova), spec §2.3; the `mb-2` 8px sits BELOW the
+/// media. Free-form media takes its content's size (OPEN-4, S1 contract).
 #[derive(Clone, Debug)]
 pub struct EmptyMedia {
     variant: EmptyMediaVariant,
@@ -360,7 +627,10 @@ impl EmptyMedia {
     }
 }
 
-/// `EmptyTitle` — `text-lg font-medium tracking-tight` (nova `text-sm`).
+/// `EmptyTitle` — `text-lg font-medium tracking-tight` (nova `text-sm`);
+/// line-heights 28px base / 20px nova (spec §2.4, §3.3). S10-verified
+/// (EMP-01): ink centre within ±0.5px of the container centre in all 4
+/// configs. `tracking-tight` is not conveyed (D2, PROPOSED).
 #[derive(Clone, Debug)]
 pub struct EmptyTitle {
     text: String,
@@ -376,46 +646,104 @@ impl EmptyTitle {
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        centered_text(
-            ui,
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
             &self.text,
-            title_size(theme.style),
-            p.foreground,
-            EMPTY_MAX_WIDTH,
-            None,
-        )
+            0.0,
+            egui::TextFormat {
+                font_id: title_font(theme.style),
+                color: p.foreground,
+                line_height: Some(title_line_height(theme.style)),
+                ..egui::TextFormat::default()
+            },
+        );
+        job.halign = Align::Center;
+        job.wrap.max_width = EMPTY_MAX_WIDTH.min(ui.available_width());
+        let galley = ui.painter().layout_job(job);
+        let (origin, rect, response) = allocate_centered(ui, &galley);
+        if ui.is_rect_visible(rect) {
+            ui.painter().galley(origin, galley, p.foreground);
+        }
+        response
     }
 }
 
 /// `EmptyDescription` — `text-sm/relaxed text-muted-foreground` (14px text,
-/// 20px line height).
+/// 22.75px line height). S10-verified (EMP-01): ink centred within ±0.5px
+/// of the container centre in all 4 configs; links recolour to `primary`
+/// on hover (EMP-03, S10 §2).
 #[derive(Clone, Debug)]
 pub struct EmptyDescription {
-    text: String,
+    segments: Vec<DescriptionSegment>,
 }
 
 impl EmptyDescription {
     /// Creates an empty description.
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            segments: vec![DescriptionSegment::Text(text.into())],
+        }
+    }
+
+    /// Appends a direct-child link: underlined, 4px underline offset, and
+    /// `text-primary` on hover (spec §2.5). Use [`Self::text`] to continue
+    /// with plain text after a link, so a link can sit mid-sentence.
+    pub fn link(mut self, text: impl Into<String>) -> Self {
+        self.segments.push(DescriptionSegment::Link(text.into()));
+        self
+    }
+
+    /// Appends plain description text (after a link, or to extend the text).
+    pub fn text(mut self, text: impl Into<String>) -> Self {
+        self.segments.push(DescriptionSegment::Text(text.into()));
+        self
     }
 
     /// Renders the description.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
-        centered_text(
-            ui,
-            &self.text,
-            crate::theme::tokens::type_scale::SM,
-            p.muted_foreground,
-            EMPTY_MAX_WIDTH,
-            Some(crate::components::typography::line_heights::SMALL),
-        )
+        let width = EMPTY_MAX_WIDTH.min(ui.available_width());
+        // Pass 1: resting colours, to learn the link geometry. The layout
+        // depends on colours only through the formats, so the recolour pass
+        // below keeps the same geometry.
+        let mut job = description_job(&self.segments, p.muted_foreground, p.muted_foreground);
+        job.wrap.max_width = width;
+        let galley = ui.painter().layout_job(job);
+        let (origin, rect, response) = allocate_centered(ui, &galley);
+        let runs = link_runs(&galley, &self.segments);
+        let hovered = response.hover_pos().is_some_and(|pos| {
+            runs.iter()
+                .any(|run| run.hit.translate(origin.to_vec2()).contains(pos))
+        });
+        // Pass 2 (only when a link is hovered): recolour the links to
+        // `text-primary`. Geometry is identical — only colours changed.
+        let (galley, runs) = if hovered {
+            let mut job = description_job(&self.segments, p.muted_foreground, p.primary);
+            job.wrap.max_width = width;
+            let galley = ui.painter().layout_job(job);
+            let runs = link_runs(&galley, &self.segments);
+            (galley, runs)
+        } else {
+            (galley, runs)
+        };
+        if ui.is_rect_visible(rect) {
+            ui.painter().galley(origin, galley, p.muted_foreground);
+            let link_color = resolve_link_color(hovered, &p);
+            for run in &runs {
+                ui.painter().line_segment(
+                    [origin + run.from.to_vec2(), origin + run.to.to_vec2()],
+                    Stroke::new(1.0, link_color),
+                );
+            }
+        }
+        response
     }
 }
 
 /// `EmptyContent` — the actions slot (`gap-4 max-w-sm`; nova `gap-2.5`).
+/// S10-verified (EMP-02): the §1 two-button row centres at 682.5 nova /
+/// 682.0 vega on settled frames.
 #[derive(Clone, Debug, Default)]
 pub struct EmptyContent {
     id_salt: Option<String>,
@@ -436,10 +764,7 @@ impl EmptyContent {
     /// Renders the content slot.
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
-        let g = match theme.style {
-            Style::Nova => 10.0, // gap-2.5
-            _ => 16.0,           // gap-4
-        };
+        let g = content_gap(theme.style);
         let inner = ui.allocate_ui(
             Vec2::new(EMPTY_MAX_WIDTH.min(ui.available_width()), 0.0),
             |ui| {
@@ -457,6 +782,8 @@ impl EmptyContent {
 /// `EmptyFooter` — bottom slot mirroring EmptyContent. This slot is a Rust
 /// port extension: `empty.tsx` exports no footer (its docs pages wrap
 /// actions in the content slot), so prefer [`EmptyContent`] for new code.
+/// D1 (PROPOSED): the Expert Reviewer decides keep vs remove; S10 did not
+/// re-open it.
 #[derive(Clone, Debug, Default)]
 pub struct EmptyFooter {
     id_salt: Option<String>,
@@ -508,8 +835,203 @@ mod tests {
         // title text-lg vs nova text-sm.
         assert_eq!(title_size(Style::Vega), 18.0);
         assert_eq!(title_size(Style::Nova), 14.0);
+        // title line-heights: text-lg 28px, nova text-sm 20px (spec §3.3).
+        assert_eq!(title_line_height(Style::Vega), 28.0);
+        assert_eq!(title_line_height(Style::Nova), 20.0);
+        // content gap-4 vs nova gap-2.5; header gap-2.
+        assert_eq!(content_gap(Style::Vega), 16.0);
+        assert_eq!(content_gap(Style::Nova), 10.0);
+        assert_eq!(HEADER_GAP, 8.0);
+        // container radius: rounded-lg 10px base, rounded-xl 14px nova.
+        let theme = Preset::default().build(Mode::Light);
+        assert_eq!(theme.radius.lg_u8(), 10);
+        assert_eq!(theme.radius.xl_u8(), 14);
         // max-w-sm
         assert_eq!(EMPTY_MAX_WIDTH, 384.0);
+        // default padding is p-6 = 24px (spec §3.1).
+        assert_eq!(EMPTY_DEFAULT_PADDING, 24.0);
+    }
+
+    #[test]
+    fn title_font_is_medium() {
+        // Spec §2.4/§4: `font-medium` (500) in both styles — the embedded
+        // Inter Medium face, not the regular face.
+        for style in [Style::Vega, Style::Nova] {
+            let font = title_font(style);
+            assert_eq!(font.family, fonts::medium_family());
+        }
+        assert_eq!(title_font(Style::Vega).size, 18.0);
+        assert_eq!(title_font(Style::Nova).size, 14.0);
+    }
+
+    #[test]
+    fn description_line_height_is_22_75() {
+        // Spec §0 correction 1: `text-sm/relaxed` = 14px × 1.625 = 22.75px,
+        // not the audit's 20.0 (`line_heights::SMALL`).
+        assert_eq!(DESCRIPTION_LINE_HEIGHT, 22.75);
+        assert_eq!(DESCRIPTION_LINE_HEIGHT, 14.0 * 1.625);
+        let p = Preset::default().build(Mode::Light).palette;
+        let job = description_job(
+            &[DescriptionSegment::Text("x".to_string())],
+            p.muted_foreground,
+            p.muted_foreground,
+        );
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].format.line_height, Some(22.75));
+        assert_eq!(job.sections[0].format.font_id.size, 14.0);
+        assert_eq!(job.sections[0].format.color, p.muted_foreground);
+    }
+
+    #[test]
+    fn padding_default_and_override() {
+        assert_eq!(Empty::new().padding_value(), 24.0);
+        assert_eq!(Empty::new().padding(48.0).padding_value(), 48.0);
+    }
+
+    #[test]
+    fn link_color_and_offset() {
+        // Spec §2.5: links are `text-muted-foreground` at rest and
+        // `text-primary` on hover, with a 4px underline offset.
+        let p = Preset::default().build(Mode::Light).palette;
+        assert_eq!(resolve_link_color(false, &p), p.muted_foreground);
+        assert_eq!(resolve_link_color(true, &p), p.primary);
+        assert_eq!(LINK_UNDERLINE_OFFSET, 4.0);
+    }
+
+    /// Lays out a description job in a headless context and returns its galley.
+    fn layout_description(
+        ctx: &egui::Context,
+        segments: &[DescriptionSegment],
+        wrap_width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut galley = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_link_runs_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            let p = Preset::default().build(Mode::Light).palette;
+            let mut job = description_job(segments, p.muted_foreground, p.muted_foreground);
+            job.wrap.max_width = wrap_width;
+            galley = Some(ui.painter().layout_job(job));
+        });
+        out.textures_delta.clear();
+        galley.expect("galley laid out")
+    }
+
+    #[test]
+    fn link_runs_found_in_single_line_galley() {
+        let ctx = egui::Context::default();
+        let segments = vec![
+            DescriptionSegment::Text("See the ".to_string()),
+            DescriptionSegment::Link("docs".to_string()),
+            DescriptionSegment::Text(" for details.".to_string()),
+        ];
+        let galley = layout_description(&ctx, &segments, 384.0);
+        let runs = link_runs(&galley, &segments);
+        assert_eq!(runs.len(), 1, "one underline run for one link on one row");
+        let run = runs[0];
+        // The run spans exactly the link's laid-out width.
+        let mut link_w = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let g = ui.painter().layout_no_wrap(
+                "docs".to_string(),
+                FontId::proportional(crate::theme::tokens::type_scale::SM),
+                Color32::WHITE,
+            );
+            link_w = g.size().x;
+        });
+        out.textures_delta.clear();
+        assert!((run.to.x - run.from.x - link_w).abs() < 1.0);
+        // The underline sits 4px below the row baseline.
+        let placed = &galley.rows[0];
+        let baseline = placed.pos.y + placed.row.glyphs[0].pos.y;
+        assert_eq!(run.from.y, baseline + LINK_UNDERLINE_OFFSET);
+        assert_eq!(run.to.y, baseline + LINK_UNDERLINE_OFFSET);
+        // The hit rect covers the link text.
+        let mid = Pos2::new((run.from.x + run.to.x) * 0.5, baseline);
+        assert!(run.hit.contains(mid));
+    }
+
+    #[test]
+    fn link_wraps_to_two_runs() {
+        let ctx = egui::Context::default();
+        let segments = vec![
+            DescriptionSegment::Text("See ".to_string()),
+            DescriptionSegment::Link("documentation".to_string()),
+            DescriptionSegment::Text(" here.".to_string()),
+        ];
+        let galley = layout_description(&ctx, &segments, 60.0);
+        let runs = link_runs(&galley, &segments);
+        assert_eq!(
+            runs.len(),
+            2,
+            "a link wrapping across rows underlines once per visual row"
+        );
+        assert_ne!(runs[0].from.y, runs[1].from.y);
+    }
+
+    #[test]
+    fn mb_2_space_sits_after_media() {
+        // Spec §2.3: `mb-2` is an 8px gap BELOW the media, never before.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_mb2_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let media_rect = EmptyMedia::icon(Icon::Search).show(ui).rect;
+            let label_rect = ui.label("after").rect;
+            assert_eq!(label_rect.top() - media_rect.bottom(), 8.0);
+            // Same for the free-form path: the space follows the content.
+            let mut content_bottom = 0.0;
+            EmptyMedia::new().show_with(ui, |ui| {
+                content_bottom = ui.label("custom").rect.bottom();
+            });
+            let after_rect = ui.label("after free-form").rect;
+            assert_eq!(after_rect.top() - content_bottom, 8.0);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn padding_changes_container_height() {
+        // `Empty::padding(48)` adds 24px of padding per side over the 24px
+        // default, so the container grows by exactly 48px (spec §3.1).
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut heights = [0.0; 2];
+        for (i, padding) in [None, Some(48.0)].into_iter().enumerate() {
+            let mut height = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("empty_padding_height_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+                );
+                let mut empty = Empty::new();
+                if let Some(padding) = padding {
+                    empty = empty.padding(padding);
+                }
+                height = empty
+                    .show(ui, |ui| {
+                        EmptyTitle::new("T").show(ui);
+                    })
+                    .response
+                    .rect
+                    .height();
+            });
+            out.textures_delta.clear();
+            heights[i] = height;
+        }
+        assert_eq!(heights[1] - heights[0], 48.0);
     }
 
     #[test]
@@ -539,8 +1061,124 @@ mod tests {
                     EmptyMedia::new().show(ui);
                     EmptyTitle::new("Bare empty").show(ui);
                 });
+                // A description with a mid-sentence link renders in both modes.
+                Empty::new().padding(48.0).show(ui, |ui| {
+                    EmptyHeader::new().show(ui, |ui| {
+                        EmptyDescription::new("See the ")
+                            .link("docs")
+                            .text(" for details.")
+                            .show(ui);
+                    });
+                });
             });
             out.textures_delta.clear();
         }
+    }
+
+    /// Ink centre of one galley row, painted at `origin`, in absolute coords.
+    /// Uses the glyphs' logical rects (pos + advance width), which bound the
+    /// ink to within a pixel of bearing on each side.
+    fn row_ink_centre_x(origin: Pos2, galley: &egui::Galley, row_idx: usize) -> f32 {
+        let placed = &galley.rows[row_idx];
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        for glyph in &placed.row.glyphs {
+            let rect = glyph.logical_rect();
+            min_x = min_x.min(origin.x + placed.pos.x + rect.min.x);
+            max_x = max_x.max(origin.x + placed.pos.x + rect.max.x);
+        }
+        (min_x + max_x) * 0.5
+    }
+
+    #[test]
+    fn allocate_centered_centres_title_ink_on_rect_centre() {
+        // EMP-01: the title's ink centre must sit on the allocated rect's
+        // centre. The pre-fix origin put the widest row's right edge on the
+        // centre instead (ink centre off by half the galley width, 25–190px
+        // in the gallery), so a 2px tolerance discriminates decisively.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_allocate_centered_title_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            // Title job, built exactly as `EmptyTitle::show` builds it.
+            let theme = ShadcnTheme::of_ui(ui);
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                "No results found",
+                0.0,
+                egui::TextFormat {
+                    font_id: title_font(theme.style),
+                    color: Color32::BLACK,
+                    line_height: Some(title_line_height(theme.style)),
+                    ..egui::TextFormat::default()
+                },
+            );
+            job.halign = Align::Center;
+            job.wrap.max_width = EMPTY_MAX_WIDTH.min(ui.available_width());
+            let galley = ui.painter().layout_job(job);
+            let (origin, rect, _response) = allocate_centered(ui, &galley);
+            assert_eq!(rect.width(), 400.0, "allocates the full available width");
+            assert_eq!(galley.rows.len(), 1);
+            let ink_centre = row_ink_centre_x(origin, &galley, 0);
+            assert!(
+                (ink_centre - rect.center().x).abs() < 2.0,
+                "title ink centre {ink_centre} must sit on rect centre {} (origin.x = {}, galley width = {})",
+                rect.center().x,
+                origin.x,
+                galley.size().x,
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn allocate_centered_centres_each_description_row() {
+        // EMP-01, multi-row case: with `halign = Center` every row is
+        // centred on the galley centre independently, so each row's ink
+        // centre must sit on the rect centre — including the short second
+        // row, which the defect showed centred on the first row's (shifted)
+        // centre instead of the container's.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let segments = vec![
+            DescriptionSegment::Text("See the ".to_string()),
+            DescriptionSegment::Link("docs".to_string()),
+            DescriptionSegment::Text(
+                " for details about this empty state and how to fix it.".to_string(),
+            ),
+        ];
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("empty_allocate_centered_desc_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            );
+            // Description job, built exactly as `EmptyDescription::show`
+            // builds its pass-1 job (wraps at 384, so it spans two rows).
+            let p = Preset::default().build(Mode::Light).palette;
+            let mut job = description_job(&segments, p.muted_foreground, p.muted_foreground);
+            job.wrap.max_width = EMPTY_MAX_WIDTH.min(ui.available_width());
+            let galley = ui.painter().layout_job(job);
+            let (origin, rect, _response) = allocate_centered(ui, &galley);
+            assert!(
+                galley.rows.len() >= 2,
+                "the description must wrap to exercise the multi-row case"
+            );
+            for i in 0..galley.rows.len() {
+                let ink_centre = row_ink_centre_x(origin, &galley, i);
+                assert!(
+                    (ink_centre - rect.center().x).abs() < 2.0,
+                    "row {i} ink centre {ink_centre} must sit on rect centre {}",
+                    rect.center().x,
+                );
+            }
+        });
+        out.textures_delta.clear();
     }
 }
