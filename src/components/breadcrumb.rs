@@ -337,6 +337,87 @@ mod tests {
         Preset::default().build(mode).palette
     }
 
+    /// Minimal multi-frame harness (mirrors the tabs/accordion pattern):
+    /// a stable Ui id so focus/hover state persists across frames, and
+    /// `step_out` returning the frame output for shape inspection.
+    struct Harness {
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            Preset::default().install(&ctx);
+            Self { ctx, time: 0.0 }
+        }
+
+        fn step_out(
+            &mut self,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut Ui),
+        ) -> egui::FullOutput {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let mut out = self.ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("breadcrumb_harness_ui"),
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        Pos2::ZERO,
+                        Vec2::new(400.0, 200.0),
+                    )),
+                );
+                f(ui);
+            });
+            out.textures_delta.clear();
+            out
+        }
+
+        fn run_out(&mut self, f: impl FnMut(&mut Ui)) -> egui::FullOutput {
+            self.step_out(Vec::new(), f)
+        }
+
+        fn run(&mut self, f: impl FnMut(&mut Ui)) {
+            let _ = self.run_out(f);
+        }
+
+        fn hover(&mut self, pos: Pos2, f: impl FnMut(&mut Ui)) {
+            let _ = self.step_out(vec![egui::Event::PointerMoved(pos)], f);
+        }
+
+        fn click(&mut self, pos: Pos2, mut f: impl FnMut(&mut Ui)) {
+            self.hover(pos, &mut f);
+            for pressed in [true, false] {
+                let _ = self.step_out(
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                    &mut f,
+                );
+            }
+        }
+    }
+
+    /// The painted colour of the text shape for `label`, if any.
+    fn text_color(out: &egui::FullOutput, label: &str) -> Option<Color32> {
+        for clipped in &out.shapes {
+            if let egui::Shape::Text(ts) = &clipped.shape {
+                if ts.galley.job.text == label {
+                    return Some(ts.fallback_color);
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn link_uses_muted_and_hover_foreground() {
         let p = palette(Mode::Light);
@@ -348,6 +429,7 @@ mod tests {
     #[test]
     fn separator_uses_chevron_right_at_14px() {
         let s = BreadcrumbSeparator::new();
+        assert_eq!(s.icon, Icon::ChevronRight);
         assert_eq!(s.size, BREADCRUMB_SEPARATOR_SIZE);
         assert_eq!(s.size, 14.0);
         let custom = BreadcrumbSeparator::new().icon(Icon::Minus).size(10.0);
@@ -489,5 +571,184 @@ mod tests {
             assert!(!r.clicked());
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn link_click_reports_clicked_on_press_release() {
+        // Spec §7.2: clicking a link activates it — simulate a real press
+        // + release on the link centre and assert `clicked()`.
+        let mut h = Harness::new();
+        let mut rect = egui::Rect::ZERO;
+        h.run(|ui| {
+            rect = BreadcrumbLink::new("Home").show(ui).rect;
+        });
+        let mut clicked = false;
+        h.click(rect.center(), |ui| {
+            clicked = BreadcrumbLink::new("Home").show(ui).clicked();
+        });
+        assert!(clicked, "press + release on a link reports clicked()");
+    }
+
+    #[test]
+    fn link_brightens_to_foreground_on_hover() {
+        // Spec §4.2: `hover:text-foreground` — rendered colour, not just
+        // the palette values: muted at rest, foreground while hovered.
+        let p = palette(Mode::Light);
+        let mut h = Harness::new();
+        let mut rect = egui::Rect::ZERO;
+        let out = h.run_out(|ui| {
+            rect = BreadcrumbLink::new("Home").show(ui).rect;
+        });
+        assert_eq!(
+            text_color(&out, "Home"),
+            Some(p.muted_foreground),
+            "link text is muted at rest"
+        );
+        let out = h.step_out(vec![egui::Event::PointerMoved(rect.center())], |ui| {
+            BreadcrumbLink::new("Home").show(ui);
+        });
+        assert_eq!(
+            text_color(&out, "Home"),
+            Some(p.foreground),
+            "link text brightens to foreground on hover"
+        );
+    }
+
+    #[test]
+    fn focused_link_paints_n9_focus_ring() {
+        // Spec §4.3 / D1 (N9, documented deviation): a focused link paints
+        // a 3px `ring/50` ring at `radius.sm()` (6px) around the link rect
+        // expanded by 1px. Pin it so a later "fix" cannot silently remove
+        // the ring to match the source (which has no focus recipe).
+        let mut h = Harness::new();
+        let mut rect = egui::Rect::ZERO;
+        h.run(|ui| {
+            let response = BreadcrumbLink::new("Home").id_salt("ring").show(ui);
+            rect = response.rect;
+            response.request_focus();
+        });
+        // Settle a frame so the requested focus is installed.
+        h.run(|ui| {
+            BreadcrumbLink::new("Home").id_salt("ring").show(ui);
+        });
+        let out = h.run_out(|ui| {
+            BreadcrumbLink::new("Home").id_salt("ring").show(ui);
+        });
+
+        let expected = rect.expand2(Vec2::new(1.0, 1.0));
+        let mut found = false;
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(rs) = &clipped.shape {
+                if rs.stroke.width == 3.0 {
+                    assert_eq!(
+                        rs.corner_radius.nw, 6,
+                        "N9 ring radius is radius.sm() = 6px"
+                    );
+                    assert_eq!(rs.corner_radius.ne, 6);
+                    assert_eq!(rs.corner_radius.sw, 6);
+                    assert_eq!(rs.corner_radius.se, 6);
+                    assert!(
+                        (rs.rect.min - expected.min).length() < 0.5
+                            && (rs.rect.max - expected.max).length() < 0.5,
+                        "ring rect {} is the link rect expanded by 1px ({})",
+                        rs.rect,
+                        expected
+                    );
+                    // `color_alpha(ring, 0.5)` on an opaque colour:
+                    // (255 * 0.5 + 0.5) as u8 = 128.
+                    assert_eq!(
+                        rs.stroke.color.a(),
+                        128,
+                        "ring is ring/50, got alpha {}",
+                        rs.stroke.color.a()
+                    );
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "focused link paints a 3px N9 focus ring");
+    }
+
+    #[test]
+    fn list_gap_is_6px_under_nova() {
+        // Spec §3.2: the list gap is `gap-1.5` = 6px under nova (restated
+        // by `.cn-breadcrumb-list`). The field default is pinned by
+        // `ellipsis_and_defaults_match_nova`; this pins the rendered gap.
+        let mut h = Harness::new();
+        let mut first = egui::Rect::ZERO;
+        let mut second = egui::Rect::ZERO;
+        h.run(|ui| {
+            BreadcrumbList::new().show(ui, |ui| {
+                BreadcrumbItem::new().show(ui, |ui| {
+                    first = BreadcrumbLink::new("Home").show(ui).rect;
+                });
+                BreadcrumbItem::new().show(ui, |ui| {
+                    second = BreadcrumbLink::new("Components").show(ui).rect;
+                });
+            });
+        });
+        let gap = second.left() - first.right();
+        assert!(
+            (gap - 6.0).abs() < 0.5,
+            "rendered list gap {} should be the nova gap-1.5 = 6px",
+            gap
+        );
+    }
+
+    #[test]
+    fn item_gap_is_4px_under_nova() {
+        // Spec §3.2: the gap inside an item is `gap-1` = 4px under nova
+        // (`.cn-breadcrumb-item` overrides base `gap-1.5`).
+        let mut h = Harness::new();
+        let mut first = egui::Rect::ZERO;
+        let mut second = egui::Rect::ZERO;
+        h.run(|ui| {
+            BreadcrumbItem::new().show(ui, |ui| {
+                first = BreadcrumbLink::new("Home").show(ui).rect;
+                second = BreadcrumbLink::new("Components").show(ui).rect;
+            });
+        });
+        let gap = second.left() - first.right();
+        assert!(
+            (gap - 4.0).abs() < 0.5,
+            "rendered item gap {} should be the nova gap-1 = 4px",
+            gap
+        );
+    }
+
+    #[test]
+    fn ellipsis_glyph_is_16px_centered() {
+        // Spec §2.7/§3.3: the nova ellipsis is a 20px box with a 16px glyph
+        // (`size-5` / `[&>svg]:size-4`), centred. The icon paints as a
+        // textured mesh, so pin the mesh bounds, not just the box constant.
+        let mut h = Harness::new();
+        let mut rect = egui::Rect::ZERO;
+        let out = h.run_out(|ui| {
+            rect = BreadcrumbEllipsis::new().show(ui).rect;
+        });
+        assert!(
+            (rect.width() - 20.0).abs() < 0.5 && (rect.height() - 20.0).abs() < 0.5,
+            "ellipsis box {} should be the nova 20px square",
+            rect
+        );
+        let expected = egui::Rect::from_center_size(rect.center(), Vec2::splat(16.0));
+        let mut found = false;
+        for clipped in &out.shapes {
+            if let egui::Shape::Mesh(mesh) = &clipped.shape {
+                let mut bounds = egui::Rect::NOTHING;
+                for v in &mesh.vertices {
+                    bounds.extend_with(v.pos);
+                }
+                if (bounds.min - expected.min).length() < 0.5
+                    && (bounds.max - expected.max).length() < 0.5
+                {
+                    found = true;
+                }
+            }
+        }
+        assert!(
+            found,
+            "ellipsis glyph paints as a 16px image centred in the 20px box"
+        );
     }
 }
