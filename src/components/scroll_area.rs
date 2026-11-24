@@ -5,19 +5,137 @@
 //! `rounded-full bg-border` and whose track is `w-2.5` (10px) with `p-px`
 //! padding.
 //!
-//! The scrollbar look is applied through a *scoped* egui style
-//! (`ScrollStyle::solid` + themed handle/track colors), so the global style
-//! is never permanently mutated — nested `egui::ScrollArea`s created inside
-//! the closure inherit it.
+//! # Verified final state (S10, all 4 configs)
 //!
-//! In egui 0.37 a solid scrollbar paints its background track with
-//! `visuals.extreme_bg_color` and the handle with
-//! `widgets.{inactive,hovered,active}.bg_fill` (using those widget visuals'
-//! `corner_radius` for the rounding). The source has *no* track
-//! (`border-l-transparent`) and a `rounded-full bg-border` thumb, so the
-//! scope sets a transparent track color and a `bg-border` handle in all
-//! three widget states. The thumb ends up `rounded-full` for free: epaint
-//! clamps the bar radius to half the 10px bar width.
+//! Every statement below is verified in
+//! `batch-c/reports/scroll-area-s10-report.md` (S10) or decided in
+//! `batch-c/reports/s8-decisions.md` §3.7 (S8 gate); S10 supersedes S5/S6
+//! where they differ.
+//!
+//! ## Geometry (S10 §1, identical in all 4 configs)
+//!
+//! Five vertical thumb runs, same y-positions in every config: §1
+//! (251–274, 24px), §3 (619–636, 18px), §4 (831–905, 75px), §5
+//! (1126–1141, 16px by the S6 method / 18px painted span), §6 (1358–1377,
+//! 20px). §2 horizontal thumb: 487px (nova) / 416px (vega), y537–544.
+//! Viewport heights are exact (ring height − 9): §3 140px, §5 160px,
+//! §6 140px, §7 80px; focus rings measure 1028×(h+1).
+//!
+//! ## The three S9 changes (all PASS at S10)
+//!
+//! * **SCA-01** (`63d1158`, P1): the axes passed to egui's
+//!   `ScrollArea::new` were swapped (`[vertical, horizontal]` instead of
+//!   `[horizontal, vertical]`); §1 now clips to its 160px viewport (only
+//!   Items 01–07 visible) and §1–§7 all sit above the fold.
+//! * **SCA-02** (`4ed09a5`, P2): `.height(h)` now pins the viewport at
+//!   exactly `h` (`max_height(h).min_scrolled_height(h)`); §6 renders
+//!   140px and §7 80px (both sat on egui's 64px `min_scrolled_size`
+//!   floor pre-fix, measured headless at exactly 64.0px).
+//! * **Thumb minimum 18px** (`8637868`, S8 §3.7 OPEN-3): the single
+//!   constant `THUMB_MIN_LENGTH` went 12.0 → 18.0, feeding both egui's
+//!   `handle_min_length` and the self-painted thumb clamp. S10 measured
+//!   §3 18 (TRUE 20 light / 19 dark), §5 16 (TRUE 18 light / 17 dark —
+//!   the painted span is 18 rows in both), §6 20 (TRUE 22): the 18px
+//!   minimum holds on the painted span in all 4 configs.
+//!
+//! ## Interaction (S10 §2, all 4 configs)
+//!
+//! * Track-click: the thumb **jumps** to the click point (|centre − click|
+//!   = 0.5px in all 4 configs) and the viewport defocuses (egui native
+//!   behaviour, kept per S8 §3.7 — Radix's jump-then-drag is NOT
+//!   implemented).
+//! * Drags and wheel are exact and restore exactly: §1 down60
+//!   (57,80)→(117,140) + back; §2 right100 + back; §6 down40 + back;
+//!   wheel down3 +39/+38 + back.
+//! * Arrow keys move **focus**, never content (S8 §3.7 OPEN-2 — Radix has
+//!   no keyboard table; the port's viewport is focusable and egui's
+//!   directional focus navigation takes the arrows). The thumb never
+//!   moves on any key.
+//! * Tab walk: 39–40 stops; landmarks 107 §3 / 109 §4 / 110 button /
+//!   111 §5 / 112 §6 / 113 §7 all match, with reversal.
+//!
+//! ## States
+//!
+//! * **No hover state** (spec §4.2): the thumb is `bg-border` at rest,
+//!   on hover, and while dragging — the audit's nova `hover:bg-accent`
+//!   claim was wrong (zero hits in `style-nova.css`). S10 confirmed
+//!   zero-change over 20 transitions per thumb per config.
+//! * **Always-visible bar** (OPEN-1): a deliberate deviation from Radix's
+//!   `type='hover'` default, RATIFIED at S8 §3.7 — a 600ms hide delay
+//!   fits egui's immediate-mode model poorly.
+//! * **Bar hides when content fits** (OPEN-4): the bar does NOT paint in
+//!   §7 at rest or focused (zero bar pixels, all 4 configs, S10 §6) —
+//!   `scrollbar_thumb_rect` returns `None` when content fits, matching
+//!   Radix. The S8 record's contrary sentence was factually wrong and is
+//!   corrected at S12.
+//! * **Track**: no visible track (`extreme_bg_color = TRANSPARENT`, the
+//!   source's `border-l-transparent`); `bg_fill = border` RATIFIED at
+//!   S8 §3.7 as the correct port (spec §4.1/§3.4).
+//!
+//! ## Deviations and OPEN items (current dispositions)
+//!
+//! D1 (no ARIA tree), D2 (`:focus-visible` modality — ring shows on any
+//! egui focus), D3 (overlay → layout width), D4 (thumb 10px vs source
+//! 8px), D5 (no standalone `ScrollBar` export) — all PROPOSED, no
+//! approval line filled; they go to the Expert Reviewer in the wave
+//! pack. OPEN-1 RATIFIED (deliberate deviation); OPEN-2 DO NOT wire
+//! arrow-key scrolling; OPEN-3 ADOPTED (18px, S9 `8637868`); OPEN-4
+//! settled at S10 (bar hides when content fits — actual behaviour, not
+//! a deviation); OPEN-5 (radius inheritance mechanism) stays OPEN.
+//!
+//! ## Carried, not fixed
+//!
+//! **SCA-03** (P2, `batch-c/reports/defects/SCA-03.md`): the §4 inner
+//! button is a Tab stop (108) but when focused paints NO visible
+//! indicator and the viewport does NOT scroll to reveal it
+//! (whole-window diff vs rest exactly 0px) — egui 0.37 has no
+//! auto-scroll-to-focused-widget. The frozen spec has no rule requiring
+//! focused descendants to scroll into view, so any fix is a new
+//! behaviour addition; carried to the wave pack / Expert Reviewer for a
+//! fix-shape decision.
+//!
+//! ## Budgets and standing caveats (S10 §5)
+//!
+//! Idle CPU 0.0%, animating 107–131% (<150%), RSS −2.42%..+0.9% with no
+//! monotonic growth (the S7 RSS watch, +4.93% nova/light, is RESOLVED).
+//! Determinism 0, flicker 0, round-trips byte-identical. Render floor
+//! NOT VERIFIED (2.2–3.87 fps, pipeline-capped) and timing legs
+//! UNRESOLVED in every video leg — the wave-wide pattern, not a
+//! component defect.
+//!
+//! ## Tokens
+//!
+//! Thumb `bg-border` (light `oklch(0.922 0 0)`, dark
+//! `oklch(1 0 0 / 10%)`); focus ring `ring/50` (light
+//! `oklch(0.708 0 0)`, dark `oklch(0.556 0 0)`). No token disagreement
+//! exists for this component (`border`/`ring` agree across
+//! `globals.css` and `themes.ts`, spec §5).
+//!
+//! The scrollbar is egui's *floating* bar, so it overlays the viewport and
+//! takes no layout width (N14a — the viewport is `size-full`), and its
+//! outer edge is flush with the Root edge (`bar_outer_margin = 0`, N14b).
+//! egui's handle spans the bar's full cross range and cannot express the
+//! source's `p-px` thumb inset, so the handle is made invisible (all handle
+//! opacities 0) and the thumb is painted by this module instead: 8px wide,
+//! 1px inside the 10px bar on every side, radius 4 (`rounded-full`),
+//! `bg-border` in every state — the source defines no thumb hover state.
+//! Drag and track-click paging still run on egui's bar, whose geometry the
+//! painted thumb mirrors exactly (see [`scrollbar_thumb_rect`]).
+//!
+//! The viewport is one Tab stop; on focus it paints the source's
+//! `focus-visible` ring (3px `ring/50`) plus the 1px solid outline in
+//! `ring/50`.
+//!
+//! The scrollbar look is applied through a *scoped* egui style
+//! (`ScrollStyle::floating` + themed handle/track colors), so the global
+//! style is never permanently mutated — nested `egui::ScrollArea`s created
+//! inside the closure inherit it. The track is invisible
+//! (`extreme_bg_color = TRANSPARENT`, the source's `border-l-transparent`);
+//! the scoped widget `bg_fill`s stay `bg-border` in all three states (the
+//! audit-verified P0 fix). They no longer paint the handle itself (it is
+//! opacity-0) and are retained so content widgets inside the area keep
+//! their current paint — removing them would change the paint of every
+//! control nested in a scroll area, which is out of scope for this line.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -30,12 +148,30 @@
 //! ```
 
 use crate::theme::ShadcnTheme;
-use egui::{InnerResponse, Ui};
+use crate::utils::focus::{is_focused, paint_focus_ring, paint_ring};
+use egui::{CornerRadius, InnerResponse, Rect, Ui};
 
 /// The scrollbar track width (`w-2.5`).
 pub const SCROLLBAR_WIDTH: f32 = 10.0;
 
-/// A shadcn scroll area. See the [module docs](self) for an example.
+/// The thumb width: the 10px bar minus `p-px` (1px) on each side.
+pub const SCROLLBAR_THUMB_WIDTH: f32 = 8.0;
+
+/// The thumb inset inside the bar (`p-px`, 1px on every side).
+const THUMB_INSET: f32 = 1.0;
+
+/// The thumb corner radius (`rounded-full` on the 8px thumb).
+const THUMB_RADIUS: u8 = 4;
+
+/// Minimum thumb length (Radix `@radix-ui/react-scroll-area@1.2.10`:
+/// `Math.max(thumbSize, 18)` — "minimum of 18 matches macOS minimum").
+/// OPEN-3 settled at the S8 gate (see `s8-decisions.md` §3.7): the 18px
+/// value is adopted from the Radix source; the previous 12.0 was egui's
+/// default with no source basis.
+const THUMB_MIN_LENGTH: f32 = 18.0;
+
+/// A shadcn scroll area. See the [module docs](self) for the S10-verified
+/// final state (geometry, interaction, deviations and OPEN dispositions).
 #[derive(Clone, Debug)]
 pub struct ScrollArea {
     vertical: bool,
@@ -75,7 +211,16 @@ impl ScrollArea {
         self
     }
 
-    /// Caps the viewport height (default: available height).
+    /// Fixes the viewport height (default: available height).
+    ///
+    /// The height is enforced, not merely capped: egui's `max_height`
+    /// alone collapses to the available height, which is ~0 for a
+    /// ScrollArea laid out far below the fold of a scrolling parent
+    /// (SCA-02), so `show` also sets `min_scrolled_height` to the same
+    /// value. With `auto_shrink([false, false])` the viewport then
+    /// renders at exactly this height even when the content is shorter.
+    /// S10-verified: §6 renders 140px and §7 80px in all 4 configs
+    /// (both sat on egui's 64px floor pre-fix).
     pub fn height(mut self, height: f32) -> Self {
         self.height = Some(height);
         self
@@ -95,28 +240,47 @@ impl ScrollArea {
 
     /// Builds the scoped scrollbar style.
     ///
-    /// Track = `w-2.5` (10px) with `p-px` margins, always-visible solid
-    /// thumb. The handle color/radius is applied separately through the
-    /// scoped widget visuals (see [`Self::show`]).
+    /// Floating bar (`N14a` — overlays the viewport, no layout width):
+    /// `floating_allocated_width = 0`, `bar_width = 10.0` (`w-2.5`),
+    /// `bar_outer_margin = 0` (`N14b` — flush with the Root edge),
+    /// `floating_width = 10.0` (never shrinks to the thin width),
+    /// `handle_min_length = 18.0` (OPEN-3, Radix `Math.max(thumbSize, 18)`,
+    /// settled at the S8 gate).
+    ///
+    /// egui's own handle is invisible in every state (all handle opacities
+    /// 0): it spans the bar's full cross range and cannot express the
+    /// source's `p-px` thumb inset, so S1 paints the thumb itself (8px,
+    /// 1px inset, radius 4 — see [`scrollbar_thumb_rect`]). Interaction
+    /// (drag, track-click paging) still runs on egui's bar.
     pub(crate) fn themed_scroll_style() -> egui::style::ScrollStyle {
-        let mut s = egui::style::ScrollStyle::solid();
+        let mut s = egui::style::ScrollStyle::floating();
         s.bar_width = SCROLLBAR_WIDTH; // w-2.5
-        s.bar_inner_margin = 1.0; // p-px
-        s.bar_outer_margin = 1.0;
-        s.handle_min_length = 12.0;
-        // Solid bars are always opaque; keep the handle visible.
-        s.dormant_handle_opacity = 1.0;
-        s.active_handle_opacity = 1.0;
-        s.interact_handle_opacity = 1.0;
+        s.bar_inner_margin = THUMB_INSET; // p-px (documents the inset; unused by floating cross placement)
+        s.bar_outer_margin = 0.0; // N14b: flush with the Root edge
+        s.handle_min_length = THUMB_MIN_LENGTH; // OPEN-3: Radix 18px minimum (S8)
+        s.floating_width = SCROLLBAR_WIDTH; // never shrink to the thin width
+        s.floating_allocated_width = 0.0; // N14a: no layout width
+        s.foreground_color = false; // handle uses the widget bg_fill (= border), as before
+                                    // egui's handle is invisible; the thumb is painted by this module.
+        s.dormant_handle_opacity = 0.0;
+        s.active_handle_opacity = 0.0;
+        s.interact_handle_opacity = 0.0;
+        // The track is invisible (extreme_bg_color = TRANSPARENT, below);
+        // the background opacities are 0 for the same reason.
+        s.dormant_background_opacity = 0.0;
+        s.active_background_opacity = 0.0;
+        s.interact_background_opacity = 0.0;
         s
     }
 
     /// Applies the shadcn scrollbar colors to the scoped visuals.
     ///
     /// The track becomes invisible (the source only paints the thumb) and
-    /// the handle uses the `bg-border` token in every widget state. No
-    /// corner-radius override is needed: epaint clamps the bar radius to
-    /// half the 10px bar width, which is the source's `rounded-full` thumb.
+    /// the handle uses the `bg-border` token in every widget state. The
+    /// handle itself is painted invisible by the opacities in
+    /// [`Self::themed_scroll_style`] (egui's handle cannot express the
+    /// `p-px` inset); these `bg_fill`s are retained so content widgets
+    /// inside the area keep their current paint — see the module docs.
     pub(crate) fn themed_scroll_visuals(visuals: &mut egui::Visuals, border: egui::Color32) {
         visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
         visuals.widgets.inactive.bg_fill = border;
@@ -125,6 +289,13 @@ impl ScrollArea {
     }
 
     /// Renders the scroll area around its contents.
+    ///
+    /// S10-verified interaction (all 4 configs): track-click jumps the
+    /// thumb to the click point (|centre − click| = 0.5px) and defocuses
+    /// the viewport; drags and wheel moves are exact and restore exactly;
+    /// arrow keys move focus, never content (S8 §3.7 OPEN-2); the viewport
+    /// is one Tab stop and on focus paints the 3px `ring/50` ring plus the
+    /// 1px solid outline (settled ring 9528 / ring50 9188, S10 §5).
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
@@ -138,9 +309,17 @@ impl ScrollArea {
             Self::themed_scroll_visuals(&mut ui.style_mut().visuals, p.border);
 
             let mut area =
-                egui::ScrollArea::new([self.vertical, self.horizontal]).auto_shrink([false, false]);
+                egui::ScrollArea::new([self.horizontal, self.vertical]).auto_shrink([false, false]);
             if let Some(h) = self.height {
-                area = area.max_height(h);
+                // SCA-02: `max_height` alone is only a cap — egui takes
+                // `min(available_height, max_height)`, and the available
+                // height is ~0 for an area laid out far below the fold of
+                // a scrolling parent, so the viewport collapsed to egui's
+                // 64px `min_scrolled_size` floor. Pin the floor to the
+                // same value so the viewport renders at exactly `h`
+                // regardless of the available height (the spec's `.height()`
+                // is a fixed size, "cap or fix" per spec §3).
+                area = area.max_height(h).min_scrolled_height(h);
             }
             if let Some(salt) = self.id_salt.as_deref() {
                 area = area.id_salt(ui.scope_id().with(salt));
@@ -152,13 +331,108 @@ impl ScrollArea {
                 }
                 content(ui)
             });
-            // egui 0.37's ScrollAreaOutput has no Response; synthesize one
-            // over the visible inner rect.
-            let response = ui.allocate_rect(inner.inner_rect, egui::Sense::hover());
+
+            // Paint the thumbs. egui's own handle is invisible in every
+            // state (opacities 0 in `themed_scroll_style`); the source
+            // thumb is 8px wide, 1px inside the 10px bar on every side,
+            // radius 4, `bg-border` in all states (no hover state, §4.2).
+            // Drag and track-click paging run on egui's bar, whose geometry
+            // this mirrors exactly.
+            let offset = inner.state.clamped_offset();
+            let clip = ui.clip_rect();
+            if self.vertical {
+                if let Some(thumb) =
+                    scrollbar_thumb_rect(true, inner.inner_rect, inner.content_size, offset, clip)
+                {
+                    ui.painter()
+                        .rect_filled(thumb, CornerRadius::same(THUMB_RADIUS), p.border);
+                }
+            }
+            if self.horizontal {
+                if let Some(thumb) =
+                    scrollbar_thumb_rect(false, inner.inner_rect, inner.content_size, offset, clip)
+                {
+                    ui.painter()
+                        .rect_filled(thumb, CornerRadius::same(THUMB_RADIUS), p.border);
+                }
+            }
+
+            // The viewport is one Tab stop (spec §7): focusable but not
+            // interactive, so it never steals clicks from the content
+            // (dialog.rs precedent). egui 0.37's ScrollAreaOutput has no
+            // Response; synthesize one over the visible inner rect.
+            // On focus, paint the source's `focus-visible` ring (3px
+            // `ring/50`) plus the 1px solid outline in `ring/50`
+            // (`globals.css:193`), just outside the ring. D2: egui cannot
+            // distinguish keyboard from pointer focus, so the ring shows on
+            // any focus.
+            let response =
+                ui.allocate_rect(inner.inner_rect, egui::Sense::focusable_noninteractive());
+            if is_focused(&response) {
+                paint_focus_ring(ui, &response, 0.0, true);
+                let ring = crate::theme::color_alpha(p.ring, 0.5);
+                paint_ring(ui.painter(), response.rect.expand(4.0), ring, 1.0, 0.0);
+            }
             InnerResponse::new(inner.inner, response)
         });
         outer.inner
     }
+}
+
+/// Computes the thumb rect for one axis, mirroring egui 0.37's
+/// `calculate_handle_rect` (`containers/scroll_area.rs`) with the source's
+/// `p-px` inset applied: the thumb is 8px wide inside the 10px bar
+/// (`rounded-full` → radius 4), 1px inside the bar on every side, and
+/// floored at the 18px Radix minimum (`THUMB_MIN_LENGTH`, OPEN-3 settled
+/// at S8 §3.7; S10 measured §3 18 / §5 18 painted / §6 20 in all 4
+/// configs).
+///
+/// `viewport` is the scroll area's inner rect (== the Root rect for the
+/// floating bar); `content_size` / `offset` are the along-axis content size
+/// and clamped scroll offset from the `ScrollAreaOutput`; `clip_rect` is
+/// the outer ui's clip rect — egui clamps the bar so it stays visible when
+/// the area is scrolled out of view in a parent (spec §9 item 3).
+///
+/// Returns `None` when the content fits (no bar), matching egui's
+/// `content_is_too_large` check — S10 confirmed §7 paints no bar at rest
+/// or focused (OPEN-4 settled: the bar hides when content fits).
+pub(crate) fn scrollbar_thumb_rect(
+    vertical: bool,
+    viewport: Rect,
+    content_size: egui::Vec2,
+    offset: egui::Vec2,
+    clip_rect: Rect,
+) -> Option<Rect> {
+    let d = usize::from(vertical); // 1 = y (vertical), 0 = x (horizontal)
+    let along = viewport.size()[d];
+    let content = content_size[d];
+    // egui: `limit_rect.size()[d].ceil() < content_size[d]`
+    if along.ceil() >= content {
+        return None;
+    }
+    let max_offset = content - along;
+    // egui: `max_cross = min(outer_rect.max, clip_rect.max) - outer_margin`
+    // (outer_margin is 0 — N14b flush; outer_rect == viewport for floating).
+    let cross_max = viewport.max[1 - d].min(clip_rect.max[1 - d]);
+    let bar_min_cross = cross_max - SCROLLBAR_WIDTH;
+    // Along-axis bar range (egui's `scroll_bar_rect` defaults to inner_rect).
+    let bar_min = viewport.min[d];
+    let bar_max = viewport.max[d];
+    let from_content = |c: f32| egui::emath::remap_clamp(c, 0.0..=content, bar_min..=bar_max);
+    let handle_size =
+        (from_content(offset[d] + along) - from_content(offset[d])).max(THUMB_MIN_LENGTH);
+    let handle_start = egui::emath::remap_clamp(
+        offset[d],
+        0.0..=max_offset,
+        bar_min..=(bar_max - handle_size),
+    );
+    let mut min = viewport.min;
+    let mut max = viewport.max;
+    min[1 - d] = bar_min_cross + THUMB_INSET;
+    max[1 - d] = cross_max - THUMB_INSET;
+    min[d] = handle_start;
+    max[d] = handle_start + handle_size;
+    Some(Rect::from_min_max(min, max))
 }
 
 #[cfg(test)]
@@ -170,10 +444,66 @@ mod tests {
     #[test]
     fn scrollbar_style_matches_source() {
         let s = ScrollArea::themed_scroll_style();
+        assert!(s.floating); // N14a: overlay — no layout width
         assert_eq!(s.bar_width, 10.0); // w-2.5
         assert_eq!(s.bar_inner_margin, 1.0); // p-px
-        assert!(!s.floating); // solid, always allocates space
-        assert_eq!(s.dormant_handle_opacity, 1.0);
+        assert_eq!(s.bar_outer_margin, 0.0); // N14b: flush with the Root edge
+        assert_eq!(s.floating_width, 10.0); // never shrinks to the thin width
+        assert_eq!(s.floating_allocated_width, 0.0); // N14a: no layout width
+        assert_eq!(s.handle_min_length, 18.0); // OPEN-3: Radix 18px minimum (S8)
+                                               // egui's own handle is invisible in every state; S1 paints the
+                                               // thumb itself (see `scrollbar_thumb_rect`).
+        assert_eq!(s.dormant_handle_opacity, 0.0);
+        assert_eq!(s.active_handle_opacity, 0.0);
+        assert_eq!(s.interact_handle_opacity, 0.0);
+        assert_eq!(s.dormant_background_opacity, 0.0);
+        assert_eq!(s.active_background_opacity, 0.0);
+        assert_eq!(s.interact_background_opacity, 0.0);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rect_matches_source() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0));
+        let clip = viewport; // unclipped
+                             // Vertical, content twice the viewport, offset 0: thumb is the top
+                             // half of the bar, 8px wide, 1px inside the bar on every side.
+        let thumb = scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 600.0), Vec2::ZERO, clip)
+            .expect("bar when content overflows");
+        assert_eq!(thumb.width(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.x, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.x, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.min.y, 0.0);
+        assert_eq!(thumb.height(), 150.0); // half the content visible -> half the bar
+                                           // Scrolled to the bottom: the thumb sits at the bar's bottom end.
+        let thumb = scrollbar_thumb_rect(
+            true,
+            viewport,
+            Vec2::new(300.0, 600.0),
+            Vec2::new(0.0, 300.0),
+            clip,
+        )
+        .expect("bar when content overflows");
+        assert_eq!(thumb.max.y, 300.0);
+        assert_eq!(thumb.height(), 150.0);
+        // Content fits: no thumb.
+        assert!(
+            scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 300.0), Vec2::ZERO, clip)
+                .is_none()
+        );
+        // Horizontal mirror: 8px tall, 1px inside the bar top/bottom.
+        let thumb =
+            scrollbar_thumb_rect(false, viewport, Vec2::new(600.0, 300.0), Vec2::ZERO, clip)
+                .expect("bar when content overflows");
+        assert_eq!(thumb.height(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.y, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.y, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.width(), 150.0);
+        // Clipped viewport: the bar moves inward so it stays visible
+        // (egui's "move the scrollbar so it is visible" clamp).
+        let clip = Rect::from_min_size(Pos2::ZERO, Vec2::new(280.0, 300.0));
+        let thumb = scrollbar_thumb_rect(true, viewport, Vec2::new(300.0, 600.0), Vec2::ZERO, clip)
+            .expect("bar when content overflows");
+        assert_eq!(thumb.max.x, 280.0 - THUMB_INSET);
     }
 
     #[test]
@@ -205,6 +535,148 @@ mod tests {
         // The default (unscoped) style must not be mutated.
         let global = ctx.style_of(egui::Theme::Light).visuals.clone();
         assert_ne!(global.extreme_bg_color, egui::Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn scrollbar_overlays_content() {
+        // N14a: a vertical scroll area with overflowing content in a
+        // 300px-wide Ui — the viewport keeps the full 300px because the bar
+        // overlays it and takes no layout width. With the old solid bar the
+        // content width was 288px (300 - 10 bar - 2 margins).
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut content_width = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_overlay_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+            );
+            ScrollArea::new().height(120.0).show(ui, |ui| {
+                content_width = Some(ui.available_width());
+                for i in 0..20 {
+                    ui.label(format!("Row {i}"));
+                }
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(content_width, Some(300.0));
+    }
+
+    #[test]
+    fn thumb_painted_8px_wide() {
+        // Painted-shape closing evidence for the 8px thumb (D4): exactly
+        // one border-filled rect, 8px wide, 1px inside the bar's right edge,
+        // radius 4; no 10px-wide border-filled rect (the old egui handle).
+        let ctx = egui::Context::default();
+        let preset = Preset::default();
+        preset.build(Mode::Light).install(&ctx);
+        let border = preset.build(Mode::Light).palette.border;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_thumb_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+            );
+            ScrollArea::new()
+                .height(120.0)
+                .id_salt("thumb")
+                .show(ui, |ui| {
+                    for i in 0..20 {
+                        ui.label(format!("Row {i}"));
+                    }
+                });
+        });
+        out.textures_delta.clear();
+        let fills: Vec<(Rect, CornerRadius)> = out
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.fill == border => Some((rs.rect, rs.corner_radius)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), 1, "thumb fills: {fills:?}");
+        let (thumb, radius) = fills[0];
+        assert_eq!(thumb.width(), SCROLLBAR_THUMB_WIDTH);
+        assert_eq!(thumb.min.x, 300.0 - SCROLLBAR_WIDTH + THUMB_INSET);
+        assert_eq!(thumb.max.x, 300.0 - THUMB_INSET);
+        assert_eq!(thumb.min.y, 0.0);
+        assert_eq!(radius, CornerRadius::same(THUMB_RADIUS));
+    }
+
+    #[test]
+    fn viewport_focus_ring_paints_on_focus() {
+        // The viewport is one Tab stop (spec §7); on focus it paints the
+        // 3px `ring/50` ring plus the 1px solid outline in `ring/50`.
+        let ctx = egui::Context::default();
+        let preset = Preset::default();
+        preset.build(Mode::Light).install(&ctx);
+        let ring50 = crate::theme::color_alpha(preset.build(Mode::Light).palette.ring, 0.5);
+
+        let frame = |ctx: &egui::Context, input: egui::RawInput| {
+            let mut id = egui::Id::NULL;
+            let mut out = ctx.run_ui(input, |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("scroll_area_focus_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 300.0))),
+                );
+                id = ScrollArea::new()
+                    .height(120.0)
+                    .id_salt("focus_ring")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                    })
+                    .response
+                    .id;
+            });
+            out.textures_delta.clear();
+            (id, out.shapes)
+        };
+
+        // Frame 1: render, record the viewport response id; then focus it.
+        let (id, _) = frame(&ctx, egui::RawInput::default());
+        ctx.memory_mut(|m| m.request_focus(id));
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // Frame 2: the focused viewport paints the ring + the outline.
+        let (_, shapes) = frame(&ctx, egui::RawInput::default());
+        let ring_strokes: Vec<(Rect, egui::Stroke)> = shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rs) if rs.stroke.color == ring50 => Some((rs.rect, rs.stroke)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            ring_strokes.iter().any(|(_, s)| s.width == 3.0),
+            "3px focus ring in ring/50 painted; ring strokes: {ring_strokes:?}"
+        );
+        assert!(
+            ring_strokes.iter().any(|(_, s)| s.width == 1.0),
+            "1px focus outline in ring/50 painted; ring strokes: {ring_strokes:?}"
+        );
+        // The ring sits just outside the viewport rect (expanded by 1px,
+        // 3px stroke outside); the outline sits just outside the ring.
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 120.0));
+        assert!(
+            ring_strokes
+                .iter()
+                .any(|(r, s)| s.width == 3.0 && *r == viewport.expand(1.0)),
+            "ring rect is the viewport expanded by 1px; ring strokes: {ring_strokes:?}"
+        );
+        assert!(
+            ring_strokes
+                .iter()
+                .any(|(r, s)| s.width == 1.0 && *r == viewport.expand(4.0)),
+            "outline rect is the viewport expanded by 4px; ring strokes: {ring_strokes:?}"
+        );
     }
 
     #[test]
@@ -241,5 +713,55 @@ mod tests {
             });
             out.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn height_is_enforced_far_down_a_scrolling_page() {
+        // SCA-02: a ScrollArea with an explicit `.height()` laid out far
+        // below the fold of a parent vertical ScrollArea rendered at
+        // egui's 64px `min_scrolled_size` floor instead of the requested
+        // height. `.height()` only set `max_height` (a cap), and the
+        // available height at that cursor position is ~0 because the
+        // parent content Ui's max_rect is the page viewport, so
+        // `outer_size = min(available, max)` collapsed and the 64px
+        // floor was all that remained. The requested height must be
+        // enforced regardless of the available height.
+        let ctx = egui::Context::default();
+        Preset::default().build(Mode::Light).install(&ctx);
+        let mut heights = (0.0, 0.0);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("scroll_area_height_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 3300.0))),
+            );
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Push the cursor ~13000px down the page, as §5's 400
+                // overflowing rows do on the gallery page.
+                ui.add_space(13000.0);
+                let both = ScrollArea::new()
+                    .horizontal(true)
+                    .height(140.0)
+                    .id_salt("height_both")
+                    .show(ui, |ui| {
+                        for i in 0..20 {
+                            ui.label(format!("Row {i}"));
+                        }
+                    });
+                heights.0 = both.response.rect.height();
+                let short = ScrollArea::new()
+                    .height(80.0)
+                    .id_salt("height_short")
+                    .show(ui, |ui| {
+                        ui.label("Just a couple of lines.");
+                        ui.label("Second line.");
+                    });
+                heights.1 = short.response.rect.height();
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(heights.0, 140.0, "§6 both-axes viewport is 140px");
+        assert_eq!(heights.1, 80.0, "§7 short viewport is 80px");
     }
 }
