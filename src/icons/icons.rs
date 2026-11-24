@@ -60,6 +60,7 @@ pub enum Icon {
     ChevronRight,
     ChevronsLeft,
     ChevronsRight,
+    ChevronsUpDown,
     X,
     Minus,
     Plus,
@@ -539,7 +540,7 @@ mod tests {
 
     #[test]
     fn icon_count_is_pinned() {
-        assert_eq!(Icon::all().len(), 44);
+        assert_eq!(Icon::all().len(), 45);
     }
 
     #[test]
@@ -588,7 +589,7 @@ mod tests {
         }
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 44, "lucide names must be distinct");
+        assert_eq!(names.len(), 45, "lucide names must be distinct");
         assert_eq!(Icon::from_lucide_name("no-such-icon"), None);
     }
 

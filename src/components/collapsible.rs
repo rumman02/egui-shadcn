@@ -7,8 +7,11 @@
 //! The open state lives in the egui context keyed by a stable id (pass
 //! [`Collapsible::id_salt`] so several collapsibles keep separate state), or
 //! can be controlled through a `&mut bool` with [`Collapsible::controlled`].
-//! Content height animates with [`crate::utils::animation::open_progress`]
-//! (CSS `animate-accordion-down/up`-style easing, 150ms open / 75ms close).
+//! Content height animates with a measured-height clip (`animated_disclosure`),
+//! 150ms open / 75ms close — an embellishment with no counterpart in the
+//! source, which defines no animation; the timing is the port's own choice,
+//! shared with the accordion only through the helper mechanism, not through
+//! its 200ms durations.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -42,16 +45,16 @@ fn stack_id() -> Id {
     Id::unique("shadcn_collapsible_stack")
 }
 
-fn push_scope(ui: &Ui, state_id: Id) {
+fn push_scope(ui: &Ui, state_id: Id, disabled: bool) {
     let ctx = ui.ctx().clone();
-    let mut stack: Vec<Id> = ctx.data_mut(|d| d.get_temp(stack_id()).unwrap_or_default());
-    stack.push(state_id);
+    let mut stack: Vec<(Id, bool)> = ctx.data_mut(|d| d.get_temp(stack_id()).unwrap_or_default());
+    stack.push((state_id, disabled));
     ctx.data_mut(|d| d.insert_temp(stack_id(), stack));
 }
 
 fn pop_scope(ui: &Ui) {
     let ctx = ui.ctx().clone();
-    let mut stack: Vec<Id> = ctx.data_mut(|d| d.get_temp(stack_id()).unwrap_or_default());
+    let mut stack: Vec<(Id, bool)> = ctx.data_mut(|d| d.get_temp(stack_id()).unwrap_or_default());
     stack.pop();
     ctx.data_mut(|d| d.insert_temp(stack_id(), stack));
 }
@@ -60,8 +63,22 @@ fn pop_scope(ui: &Ui) {
 fn current_scope(ui: &Ui) -> Option<Id> {
     let ctx = ui.ctx().clone();
     ctx.data_mut(|d| {
-        let stack: Vec<Id> = d.get_temp(stack_id())?;
-        stack.last().copied()
+        let stack: Vec<(Id, bool)> = d.get_temp(stack_id())?;
+        stack.last().map(|(id, _)| *id)
+    })
+}
+
+/// Whether the innermost [`Collapsible`] is disabled, if any.
+///
+/// A trigger toggles its nearest enclosing root (spec §8.2), so that root's
+/// `disabled` flag governs it; an inner enabled root inside a disabled
+/// outer root keeps its own trigger working (spec §9.8, straightforward
+/// reading — S6 verifies the implemented behaviour).
+fn current_scope_disabled(ui: &Ui) -> bool {
+    let ctx = ui.ctx().clone();
+    ctx.data_mut(|d| {
+        let stack: Vec<(Id, bool)> = d.get_temp(stack_id()).unwrap_or_default();
+        stack.last().map(|(_, disabled)| *disabled).unwrap_or(false)
     })
 }
 
@@ -86,6 +103,7 @@ fn write_open(ui: &Ui, state_id: Id, open: bool) {
 pub struct Collapsible<'a> {
     controlled: Option<&'a mut bool>,
     default_open: bool,
+    disabled: bool,
     id_salt: Option<String>,
 }
 
@@ -101,6 +119,7 @@ impl<'a> Collapsible<'a> {
         Self {
             controlled: None,
             default_open: false,
+            disabled: false,
             id_salt: None,
         }
     }
@@ -111,6 +130,7 @@ impl<'a> Collapsible<'a> {
         Self {
             controlled: Some(open),
             default_open: false,
+            disabled: false,
             id_salt: None,
         }
     }
@@ -118,6 +138,16 @@ impl<'a> Collapsible<'a> {
     /// Initial open state (uncontrolled mode only).
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
+        self
+    }
+
+    /// Disables the collapsible (spec §4.4, N4): the trigger cannot toggle
+    /// and the content cannot be opened by any input path the port exposes.
+    /// A disabled root does NOT force content closed — `default_open(true)`
+    /// or a controlled `true` still renders the content open (straightforward
+    /// reading, spec §9.8; the fine Radix semantics are OPEN-1).
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -146,7 +176,7 @@ impl<'a> Collapsible<'a> {
             }
         }
 
-        push_scope(ui, state_id);
+        push_scope(ui, state_id, self.disabled);
         content(ui);
         pop_scope(ui);
 
@@ -221,7 +251,18 @@ impl CollapsibleTrigger {
         let open = state_id.map(|id| read_open(ui, id)).unwrap_or(false);
 
         let height = crate::theme::tokens::spacing::CONTROL_SM;
-        let pad_x = crate::theme::tokens::spacing::MD;
+        // C3 (spec §9.1): an icon-only trigger — empty label, exactly one
+        // icon — is the `size="icon"` (`size-8`) 32px square, icon centred.
+        // The label padding collapses to 0 (like Button's icon sizes, whose
+        // `padding_x` is 0); the width is the 32px box, not the 16px the
+        // content formula alone would give (`pad_x` 0 + 16px icon).
+        let icon_only =
+            self.label.is_empty() && (self.icon_start.is_some() ^ self.icon_end.is_some());
+        let pad_x = if icon_only {
+            0.0
+        } else {
+            crate::theme::tokens::spacing::MD
+        };
         let gap = crate::theme::tokens::spacing::XS_HALF;
         let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
         // Placeholder color: the paint-time fallback replaces it exactly,
@@ -241,12 +282,16 @@ impl CollapsibleTrigger {
             + self.icon_end.is_some() as i32
             + (!self.label.is_empty()) as i32;
         let gaps = (n_children - 1).max(0) as f32 * gap;
-        let desired = Vec2::new(
-            pad_x * 2.0 + icon_size * has_icon as i32 as f32 + gaps + text_w,
-            height,
-        );
+        let mut width = pad_x * 2.0 + icon_size * has_icon as i32 as f32 + gaps + text_w;
+        if icon_only {
+            width = height; // `size-8` square
+        }
+        let desired = Vec2::new(width, height);
 
-        let sense = if self.disabled {
+        // Root-level `disabled` (N4) disables the trigger together with the
+        // content; trigger-level `disabled` disables this trigger only.
+        let disabled = self.disabled || current_scope_disabled(ui);
+        let sense = if disabled {
             Sense::hover()
         } else {
             Sense::click()
@@ -259,7 +304,7 @@ impl CollapsibleTrigger {
         let (_, rect) = ui.allocate_space(desired);
         let mut response = ui.interact(rect, id, sense);
 
-        let clicked = response.clicked() && !self.disabled;
+        let clicked = response.clicked() && !disabled;
         if clicked {
             if let Some(state_id) = state_id {
                 write_open(ui, state_id, !open);
@@ -268,7 +313,7 @@ impl CollapsibleTrigger {
         }
 
         if ui.is_rect_visible(rect) {
-            let hovered = response.hovered() && !self.disabled;
+            let hovered = response.hovered() && !disabled;
             let corner = theme.radius.md_u8();
             let painter = ui.painter();
 
@@ -282,7 +327,7 @@ impl CollapsibleTrigger {
                 Color32::TRANSPARENT
             };
             let mut fg = p.foreground;
-            if self.disabled {
+            if disabled {
                 fill = color_alpha(fill, 0.5);
                 fg = color_alpha(fg, 0.5);
             }
@@ -318,7 +363,7 @@ impl CollapsibleTrigger {
             }
 
             // `focus-visible:ring-[3px] focus-visible:ring-ring/50`
-            if response.has_focus() && !self.disabled {
+            if response.has_focus() && !disabled {
                 crate::utils::focus::paint_ring(
                     painter,
                     rect.expand2(egui::vec2(1.0, 1.0)),
@@ -340,7 +385,7 @@ impl CollapsibleTrigger {
 /// The animated content region of a [`Collapsible`].
 ///
 /// The content height is measured while laid out and animated from zero with
-/// [`crate::utils::animation::open_progress`], clipped to the visible area.
+/// [`animated_disclosure`], clipped to the visible area.
 #[derive(Clone, Debug, Default)]
 pub struct CollapsibleContent {
     _private: (),
@@ -652,9 +697,12 @@ mod tests {
         let mut open = false;
         let c = Collapsible::controlled(&mut open)
             .default_open(true)
+            .disabled(true)
             .id_salt("x");
         assert_eq!(c.id_salt.as_deref(), Some("x"));
         assert!(c.default_open);
+        assert!(c.disabled);
+        assert!(!Collapsible::new().disabled, "root starts enabled");
         let t = CollapsibleTrigger::new("a")
             .icon_start(Icon::ChevronDown)
             .icon_end(Icon::ChevronUp)
@@ -664,6 +712,311 @@ mod tests {
         assert!(t.icon_start.is_some());
         assert_eq!(t.id_salt.as_deref(), Some("t"));
         let _ = CollapsibleContent::new();
+    }
+
+    #[test]
+    fn root_disabled_blocks_trigger_toggle() {
+        let mut h = Harness::new();
+
+        // Lay out to find the trigger rect.
+        let mut trigger_rect = Rect::ZERO;
+        let mut bottom = 0.0;
+        h.run(|ui| {
+            Collapsible::new()
+                .id_salt("root-dis")
+                .disabled(true)
+                .show(ui, |ui| {
+                    trigger_rect = CollapsibleTrigger::new("Toggle").show(ui).rect;
+                    // The trigger itself is 32px; only the content's own
+                    // height counts towards "lays out nothing".
+                    let before = ui.cursor().min.y;
+                    CollapsibleContent::new().show(ui, |ui| {
+                        ui.label("body");
+                    });
+                    bottom = ui.cursor().min.y - before;
+                });
+        });
+        assert!(!h.open("root-dis"), "disabled root starts closed");
+        assert!(bottom.abs() < 1.0, "content lays out nothing while closed");
+
+        // Clicking the trigger must not open it, and the response reports
+        // no click.
+        let mut clicked = true;
+        h.click(trigger_rect.center(), |ui| {
+            Collapsible::new()
+                .id_salt("root-dis")
+                .disabled(true)
+                .show(ui, |ui| {
+                    clicked = CollapsibleTrigger::new("Toggle").show(ui).clicked();
+                    let before = ui.cursor().min.y;
+                    CollapsibleContent::new().show(ui, |ui| {
+                        ui.label("body");
+                    });
+                    bottom = ui.cursor().min.y - before;
+                });
+        });
+        assert!(!clicked, "disabled trigger reports no click");
+        assert!(!h.open("root-dis"), "root-disabled trigger must not toggle");
+        assert!(bottom.abs() < 1.0, "content cannot be opened by a click");
+    }
+
+    #[test]
+    fn root_disabled_does_not_force_content_closed() {
+        // Straightforward reading (spec §9.8): disabled blocks interaction;
+        // it does not force content closed.
+        let mut h = Harness::new();
+        let mut bottom = 0.0;
+        for _ in 0..2 {
+            h.run(|ui| {
+                Collapsible::new()
+                    .id_salt("preopen-dis")
+                    .default_open(true)
+                    .disabled(true)
+                    .show(ui, |ui| {
+                        CollapsibleContent::new().show(ui, |ui| {
+                            ui.label("body");
+                        });
+                        bottom = ui.cursor().min.y;
+                    });
+            });
+        }
+        assert!(bottom > 0.0, "disabled root renders default-open content");
+
+        // Clicking the trigger must not close it.
+        let mut trigger_rect = Rect::ZERO;
+        h.run(|ui| {
+            Collapsible::new()
+                .id_salt("preopen-dis")
+                .disabled(true)
+                .show(ui, |ui| {
+                    trigger_rect = CollapsibleTrigger::new("Toggle").show(ui).rect;
+                    CollapsibleContent::new().show(ui, |ui| {
+                        ui.label("body");
+                    });
+                });
+        });
+        h.click(trigger_rect.center(), |ui| {
+            Collapsible::new()
+                .id_salt("preopen-dis")
+                .disabled(true)
+                .show(ui, |ui| {
+                    CollapsibleTrigger::new("Toggle").show(ui);
+                    CollapsibleContent::new().show(ui, |ui| {
+                        ui.label("body");
+                    });
+                });
+        });
+        assert!(
+            h.open("preopen-dis"),
+            "click must not close a disabled root"
+        );
+    }
+
+    #[test]
+    fn root_disabled_controlled_bool_can_open() {
+        let mut h = Harness::new();
+        let mut open = true;
+        let mut bottom = 0.0;
+        let mut trigger_rect = Rect::ZERO;
+        h.run(|ui| {
+            Collapsible::controlled(&mut open)
+                .id_salt("cc1")
+                .disabled(true)
+                .show(ui, |ui| {
+                    trigger_rect = CollapsibleTrigger::new("Toggle").show(ui).rect;
+                    CollapsibleContent::new().show(ui, |ui| {
+                        ui.label("body");
+                    });
+                    bottom = ui.cursor().min.y;
+                });
+        });
+        assert!(open, "controlled bool is read before the frame");
+        assert!(
+            bottom > 0.0,
+            "controlled true renders content under a disabled root"
+        );
+
+        h.click(trigger_rect.center(), |ui| {
+            Collapsible::controlled(&mut open)
+                .id_salt("cc1")
+                .disabled(true)
+                .show(ui, |ui| {
+                    CollapsibleTrigger::new("Toggle").show(ui);
+                });
+        });
+        assert!(open, "click must not write back through a disabled root");
+    }
+
+    #[test]
+    fn trigger_geometry_matches_ghost_stand_in() {
+        let mut h = Harness::new();
+
+        // Empty trigger (no label, no icon): width is pad_x * 2 = 24px.
+        let mut empty_rect = Rect::ZERO;
+        h.run(|ui| {
+            Collapsible::new().id_salt("g0").show(ui, |ui| {
+                empty_rect = CollapsibleTrigger::new("").show(ui).rect;
+            });
+        });
+        assert!(
+            (empty_rect.height() - 32.0).abs() < 0.01,
+            "trigger height is 32px, got {}",
+            empty_rect.height()
+        );
+        assert!(
+            (empty_rect.width() - 24.0).abs() < 0.01,
+            "pad_x is 12px each side, got width {}",
+            empty_rect.width()
+        );
+
+        // Labelled trigger with one icon: 24 + 16 + 6 + text width.
+        let mut rect = Rect::ZERO;
+        let mut text_w = 0.0;
+        h.run(|ui| {
+            Collapsible::new().id_salt("g1").show(ui, |ui| {
+                rect = CollapsibleTrigger::new("Toggle")
+                    .icon_end(Icon::ChevronDown)
+                    .show(ui)
+                    .rect;
+            });
+            // Same layout the trigger uses, to pin the formula constants.
+            let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
+            text_w = ui
+                .painter()
+                .layout_no_wrap("Toggle".to_owned(), font, Color32::PLACEHOLDER)
+                .size()
+                .x;
+        });
+        assert!(
+            (rect.height() - 32.0).abs() < 0.01,
+            "trigger height is 32px, got {}",
+            rect.height()
+        );
+        let expected_w = 24.0 + 16.0 + 6.0 + text_w;
+        assert!(
+            (rect.width() - expected_w).abs() < 0.01,
+            "labelled trigger width is pad_x*2 + icon 16 + gap 6 + text: got {}, expected {expected_w}",
+            rect.width()
+        );
+
+        // Icon-only trigger (C3): empty label + exactly one icon is the
+        // `size="icon"` 32px square.
+        let mut icon_rect = Rect::ZERO;
+        h.run(|ui| {
+            Collapsible::new().id_salt("g2").show(ui, |ui| {
+                icon_rect = CollapsibleTrigger::new("")
+                    .icon_start(Icon::ChevronsUpDown)
+                    .show(ui)
+                    .rect;
+            });
+        });
+        assert!(
+            (icon_rect.width() - 32.0).abs() < 0.01,
+            "icon-only trigger is 32px wide, got {}",
+            icon_rect.width()
+        );
+        assert!(
+            (icon_rect.height() - 32.0).abs() < 0.01,
+            "icon-only trigger is 32px tall, got {}",
+            icon_rect.height()
+        );
+    }
+
+    #[test]
+    fn content_animates_150ms_open_75ms_close() {
+        // The harness advances 0.1s per frame, which separates the two
+        // durations: closing (75ms) finishes within two frames of the
+        // flip, opening (150ms) is still part-way there.
+        let mut h = Harness::new();
+        let mut bottom = 0.0;
+        let content = |ui: &mut Ui, bottom: &mut f32| {
+            Collapsible::new().id_salt("dur").show(ui, |ui| {
+                CollapsibleContent::new().show(ui, |ui| {
+                    ui.label("body");
+                });
+                *bottom = ui.cursor().min.y;
+            });
+        };
+
+        // Settle open and measure the full height.
+        h.set_open("dur", true);
+        for _ in 0..4 {
+            h.run(|ui| content(ui, &mut bottom));
+        }
+        let full = bottom;
+        assert!(full > 0.0, "open content has height");
+
+        // Close: 75ms < one 0.1s step, so two frames after the flip the
+        // content is gone.
+        h.set_open("dur", false);
+        h.run(|ui| content(ui, &mut bottom));
+        h.run(|ui| content(ui, &mut bottom));
+        assert!(
+            bottom.abs() < 1.0,
+            "75ms close finishes within two 0.1s frames, bottom = {bottom}"
+        );
+
+        // Open: 150ms > one 0.1s step, so two frames after the flip the
+        // content is only part-way up.
+        h.set_open("dur", true);
+        h.run(|ui| content(ui, &mut bottom));
+        h.run(|ui| content(ui, &mut bottom));
+        assert!(
+            bottom > 0.0 && bottom < full,
+            "150ms open is part-way after two 0.1s frames: {bottom} of {full}"
+        );
+
+        // Two more frames settle it at full height.
+        h.run(|ui| content(ui, &mut bottom));
+        h.run(|ui| content(ui, &mut bottom));
+        assert!(
+            (bottom - full).abs() < 1.0,
+            "open settles at full height: {bottom} vs {full}"
+        );
+    }
+
+    #[test]
+    fn nested_collapsible_inner_trigger_toggles_inner_only() {
+        let mut h = Harness::new();
+        // Open the outer first: the inner trigger only lays out inside the
+        // outer content (spec §9.5).
+        h.set_open("outer", true);
+        let mut inner_rect = Rect::ZERO;
+        // The inner root lives inside the content's child Ui, whose scope id
+        // is the outer scope with `"child"` appended (egui `Ui::new_child`),
+        // so its state key is not `h.open("inner")`'s top-level key. Observe
+        // the inner state through a controlled bool instead: the write-back
+        // reads the same key the trigger wrote.
+        let mut inner_open = false;
+        let render = |ui: &mut Ui, inner_rect: &mut Rect, inner_open: &mut bool| {
+            Collapsible::new().id_salt("outer").show(ui, |ui| {
+                CollapsibleTrigger::new("Outer").show(ui);
+                CollapsibleContent::new().show(ui, |ui| {
+                    Collapsible::controlled(inner_open)
+                        .id_salt("inner")
+                        .show(ui, |ui| {
+                            *inner_rect = CollapsibleTrigger::new("Inner").show(ui).rect;
+                        });
+                });
+            });
+        };
+        for _ in 0..2 {
+            h.run(|ui| render(ui, &mut inner_rect, &mut inner_open));
+        }
+        assert!(!inner_open, "inner starts closed");
+        assert!(h.open("outer"), "outer is open");
+
+        h.click(inner_rect.center(), |ui| {
+            render(ui, &mut inner_rect, &mut inner_open)
+        });
+        assert!(inner_open, "inner trigger toggles the inner root");
+        assert!(h.open("outer"), "outer stays open");
+
+        h.click(inner_rect.center(), |ui| {
+            render(ui, &mut inner_rect, &mut inner_open)
+        });
+        assert!(!inner_open, "inner trigger toggles the inner root closed");
+        assert!(h.open("outer"), "outer still open");
     }
 
     #[test]

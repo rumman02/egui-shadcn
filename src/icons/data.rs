@@ -42,6 +42,11 @@ pub(crate) static CHEVRONSRIGHT: &[El] = &[
     El::Poly(&[[13.0, 17.0], [18.0, 12.0], [13.0, 7.0]]),
 ];
 
+pub(crate) static CHEVRONSUPDOWN: &[El] = &[
+    El::Poly(&[[7.0, 15.0], [12.0, 20.0], [17.0, 15.0]]),
+    El::Poly(&[[7.0, 9.0], [12.0, 4.0], [17.0, 9.0]]),
+];
+
 pub(crate) static X: &[El] = &[
     El::Line([18.0, 6.0], [6.0, 18.0]),
     El::Line([6.0, 6.0], [18.0, 18.0]),
@@ -2084,6 +2089,7 @@ pub(crate) fn elements(icon: Icon) -> &'static [El] {
         Icon::ChevronRight => CHEVRONRIGHT,
         Icon::ChevronsLeft => CHEVRONSLEFT,
         Icon::ChevronsRight => CHEVRONSRIGHT,
+        Icon::ChevronsUpDown => CHEVRONSUPDOWN,
         Icon::X => X,
         Icon::Minus => MINUS,
         Icon::Plus => PLUS,
@@ -2134,6 +2140,7 @@ pub(crate) fn lucide_name(icon: Icon) -> &'static str {
         Icon::ChevronRight => "chevron-right",
         Icon::ChevronsLeft => "chevrons-left",
         Icon::ChevronsRight => "chevrons-right",
+        Icon::ChevronsUpDown => "chevrons-up-down",
         Icon::X => "x",
         Icon::Minus => "minus",
         Icon::Plus => "plus",
@@ -2184,6 +2191,7 @@ pub(crate) fn from_lucide_name(name: &str) -> Option<Icon> {
         "chevron-right" => Icon::ChevronRight,
         "chevrons-left" => Icon::ChevronsLeft,
         "chevrons-right" => Icon::ChevronsRight,
+        "chevrons-up-down" => Icon::ChevronsUpDown,
         "x" => Icon::X,
         "minus" => Icon::Minus,
         "plus" => Icon::Plus,
@@ -2234,6 +2242,7 @@ pub(crate) const ALL: &[Icon] = &[
     Icon::ChevronRight,
     Icon::ChevronsLeft,
     Icon::ChevronsRight,
+    Icon::ChevronsUpDown,
     Icon::X,
     Icon::Minus,
     Icon::Plus,
