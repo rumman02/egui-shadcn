@@ -10295,6 +10295,17 @@ pub fn collapsible_demo(ui: &mut egui::Ui) {
     let mut controlled: bool = ui
         .ctx()
         .data_mut(|d| d.get_temp(controlled_store).unwrap_or(false));
+    // Nested case (§9.5): controlled bools so S6 can observe the outer and
+    // inner states independently — a nested root is NOT addressable by a
+    // top-level salt read (S1 report, "Nested state-id scoping").
+    let nested_outer_store = egui::Id::unique("collapsible_demo_nested_outer");
+    let nested_inner_store = egui::Id::unique("collapsible_demo_nested_inner");
+    let mut nested_outer: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(nested_outer_store).unwrap_or(true));
+    let mut nested_inner: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(nested_inner_store).unwrap_or(false));
 
     ui.label("Uncontrolled (state persisted per id_salt)");
     ui.add_space(4.0);
@@ -10312,7 +10323,7 @@ pub fn collapsible_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
-    ui.label("Icon trigger, open by default (demo-style bordered rows)");
+    ui.label("Icon trigger, open by default (32px square, ChevronsUpDown — C3)");
     ui.add_space(4.0);
     Collapsible::new()
         .id_salt("collapsible_demo_2")
@@ -10321,7 +10332,7 @@ pub fn collapsible_demo(ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 ui.label("@peduarte starred 3 repositories");
                 CollapsibleTrigger::new("")
-                    .icon_start(Icon::ChevronDown)
+                    .icon_start(Icon::ChevronsUpDown)
                     .id_salt("collapsible_demo_2_trigger")
                     .show(ui);
             });
@@ -10362,10 +10373,80 @@ pub fn collapsible_demo(ui: &mut egui::Ui) {
         });
 
     ui.add_space(12.0);
+    ui.label("Nested collapsibles (outer + inner, independently toggled — §9.5)");
+    ui.add_space(4.0);
+    Collapsible::controlled(&mut nested_outer)
+        .id_salt("collapsible_demo_5")
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("Outer details").show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("Outer content — toggling the inner trigger below leaves the outer open.");
+                Collapsible::controlled(&mut nested_inner)
+                    .id_salt("collapsible_demo_5_inner")
+                    .show(ui, |ui| {
+                        CollapsibleTrigger::new("Inner details").show(ui);
+                        CollapsibleContent::new().show(ui, |ui| {
+                            ui.label("Inner content — only the inner trigger toggles this.");
+                        });
+                    });
+            });
+        });
+    ui.small(format!(
+        "outer open = {nested_outer}, inner open = {nested_inner}"
+    ));
+
+    ui.add_space(12.0);
+    ui.label("Disabled root (N4) — the trigger cannot toggle; default_open content still renders (OPEN-1: Radix fine semantics unresolved)");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_6")
+        .disabled(true)
+        .default_open(true)
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("Disabled root, open by default").show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("This content renders because default_open(true) was set — disabling blocks interaction, it does not force the content closed.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Long-label trigger (no truncation rule in the source — S5 judges the overflow)");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_7")
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("This is a very long trigger label that keeps growing past the width of the container — the source defines no truncation or wrapping rule for it, so it simply extends")
+                .show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                ui.label("Content under a long trigger.");
+            });
+        });
+
+    ui.add_space(12.0);
+    ui.label("Tall content (no height cap — the region grows with the content)");
+    ui.add_space(4.0);
+    Collapsible::new()
+        .id_salt("collapsible_demo_8")
+        .default_open(true)
+        .show(ui, |ui| {
+            CollapsibleTrigger::new("Tall content, open by default").show(ui);
+            CollapsibleContent::new().show(ui, |ui| {
+                for i in 1..=12 {
+                    ui.label(format!(
+                        "Content row {i} of 12 — the region grows with its content."
+                    ));
+                }
+            });
+        });
+
+    ui.add_space(12.0);
     ui.label("Keyboard: Tab to a trigger, press Space or Enter to toggle.");
 
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(controlled_store, controlled));
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(controlled_store, controlled);
+        d.insert_temp(nested_outer_store, nested_outer);
+        d.insert_temp(nested_inner_store, nested_inner);
+    });
 }
 
 /// A tiny helper that mimics the demo's `rounded-md border px-4 py-2` row.
