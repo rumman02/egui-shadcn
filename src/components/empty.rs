@@ -8,11 +8,86 @@
 //! actions. The nova style tightens the gap to `gap-4`, the media icon box
 //! to `size-8` with a `size-4` icon and the title to `text-sm`.
 //!
-//! Scope notes: the source pads to 48px at the `md` breakpoint
-//! (`md:p-12`); the port defaults to the fixed `p-6` = 24px, and
-//! [`Empty::padding`] lets a caller opt into 48px (spec §3.1, D4 — egui
-//! has no `md` breakpoint). [`EmptyFooter`] is an invented extension
-//! (see its docs).
+//! # Verified final state (S10, all 4 configs: nova/vega × light/dark)
+//!
+//! S10 verified every S9 fix from scratch and found no new defects
+//! (`batch-c/reports/empty-s10-report.md`):
+//!
+//! * **Centring (EMP-01, P1, fixed in `d9688ea`).** Title and description
+//!   ink centres sit on the container centre 682.5 within ±0.5px in every
+//!   section and config (descriptions 0.0/−1.0 in light; the dark −2.0/−3.0
+//!   readings are measurement artifacts of the muted range, S10 §1.1 —
+//!   the layout is identical across themes). The §1 two-button row centres
+//!   at 682.5 nova / 682.0 vega (EMP-02, P2, fixed demo-side in `5509579`,
+//!   measure-then-reserve with a one-frame settle, same class as alert D7).
+//! * **Description links (EMP-03, P2 — closes with EMP-01, no separate
+//!   code change).** Hovering either §3 link recolours both links to
+//!   `text-primary` (light core ≈ 40, dark core 228–229; S10 §2).
+//! * **Activation counting (S8 §3.9).** The demo's `Demo clicks: N`
+//!   readout (added in `aec45cd`) counts exactly once per click: 9/9
+//!   deltas and 10/10 distinct digits for card, alert and empty in all 4
+//!   configs (S10 §3).
+//! * **Regression (S10 §4).** Hover faces match the S7 baselines exactly
+//!   (23 → 69 nova/light, 23 → 46 vega/light, 229 → 185 nova/dark,
+//!   229 → 207 vega/dark); focus rings 964/936/940/936 px focused and 0
+//!   cleared (true rect `[560, 743, 805, 780]`, `pad_in = −2`, S10
+//!   OBS-EMP-S10-02); style/theme round-trips 5/5; determinism 0;
+//!   budgets idle 0.00%, animating 96–108%, RSS −0.17%..+1.11%, flicker 0.
+//!   Render floor stays NOT VERIFIED (1.85–2.4 fps, pipeline-capped — the
+//!   standing S7 caveat, never a component defect). Latency is marginal in
+//!   light (off-max 300–309 ms, within poll granularity — at budget, not a
+//!   defect).
+//!
+//! # Geometry
+//!
+//! Container gap 24px base / 16px nova; padding 24px (`p-6`); radius
+//! 10px base / 14px nova (`rounded-lg` / `rounded-xl`); header and
+//! content cap at `max-w-sm` = 384px with an 8px header gap and a 16px /
+//! 10px content gap. Media icon box 40px with a 24px glyph (base) or
+//! 32px with a 16px glyph (nova); the `mb-2` 8px sits BELOW the media.
+//! Title 18px / 28px line-height (base) or 14px / 20px (nova), weight
+//! 500 via the embedded Inter Medium face. Description 14px with a
+//! 22.75px line-height (`text-sm/relaxed`, 1.625 — spec §0 correction 1;
+//! the audit's 20.0 was wrong). Description links are underlined with a
+//! 4px offset and turn `text-primary` on hover.
+//!
+//! # Behaviour
+//!
+//! Nothing animates and there are no keys of its own (spec §§6–7): no
+//! Tab stop, no hover/focus/disabled recipe. Buttons placed inside
+//! [`EmptyContent`] keep their own keyboard behaviour (the button line
+//! owns it). Description links are hover-recolour only in this port.
+//!
+//! # Deviations and OPEN items (frozen spec §§10–11)
+//!
+//! * D1 (PROPOSED) — [`EmptyFooter`] is an invented slot, not exported by
+//!   `empty.tsx`; kept as a documented extension, the Expert Reviewer
+//!   decides keep vs remove (prefer [`EmptyContent`]).
+//! * D2 (PROPOSED) — `tracking-tight` (−0.025em) is not conveyed; egui
+//!   has no letter-spacing support.
+//! * D3 (PROPOSED) — `text-balance` is not conveyed; egui has no balanced
+//!   line-breaking, text wraps centred.
+//! * D4 (PROPOSED) — `md:p-12` does not respond to viewport width: fixed
+//!   24px padding (documented approximation); [`Empty::padding`] lets a
+//!   caller opt into 48px manually (egui has no `md` breakpoint).
+//! * OPEN-1 (OPEN) — recipes for the other 7 styles are not frozen here.
+//! * OPEN-2 (OPEN) — `cn()` merge semantics are unknown (the `cn()`
+//!   utility source is not in the snapshot).
+//! * OPEN-3 (OPEN) — exact `border-dashed` dash geometry is undefined;
+//!   the port's 6px dash / 4px gap rendering is reasonable, not frozen.
+//! * OPEN-4 (OPEN) — free-form media intrinsic sizing contract; the S1
+//!   contract is that the box takes its content's size.
+//!
+//! # Tokens
+//!
+//! Title text `foreground`, description text `muted-foreground`
+//! (0.556 light / 0.708 dark), link hover `primary`, media icon box
+//! `muted` (0.97 / 0.269) with a `foreground` glyph, border `border`
+//! when bordered. **Light `--foreground` is CONTESTED:** `globals.css`
+//! says `oklch(0% 0 0)` while `themes.ts` says `oklch(0.145 0 0)`; the
+//! port consumes the `themes.ts` value per the standing R1 reading
+//! (rendered light title ink ≈ 10, S5). The disposition goes to S12 /
+//! the Expert Reviewer (same divergence card S11 recorded).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -262,6 +337,10 @@ fn link_runs(galley: &egui::Galley, segments: &[DescriptionSegment]) -> Vec<Link
 /// centred paint origin, the allocated rect, and the response. Paints
 /// nothing; the caller paints the galley (and any underlines) at the origin.
 ///
+/// S10-verified (EMP-01, `empty-s10-report.md` §1): title and description
+/// ink centres sit on the allocated rect's centre within ±0.5px in all 4
+/// configs.
+///
 /// The callers lay the job out with `halign = Align::Center`, so the
 /// galley's rect is centred on x = 0 (epaint: with
 /// `LayoutJob::halign == Align::Center`, `galley.rect.center() == 0.0`).
@@ -280,7 +359,8 @@ fn allocate_centered(ui: &mut Ui, galley: &egui::Galley) -> (Pos2, Rect, egui::R
     (origin, rect, response)
 }
 
-/// A shadcn empty state container. See the [module docs](self) for an example.
+/// A shadcn empty state container. See the [module docs](self) for the
+/// S10-verified final state, geometry, deviations and an example.
 #[derive(Clone, Debug, Default)]
 pub struct Empty {
     bordered: bool,
@@ -457,7 +537,9 @@ impl EmptyHeader {
 }
 
 /// `EmptyMedia` — the media slot; [`EmptyMediaVariant::Icon`] draws a
-/// `bg-muted` rounded box around the icon.
+/// `bg-muted` rounded box around the icon. Icon box 40px / glyph 24px
+/// (base) or 32px / 16px (nova), spec §2.3; the `mb-2` 8px sits BELOW the
+/// media. Free-form media takes its content's size (OPEN-4, S1 contract).
 #[derive(Clone, Debug)]
 pub struct EmptyMedia {
     variant: EmptyMediaVariant,
@@ -546,7 +628,9 @@ impl EmptyMedia {
 }
 
 /// `EmptyTitle` — `text-lg font-medium tracking-tight` (nova `text-sm`);
-/// line-heights 28px base / 20px nova (spec §2.4, §3.3).
+/// line-heights 28px base / 20px nova (spec §2.4, §3.3). S10-verified
+/// (EMP-01): ink centre within ±0.5px of the container centre in all 4
+/// configs. `tracking-tight` is not conveyed (D2, PROPOSED).
 #[derive(Clone, Debug)]
 pub struct EmptyTitle {
     text: String,
@@ -585,7 +669,9 @@ impl EmptyTitle {
 }
 
 /// `EmptyDescription` — `text-sm/relaxed text-muted-foreground` (14px text,
-/// 22.75px line height).
+/// 22.75px line height). S10-verified (EMP-01): ink centred within ±0.5px
+/// of the container centre in all 4 configs; links recolour to `primary`
+/// on hover (EMP-03, S10 §2).
 #[derive(Clone, Debug)]
 pub struct EmptyDescription {
     segments: Vec<DescriptionSegment>,
@@ -656,6 +742,8 @@ impl EmptyDescription {
 }
 
 /// `EmptyContent` — the actions slot (`gap-4 max-w-sm`; nova `gap-2.5`).
+/// S10-verified (EMP-02): the §1 two-button row centres at 682.5 nova /
+/// 682.0 vega on settled frames.
 #[derive(Clone, Debug, Default)]
 pub struct EmptyContent {
     id_salt: Option<String>,
@@ -694,6 +782,8 @@ impl EmptyContent {
 /// `EmptyFooter` — bottom slot mirroring EmptyContent. This slot is a Rust
 /// port extension: `empty.tsx` exports no footer (its docs pages wrap
 /// actions in the content slot), so prefer [`EmptyContent`] for new code.
+/// D1 (PROPOSED): the Expert Reviewer decides keep vs remove; S10 did not
+/// re-open it.
 #[derive(Clone, Debug, Default)]
 pub struct EmptyFooter {
     id_salt: Option<String>,
