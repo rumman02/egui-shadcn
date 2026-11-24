@@ -4,13 +4,71 @@
 //! `rounded-lg border px-4 py-3 text-sm` with `default` (`bg-card
 //! text-card-foreground`) and `destructive` (`text-destructive`,
 //! description `text-destructive/90`) variants; the nova style tightens the
-//! padding to `px-2.5 py-2` and narrows the icon gap.
+//! padding to `px-2.5 py-2` and narrows the icon gap. No shadow in either
+//! style (spec §2.1). Fill is `bg-card` in both variants; destructive
+//! changes text colour only (spec §2.2).
+//!
+//! Geometry — S10-verified in all 4 configs (nova/vega × light/dark;
+//! `reports/alert-s10-report.md` §1):
+//! - Alert boxes are exactly 3px taller than pre-fix (ALR-01): nova
+//!   63/106/86, vega 71/98/94; the title line box is 20.0px (`text-sm`
+//!   default — the 14px font's natural leading is 17px, so it is set
+//!   explicitly).
+//! - The 16×16 icon sits 2px below the title-row top in all 9 icon alerts
+//!   (ALR-02); the icon↔text column gap is 8px nova / 12–13px vega.
+//! - Description pitch is 23px (§5, all configs); paragraph text is
+//!   22.75px (`leading-relaxed`), paragraphs separated by 4px in base
+//!   and 20px in nova (16px `mb-4` + 4px grid gap).
 //!
 //! The optional icon slot sits left of the title/description column; the
 //! optional [`AlertAction`] paints at the alert's top-right corner (nova
-//! `absolute top-2 right-2`). `AlertAction` is a nova-era slot: only the
-//! nova recipe reserves `pr-18` (72px) for it, so non-nova styles keep the
-//! text at full width.
+//! `absolute top-2 right-2`, 8px from the alert's OUTER rect — a 1px
+//! approximation of the spec's padding-box rule, spec §3.4). The nova
+//! recipe reserves `pr-18` for it — 72px TOTAL right padding, not 72px
+//! additional. S8 decision §3.2 (D4, a documented port extension —
+//! "uniform action placement in all styles"): the 72px reservation
+//! applies in ALL styles, so base titles wrap within the reserved column
+//! instead of running under the opaque action button. S10-verified:
+//! vega §3a/§5 titles end with a visible "…" and clear their buttons
+//! by 8px/2px; nova is unchanged (clearance 18px/12px). The reservation
+//! is read from the previous frame, so it applies from frame 2 (D7,
+//! one-frame settle — a documented approximation, same class as
+//! input-otp's corners).
+//!
+//! Title: `line-clamp-1` — a single line, truncated with a trailing "…"
+//! when it exceeds the text column (N4, settled spec §3.3), painted at
+//! `font-medium` (500) with the embedded Inter Medium face. The
+//! truncation is measured-and-elided by the port (D5: the visual
+//! requirement is preserved exactly; only the mechanism is a port
+//! implementation).
+//!
+//! Behaviour — S10-verified (`reports/alert-s10-report.md` §2–§5):
+//! the alert root is never a Tab stop and has no keyboard, click, hover,
+//! focus, active, disabled, or animation behaviour of its own
+//! (spec §4/§6/§7); focus inside an alert belongs to the nested action
+//! button, which keeps the button line's behaviour. S6 legs (Tab walk,
+//! clicks, Space, press-in/release-out no-activation, hover
+//! endpoint-only, wheel) PASS in all 4 configs; S7 regression PASS
+//! (determinism 0, flicker 0, focus rings 660 nova / 556 vega, budgets
+//! inside limits); R8 round-trip byte-identical; demo click counters
+//! PASS (9/9 deltas, 10/10 digits — empty S10 §3, cited). Timing is
+//! UNRESOLVED in every video leg and the render floor is NOT VERIFIED
+//! (2.05 fps, pipeline-capped) — the same standing caveat as S7, not
+//! defects.
+//!
+//! Deviations and OPEN items — current dispositions (frozen spec §10/§11):
+//! D1 `role="alert"` live-region announcement is NOT conveyed (no ARIA
+//! tree in egui) — PROPOSED deviation (platform limit). D2
+//! `tracking-tight` (−0.35px/char) is NOT conveyed (no letter-spacing
+//! in egui) — limitation. D3 `text-balance`/`text-pretty` wrapping is
+//! NOT conveyed — limitation. D4 uniform action placement — DECIDED by
+//! S8 §3.2 (see above); the source question behind OPEN-1 is answered
+//! by that decision and carried to the Expert Reviewer in the wave pack.
+//! D6 the icon slot is restricted to the `Icon` enum, always 16px
+//! (the source accepts any `<svg>` child) — documented port scope.
+//! OPEN-2 (`cn()` merge semantics) stays OPEN — it never closes on
+//! substitute reasoning. OPEN-3 (`md:text-pretty` breakpoint) stays
+//! OPEN — immaterial, `text-pretty` is N/A in egui either way.
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -24,7 +82,7 @@
 //! ```
 
 use crate::icons::Icon;
-use crate::theme::{color_alpha, Palette, ShadcnTheme, Style};
+use crate::theme::{color_alpha, fonts, Palette, ShadcnTheme, Style};
 use egui::{Color32, CornerRadius, FontId, InnerResponse, Margin, Pos2, Rect, Stroke, Ui};
 
 /// Visual variants, mirroring the source `alertVariants.variant`.
@@ -59,6 +117,21 @@ pub(crate) fn icon_gap(style: Style) -> f32 {
     match style {
         Style::Nova => 8.0,
         _ => 12.0,
+    }
+}
+
+/// Right padding when an action is present —
+/// `has-data-[slot=alert-action]:pr-18` is 72px TOTAL, not 72px additional:
+/// the `:has()` selector's higher specificity replaces the right side of
+/// `px-2.5` (spec §3.4). S8 decision §3.2 (D4, a documented port
+/// extension — "uniform action placement in all styles"): the 72px
+/// reservation applies in every style, not just nova — in base the title
+/// was cut mid-word under the opaque action button with no "…".
+pub(crate) fn right_padding(style: Style, has_action: bool) -> f32 {
+    if has_action {
+        72.0
+    } else {
+        padding_x(style)
     }
 }
 
@@ -185,18 +258,15 @@ impl Alert {
             Some(salt) => ui.scope_id().with(salt),
             None => ui.auto_id_with("shadcn_alert"),
         };
-        // `has-data-[slot=alert-action]:pr-18` — reserve 72px on the right
-        // for the action; read from the previous frame (self-correcting).
-        // The slot is nova-only (the base recipe has no action slot), so
-        // other styles keep the text at full width.
+        // `has-data-[slot=alert-action]:pr-18` — 72px TOTAL right padding
+        // for the action; read from the previous frame (self-correcting),
+        // so on first paint with an action the reservation applies from
+        // frame 2 (D7, one-frame settle). S8 decision §3.2 (D4): the
+        // reservation applies in all styles, not just nova.
         let has_action: bool = ui
             .ctx()
             .data_mut(|d| d.get_temp(id.with("has_action")).unwrap_or(false));
-        let reserved_right = if has_action && theme.style == Style::Nova {
-            72.0
-        } else {
-            0.0
-        };
+        let right = right_padding(theme.style, has_action);
 
         let cursor = ui.cursor();
         push_variant(ui, self.variant);
@@ -219,7 +289,7 @@ impl Alert {
             .corner_radius(CornerRadius::same(radius))
             .inner_margin(Margin {
                 left: px as i8,
-                right: (px + reserved_right) as i8,
+                right: right as i8,
                 top: py as i8,
                 bottom: py as i8,
             });
@@ -227,11 +297,17 @@ impl Alert {
         let inner = frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width()); // `w-full`
             ui.style_mut().visuals.override_text_color = Some(c.title);
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 if let Some(icon) = self.icon {
                     // `[&>svg]:size-4 [&>svg]:translate-y-0.5` — 16px icon,
-                    // nudged 2px down, spanning both text rows.
+                    // top-aligned with the title row, nudged 2px down.
+                    // `horizontal_top` (not `horizontal`): the default
+                    // horizontal row centres the icon in the 36px
+                    // interact-size row, putting its top 12px below the
+                    // title top (ALR-02); top alignment keeps it at the
+                    // row top, so the +2 nudge below lands it at +2px
+                    // from the title's top edge.
                     let (rect, _) =
                         ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
                     if ui.is_rect_visible(rect) {
@@ -258,6 +334,49 @@ impl Alert {
     }
 }
 
+/// The title's font — `font-medium` (500) at 14px (`text-sm`), spec §3.3.
+/// Wired to the embedded Inter Medium face.
+pub(crate) fn title_font() -> FontId {
+    fonts::medium(crate::theme::tokens::type_scale::SM)
+}
+
+/// The title's line box — the `text-sm` default line-height (20px);
+/// no `leading-*` class applies (spec §3.3). The 14px font's natural
+/// line height is 17px, so this must be set explicitly (ALR-01).
+pub(crate) fn title_line_height() -> f32 {
+    20.0
+}
+
+/// Returns the longest prefix of `text` such that `prefix + "…"` fits within
+/// `max_width`, measured by `measure` (the width of a candidate string).
+/// `line-clamp-1` (N4): the title renders on exactly one line, truncated
+/// with a trailing "…" when it exceeds the available width. Pure and
+/// unit-testable with a stub measurer; the live call measures with the
+/// title font via `layout_no_wrap`. (D5: the visual requirement is
+/// preserved exactly; only the mechanism is a port implementation.)
+pub(crate) fn elide_prefix(text: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(text) <= max_width {
+        return text.to_owned();
+    }
+    let ellipsis = "…";
+    if measure(ellipsis) > max_width {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize; // longest prefix known to fit with the ellipsis
+    let mut hi = chars.len(); // shortest prefix known not to fit
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + ellipsis;
+        if measure(&candidate) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    chars[..lo].iter().collect::<String>() + ellipsis
+}
+
 /// `AlertTitle` — `min-h-4 font-medium tracking-tight`, single line.
 #[derive(Clone, Debug)]
 pub struct AlertTitle {
@@ -270,13 +389,33 @@ impl AlertTitle {
         Self { text: text.into() }
     }
 
-    /// Renders the title.
+    /// Renders the title — one line, truncated with a trailing "…" when it
+    /// exceeds the text column (N4), at `font-medium` (500).
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
         let c = resolve_alert_colors(&p, current_variant(ui).unwrap_or_default());
-        let font = FontId::proportional(crate::theme::tokens::type_scale::SM);
-        let galley = ui.painter().layout_no_wrap(self.text, font, c.title);
+        let font = title_font();
+        let max_width = ui.available_width().max(0.0);
+        let display = elide_prefix(&self.text, max_width, |s| {
+            ui.painter()
+                .layout_no_wrap(s.to_owned(), font.clone(), c.title)
+                .size()
+                .x
+        });
+        // Lay the title out through a job so the 20px line-height applies
+        // (ALR-01): `layout_no_wrap` uses the font's natural 17px leading.
+        // The job does not wrap (`max_width` is infinite by default), so
+        // the title stays one line, exactly as before.
+        let format = egui::TextFormat {
+            font_id: font,
+            color: c.title,
+            line_height: Some(title_line_height()),
+            ..egui::TextFormat::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&display, 0.0, format);
+        let galley = ui.painter().layout_job(job);
         let (rect, response) = ui.allocate_exact_size(
             galley.size().max(egui::Vec2::new(0.0, 16.0)),
             egui::Sense::hover(),
@@ -286,6 +425,45 @@ impl AlertTitle {
         }
         response
     }
+}
+
+/// Description paragraph line-height — `[&_p]:leading-relaxed`
+/// (1.625 × 14px = 22.75px, spec §3.5).
+pub(crate) fn description_line_height() -> f32 {
+    crate::theme::tokens::type_scale::SM * 1.625
+}
+
+/// Gap between description paragraphs — the base 4px grid gap; nova adds
+/// `mb-4` (16px) on non-last `<p>` for 20px total (spec §2.6).
+pub(crate) fn paragraph_gap(style: Style) -> f32 {
+    match style {
+        Style::Nova => 20.0,
+        _ => 4.0,
+    }
+}
+
+/// Splits description text into paragraphs on blank lines (one or more).
+/// A single paragraph (the common case) renders exactly as before.
+pub(crate) fn split_paragraphs(text: &str) -> Vec<&str> {
+    // Paragraphs are runs of non-blank lines, separated by blank lines.
+    let mut paras = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut cursor = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_start = cursor;
+        cursor += line.len();
+        if line.trim().is_empty() {
+            if let Some(s) = start.take() {
+                paras.push(text[s..line_start].trim_end_matches('\n'));
+            }
+        } else if start.is_none() {
+            start = Some(line_start);
+        }
+    }
+    if let Some(s) = start {
+        paras.push(text[s..].trim_end_matches('\n'));
+    }
+    paras
 }
 
 /// `AlertDescription` — `text-sm text-muted-foreground` (destructive:
@@ -301,7 +479,8 @@ impl AlertDescription {
         Self { text: text.into() }
     }
 
-    /// Renders the description.
+    /// Renders the description — wrapping text at 22.75px paragraph
+    /// line-height, paragraphs separated by the style's paragraph gap.
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         let theme = ShadcnTheme::of_ui(ui);
         let p = theme.palette;
@@ -312,16 +491,42 @@ impl AlertDescription {
         let format = egui::TextFormat {
             font_id: font,
             color: c.description,
-            line_height: Some(size * 1.625),
+            line_height: Some(description_line_height()),
             ..egui::TextFormat::default()
         };
-        let mut job = egui::text::LayoutJob::default();
-        job.append(&self.text, 0.0, format);
-        job.wrap.max_width = ui.available_width().max(0.0);
-        let galley = ui.painter().layout_job(job);
-        let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+        let gap = paragraph_gap(theme.style);
+        let mut paras = split_paragraphs(&self.text);
+        if paras.is_empty() {
+            // Empty / whitespace-only text: render one (possibly empty) job,
+            // exactly as before — no paragraph gap applies.
+            paras = vec![self.text.as_str()];
+        }
+        let mut galleys = Vec::with_capacity(paras.len());
+        let mut total_height = 0.0f32;
+        let mut max_width = 0.0f32;
+        for (i, para) in paras.iter().enumerate() {
+            if i > 0 {
+                total_height += gap;
+            }
+            let mut job = egui::text::LayoutJob::default();
+            job.append(para, 0.0, format.clone());
+            job.wrap.max_width = ui.available_width().max(0.0);
+            let galley = ui.painter().layout_job(job);
+            max_width = max_width.max(galley.size().x);
+            total_height += galley.size().y;
+            galleys.push(galley);
+        }
+        let (rect, response) = ui.allocate_exact_size(
+            egui::Vec2::new(max_width, total_height),
+            egui::Sense::hover(),
+        );
         if ui.is_rect_visible(rect) {
-            ui.painter().galley(rect.min, galley, c.description);
+            let mut y = rect.min.y;
+            for galley in &galleys {
+                ui.painter()
+                    .galley(Pos2::new(rect.min.x, y), galley.clone(), c.description);
+                y += galley.size().y + gap;
+            }
         }
         response
     }
@@ -424,6 +629,248 @@ mod tests {
         assert_eq!(padding_y(Style::Nova), 8.0);
         assert_eq!(icon_gap(Style::Nova), 8.0);
         assert_eq!(icon_gap(Style::Vega), 12.0);
+    }
+
+    #[test]
+    fn right_padding_is_72_total_with_action() {
+        // `pr-18` REPLACES the right padding (72px total) — it does not add
+        // to it. The audit's 82px reading was wrong (spec §3.4). S8
+        // decision §3.2 (D4): the reservation applies in all styles.
+        assert_eq!(right_padding(Style::Nova, true), 72.0);
+        assert_eq!(right_padding(Style::Nova, false), 10.0);
+        assert_eq!(right_padding(Style::Vega, true), 72.0);
+        assert_eq!(right_padding(Style::Vega, false), 16.0);
+    }
+
+    #[test]
+    fn title_uses_medium_face() {
+        // `font-medium` (500) at 14px — wired, not regular (spec §3.3).
+        assert_eq!(title_font().size, crate::theme::tokens::type_scale::SM);
+        assert_eq!(title_font().family, fonts::medium_family());
+    }
+
+    #[test]
+    fn title_line_height_is_text_sm_default() {
+        // `text-sm` default line-height is 20px; no `leading-*` class
+        // (spec §3.3, ALR-01). The font's natural leading is 17px.
+        assert_eq!(title_line_height(), 20.0);
+    }
+
+    #[test]
+    fn description_line_height_is_relaxed() {
+        // `[&_p]:leading-relaxed` = 1.625 × 14px = 22.75px (spec §3.5).
+        assert_eq!(description_line_height(), 22.75);
+    }
+
+    #[test]
+    fn paragraph_gaps_match_recipes() {
+        // Base 4px grid gap; nova 16px `mb-4` + 4px gap = 20px (spec §2.6).
+        assert_eq!(paragraph_gap(Style::Nova), 20.0);
+        assert_eq!(paragraph_gap(Style::Vega), 4.0);
+    }
+
+    #[test]
+    fn paragraphs_split_on_blank_lines() {
+        assert_eq!(split_paragraphs("one"), vec!["one"]);
+        assert_eq!(split_paragraphs("one\n\ntwo"), vec!["one", "two"]);
+        assert_eq!(split_paragraphs("one\n\n\ntwo"), vec!["one", "two"]);
+        assert_eq!(
+            split_paragraphs("one\ntwo\n\nthree"),
+            vec!["one\ntwo", "three"]
+        );
+        assert!(split_paragraphs("").is_empty());
+        assert!(split_paragraphs("\n\n").is_empty());
+    }
+
+    #[test]
+    fn elide_prefix_truncates_with_ellipsis() {
+        // Stub measurer: 10px per char, "…" is 10px.
+        let measure = |s: &str| s.chars().count() as f32 * 10.0;
+        assert_eq!(elide_prefix("short", 100.0, measure), "short");
+        assert_eq!(elide_prefix("hello world", 100.0, measure), "hello wor…");
+        assert_eq!(elide_prefix("hello world", 10.0, measure), "…");
+        assert_eq!(elide_prefix("hello world", 5.0, measure), "");
+        assert_eq!(elide_prefix("", 100.0, measure), "");
+    }
+
+    fn render_alert<R>(style: Style, render: impl Fn(&mut Ui) -> R) -> R {
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(style)
+            .build(Mode::Light)
+            .install(&ctx);
+        let mut out = None;
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("alert_s1_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            out = Some(Alert::new().show(ui, |ui| render(ui)).inner);
+        });
+        full.textures_delta.clear();
+        out.expect("alert rendered")
+    }
+
+    #[test]
+    fn long_title_truncates_to_one_line() {
+        // N4: a title longer than the text column shows "…" on one line
+        // and never overflows the alert (base padding 16px → 368px column).
+        let rect = render_alert(Style::Vega, |ui| {
+            AlertTitle::new("This is a very long alert title that must truncate with an ellipsis")
+                .show(ui)
+                .rect
+        });
+        assert!(rect.width() <= 368.0, "title width: {}", rect.width());
+        assert!(rect.height() < 36.0, "title height: {}", rect.height());
+    }
+
+    #[test]
+    fn title_row_is_20px_tall_in_both_styles() {
+        // Spec §3.3 / ALR-01: the title line box is 20px, in both styles
+        // (the title geometry is style-independent per spec §2.5).
+        for style in [Style::Nova, Style::Vega] {
+            let rect = render_alert(style, |ui| AlertTitle::new("Heads up!").show(ui).rect);
+            assert!(
+                (rect.height() - 20.0).abs() < 0.01,
+                "title height ({style:?}): {}",
+                rect.height()
+            );
+        }
+    }
+
+    /// Like [`render_alert`], but with an icon set, returning the
+    /// closure's output together with the frame's output shapes.
+    fn render_alert_with_icon<R>(
+        style: Style,
+        render: impl Fn(&mut Ui) -> R,
+    ) -> (R, Vec<egui::epaint::ClippedShape>) {
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(style)
+            .build(Mode::Light)
+            .install(&ctx);
+        let mut out = None;
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let ui = &mut egui::Ui::new(
+                ctx.clone(),
+                egui::Id::unique("alert_icon_test"),
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+            );
+            out = Some(
+                Alert::new()
+                    .icon(Icon::CircleCheck)
+                    .show(ui, |ui| render(ui))
+                    .inner,
+            );
+        });
+        full.textures_delta.clear();
+        (out.expect("alert rendered"), full.shapes)
+    }
+
+    #[test]
+    fn icon_is_top_aligned_with_title_row() {
+        // Spec §3.3 / ALR-02: the 16px icon is top-aligned with the
+        // title, its top edge exactly 2px below the title's top edge
+        // (`translate-y-0.5`), in both styles — measured against the
+        // corrected 20px title row (ALR-01). The icon is painted as a
+        // 16×16 textured mesh, so its rect is read back from the
+        // output shapes; the title rect comes from the content closure.
+        for style in [Style::Nova, Style::Vega] {
+            let (title_rect, shapes) = render_alert_with_icon(style, |ui| {
+                let t = AlertTitle::new("Heads up!").show(ui).rect;
+                AlertDescription::new("Description line.").show(ui);
+                t
+            });
+            assert!(
+                (title_rect.height() - 20.0).abs() < 0.01,
+                "title height ({style:?}): {}",
+                title_rect.height()
+            );
+            let icon_rect = shapes
+                .iter()
+                .map(|s| s.shape.visual_bounding_rect())
+                .find(|r| {
+                    (r.width() - 16.0).abs() < 0.01
+                        && (r.height() - 16.0).abs() < 0.01
+                        && r.min.x < 33.0
+                })
+                .expect("icon shape found");
+            assert!(
+                (icon_rect.top() - title_rect.top() - 2.0).abs() < 0.01,
+                "icon top ({style:?}): {}, title top: {}",
+                icon_rect.top(),
+                title_rect.top()
+            );
+        }
+    }
+
+    #[test]
+    fn base_title_wraps_within_reserved_action_column() {
+        // S8 decision §3.2 (D4): the 72px action reservation applies in
+        // all styles, so a long base title elides within the reserved
+        // column instead of running under the opaque action button.
+        // The reservation is read from the previous frame (D7 one-frame
+        // settle), so the second pass is the settled one.
+        let ctx = egui::Context::default();
+        Preset::default()
+            .with_style(Style::Vega)
+            .build(Mode::Light)
+            .install(&ctx);
+        let title = "This is a very long alert title that must truncate with an ellipsis";
+        let mut widths: Vec<f32> = Vec::new();
+        for _ in 0..2 {
+            let title_rect = std::cell::Cell::new(Rect::NOTHING);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let ui = &mut egui::Ui::new(
+                    ctx.clone(),
+                    egui::Id::unique("alert_d4_test"),
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 400.0))),
+                );
+                Alert::new().show(ui, |ui| {
+                    title_rect.set(AlertTitle::new(title).show(ui).rect);
+                    AlertAction::new().show(ui, |_ui| {});
+                });
+            });
+            out.textures_delta.clear();
+            widths.push(title_rect.get().width());
+        }
+        // Frame 1 has no reservation yet (full width); frame 2 reserves
+        // 72px: 400 − 16 (left) − 72 (right) = 312px.
+        assert!(widths[0] > 312.0, "frame 1 width: {}", widths[0]);
+        assert!(
+            widths[1] <= 312.0,
+            "frame 2 (settled) base title width with action: {}",
+            widths[1]
+        );
+    }
+
+    #[test]
+    fn multi_paragraph_gap_is_20px_in_nova_and_4px_in_base() {
+        // §2.6: two one-line paragraphs — the nova/base height difference
+        // is exactly the 16px `mb-4` (differential pin, robust to the
+        // font's exact row height).
+        let nova = render_alert(Style::Nova, |ui| {
+            AlertDescription::new("Para one.\n\nPara two.")
+                .show(ui)
+                .rect
+                .height()
+        });
+        let base = render_alert(Style::Vega, |ui| {
+            AlertDescription::new("Para one.\n\nPara two.")
+                .show(ui)
+                .rect
+                .height()
+        });
+        assert!(nova > 45.5, "nova height: {nova}");
+        assert!(base > 45.5, "base height: {base}");
+        assert!(
+            (nova - base - 16.0).abs() < 0.01,
+            "nova: {nova}, base: {base}"
+        );
     }
 
     #[test]
