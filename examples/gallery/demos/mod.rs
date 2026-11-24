@@ -8555,16 +8555,72 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
         texture.size_vec2(),
     ));
 
-    ui.label("Sizes with fallback initials");
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        Avatar::new().size(AvatarSize::Sm).fallback("CN").show(ui);
-        Avatar::new().fallback("CN").show(ui);
-        Avatar::new().size(AvatarSize::Lg).fallback("CN").show(ui);
+    // A wide (128x64) texture with bright stripes at its left/right edges.
+    // D2 distinguisher: the source stretches a non-square image to fill the
+    // square (the stripes survive near the circle's left/right edges); the
+    // port centre-crops (cover_uv), which cuts the stripes off. S5 judges
+    // which renders.
+    let wide_store = egui::Id::unique("avatar_demo_texture_wide");
+    let wide_tex_id = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::TextureHandle>(wide_store));
+    let wide_texture = wide_tex_id.unwrap_or_else(|| {
+        let (w, h) = (128, 64);
+        let mut pixels = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let px = if x < 6 || x >= w - 6 {
+                    egui::Color32::WHITE
+                } else {
+                    let t = x as f32 / w as f32;
+                    let v = y as f32 / h as f32;
+                    egui::Color32::from_rgb(
+                        (40.0 + 160.0 * t) as u8,
+                        (100.0 + 80.0 * v) as u8,
+                        (220.0 - 120.0 * t) as u8,
+                    )
+                };
+                pixels.push(px);
+            }
+        }
+        let image = egui::ColorImage::new([w, h], pixels);
+        ui.ctx().load_texture(
+            "avatar_demo_gradient_wide",
+            image,
+            egui::TextureOptions::default(),
+        )
     });
+    let wide_src = egui::ImageSource::Texture(egui::load::SizedTexture::new(
+        wide_texture.id(),
+        wide_texture.size_vec2(),
+    ));
+
+    ui.small("Avatar is a non-interactive display element: no keys, no Tab stop, clicks do nothing. Nova == base for every slot (spec §2.2). D2: the image centre-crop is a proposed deviation — the source stretches a non-square image to fill the square; judge it on the wide image in §2b (S5 judged centre-crop; S8 §3.3 accepted it). D3: Radix loading/delay states are degraded to texture-or-fallback (end-states only) — S6 fetched the Radix source and settled D3 as a documented equivalence; the transition timing stays OPEN-1. OPEN-2 CLOSED (S8 §3.4): a mixed-size group's count follows the hint-wins rule — the group's .size() hint when set, else 32px (S5/S6-verified: 24 hint-Sm / 32 no-hint).");
 
     ui.add_space(12.0);
-    ui.label("With an image (texture), icon fallback and badges");
+    ui.label("§1 Sizes with fallback initials");
+    ui.add_space(4.0);
+    let sizes = ui
+        .horizontal(|ui| {
+            (
+                Avatar::new().size(AvatarSize::Sm).fallback("CN").show(ui),
+                Avatar::new().fallback("CN").show(ui),
+                Avatar::new().size(AvatarSize::Lg).fallback("CN").show(ui),
+            )
+        })
+        .inner;
+    ui.small(format!(
+        "measured: sm {:.1} x {:.1} px (expected 24), default {:.1} x {:.1} px (expected 32), lg {:.1} x {:.1} px (expected 40); fallback text 12px sm / 14px default+lg",
+        sizes.0.rect.width(),
+        sizes.0.rect.height(),
+        sizes.1.rect.width(),
+        sizes.1.rect.height(),
+        sizes.2.rect.width(),
+        sizes.2.rect.height(),
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§2 Image, icon fallback and badges");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         Avatar::new().image(src.clone()).show(ui);
@@ -8586,9 +8642,109 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
             .badge(AvatarBadge::new().icon(Icon::Plus))
             .show(ui);
     });
+    ui.small("expected: badge 10px with 8px icon (default), 12px with 8px icon (lg), ring-2 ring-background, bottom-right corner; S5-verified in all 4 configs (the ring disc extends ~2px past the avatar rect — a CSS ring-2 outside the badge box, by design).");
 
     ui.add_space(12.0);
-    ui.label("Small badges hide their icon");
+    ui.label("§2b Non-square image (D2) — wide 128x64 texture");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        Avatar::new().image(wide_src.clone()).show(ui);
+        Avatar::new()
+            .size(AvatarSize::Lg)
+            .image(wide_src.clone())
+            .show(ui);
+    });
+    ui.small("D2: the white edge stripes survive a stretch near the circle's left/right edges and are cut off by a centre crop — S5 judged centre-crop (t 0.24–0.76, zero white pixels); S8 §3.3 accepted the crop.");
+
+    ui.add_space(12.0);
+    ui.label("§3 Groups — count keys off MEMBER sizes (N5)");
+    ui.add_space(4.0);
+    ui.label("All-default group (count 32)");
+    let default_group = AvatarGroup::new().show(ui, |ui| {
+        let a = Avatar::new().image(src.clone()).show(ui);
+        let b = Avatar::new().fallback("AB").show(ui);
+        Avatar::new().fallback("CD").show(ui);
+        Avatar::new().fallback_icon(Icon::User).show(ui);
+        let c = AvatarGroupCount::new("+2").show(ui);
+        (a, b, c)
+    });
+    let (first, second, default_count) = default_group.inner;
+    ui.small(format!(
+        "measured: member pitch {:.1} px (expected 24 = 32 - 8 overlap), count {:.1} x {:.1} px (expected 32)",
+        second.rect.left() - first.rect.left(),
+        default_count.rect.width(),
+        default_count.rect.height(),
+    ));
+
+    ui.add_space(8.0);
+    ui.label("All-sm group (count 24) — members carry .size(Sm)");
+    let sm_group = AvatarGroup::new().show(ui, |ui| {
+        let a = Avatar::new().size(AvatarSize::Sm).fallback("EF").show(ui);
+        let b = Avatar::new().size(AvatarSize::Sm).fallback("GH").show(ui);
+        let c = AvatarGroupCount::new("+9").show(ui);
+        (a, b, c)
+    });
+    let (first, second, sm_count) = sm_group.inner;
+    ui.small(format!(
+        "measured: member pitch {:.1} px (expected 16 = 24 - 8 overlap), count {:.1} x {:.1} px (expected 24)",
+        second.rect.left() - first.rect.left(),
+        sm_count.rect.width(),
+        sm_count.rect.height(),
+    ));
+
+    ui.add_space(8.0);
+    ui.label("All-lg group with icon count (count 40) — members carry .size(Lg)");
+    let lg_group = AvatarGroup::new().show(ui, |ui| {
+        let a = Avatar::new()
+            .size(AvatarSize::Lg)
+            .image(src.clone())
+            .show(ui);
+        let b = Avatar::new().size(AvatarSize::Lg).fallback("IJ").show(ui);
+        let c = AvatarGroupCount::new("")
+            .icon(Icon::MoreHorizontal)
+            .show(ui);
+        (a, b, c)
+    });
+    let (first, second, lg_count) = lg_group.inner;
+    ui.small(format!(
+        "measured: member pitch {:.1} px (expected 32 = 40 - 8 overlap), count {:.1} x {:.1} px (expected 40)",
+        second.rect.left() - first.rect.left(),
+        lg_count.rect.width(),
+        lg_count.rect.height(),
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§4 Mixed-size group (hint-wins — OPEN-2 closed, S8 §3.4)");
+    ui.add_space(4.0);
+    ui.label("Mixed sm + lg members, group hint Sm");
+    let mixed_hint = AvatarGroup::new().size(AvatarSize::Sm).show(ui, |ui| {
+        Avatar::new().size(AvatarSize::Sm).fallback("KL").show(ui);
+        Avatar::new().size(AvatarSize::Lg).fallback("MN").show(ui);
+        AvatarGroupCount::new("+3").show(ui)
+    });
+    let mixed_hint_count = mixed_hint.inner;
+    ui.small(format!(
+        "measured: count {:.1} x {:.1} px (expected 24 — the Sm hint wins the tiebreak; hint-wins, OPEN-2 closed S8 §3.4, S5/S6-verified)",
+        mixed_hint_count.rect.width(),
+        mixed_hint_count.rect.height(),
+    ));
+
+    ui.add_space(8.0);
+    ui.label("Mixed sm + lg members, no group hint");
+    let mixed_plain = AvatarGroup::new().show(ui, |ui| {
+        Avatar::new().size(AvatarSize::Sm).fallback("OP").show(ui);
+        Avatar::new().size(AvatarSize::Lg).fallback("QR").show(ui);
+        AvatarGroupCount::new("+4").show(ui)
+    });
+    let mixed_plain_count = mixed_plain.inner;
+    ui.small(format!(
+        "measured: count {:.1} x {:.1} px (expected 32 — base size when no hint is set; hint-wins, OPEN-2 closed S8 §3.4, S5/S6-verified)",
+        mixed_plain_count.rect.width(),
+        mixed_plain_count.rect.height(),
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§5 Badges — 8 / 10 / 12 by member size, bottom-right, sm icon hidden");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         Avatar::new()
@@ -8601,41 +8757,20 @@ pub fn avatar_demo(ui: &mut egui::Ui) {
             .fallback("M")
             .badge(AvatarBadge::new())
             .show(ui);
-    });
-
-    ui.add_space(12.0);
-    ui.label("Group (-space-x-2 overlap with separation rings)");
-    ui.add_space(4.0);
-    AvatarGroup::new().show(ui, |ui| {
-        Avatar::new().image(src.clone()).show(ui);
-        Avatar::new().fallback("AB").show(ui);
-        Avatar::new().fallback("CD").show(ui);
-        Avatar::new().fallback_icon(Icon::User).show(ui);
-        AvatarGroupCount::new("+2").show(ui);
-    });
-
-    ui.add_space(8.0);
-    ui.label("Small group");
-    ui.add_space(4.0);
-    AvatarGroup::new().size(AvatarSize::Sm).show(ui, |ui| {
-        Avatar::new().fallback("EF").show(ui);
-        Avatar::new().fallback("GH").show(ui);
-        AvatarGroupCount::new("+9").show(ui);
-    });
-
-    ui.add_space(8.0);
-    ui.label("Large group with icons");
-    ui.add_space(4.0);
-    AvatarGroup::new().size(AvatarSize::Lg).show(ui, |ui| {
-        Avatar::new().image(src.clone()).show(ui);
-        Avatar::new().fallback("IJ").show(ui);
-        AvatarGroupCount::new("")
-            .icon(Icon::MoreHorizontal)
+        Avatar::new()
+            .fallback("OK")
+            .badge(AvatarBadge::new().icon(Icon::Check))
+            .show(ui);
+        Avatar::new()
+            .size(AvatarSize::Lg)
+            .fallback("LG")
+            .badge(AvatarBadge::new().icon(Icon::Plus))
             .show(ui);
     });
+    ui.small("expected: badge 8px (sm, icon hidden) / 10px (default, icon 8px) / 12px (lg, icon 8px), ring-2 ring-background; S5-verified in all 4 configs.");
 
     ui.add_space(8.0);
-    ui.small("URI images load through the context's texture loaders and fall back to initials until resolved.");
+    ui.small("URI images load through the context's texture loaders and fall back to initials until resolved. Long fallback text is centre-clipped with no ellipsis (spec §3.3) — not exercisable here: .fallback() reduces names to at most 2 initials, so the clip path is unit-pinned in S1 instead.");
 }
 
 pub fn progress_demo(ui: &mut egui::Ui) {
