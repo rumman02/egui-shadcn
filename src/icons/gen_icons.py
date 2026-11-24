@@ -42,6 +42,7 @@ ICONS = [
     ("ChevronRight", "chevron-right"),
     ("ChevronsLeft", "chevrons-left"),
     ("ChevronsRight", "chevrons-right"),
+    ("ChevronsUpDown", "chevrons-up-down"),
     ("X", "x"),
     ("Minus", "minus"),
     ("Plus", "plus"),
