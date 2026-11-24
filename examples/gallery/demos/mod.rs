@@ -10471,7 +10471,119 @@ pub fn pagination_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
+    ui.label("Wide size(Default) link (P6) — 36px tall base / 32px nova, px-4 16px base / px-2.5 10px nova");
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                PaginationPrevious::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("98").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("99").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("100")
+                    .active(true)
+                    .size(ButtonSize::Default)
+                    .show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationNext::new().show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label(
+        "Wide default-size link with an icon (§9.5) — PaginationLink exposes no icon builder, \
+         so this case renders the underlying Button directly (the same Button metrics \
+         PaginationLink delegates to); the icon gap is 8px base / 6px nova. S8 decides whether \
+         PaginationLink gains an icon builder.",
+    );
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                PaginationPrevious::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                Button::new("100")
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Default)
+                    .icon_start(Icon::FileText)
+                    .show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationNext::new().show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Narrow container (§9.7) — the row is flex with shrink-0 items: it overflows rather than wrapping; S5 judges the rendered overflow.");
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        ui.set_max_width(320.0);
+        Pagination::new().show(ui, |ui| {
+            PaginationContent::new().show(ui, |ui| {
+                PaginationItem::new().show(ui, |ui| {
+                    PaginationPrevious::new().show(ui);
+                });
+                for p in 1..=4usize {
+                    PaginationItem::new().show(ui, |ui| {
+                        PaginationLink::new(p.to_string()).show(ui);
+                    });
+                }
+                PaginationItem::new().show(ui, |ui| {
+                    PaginationEllipsis::new().show(ui);
+                });
+                PaginationItem::new().show(ui, |ui| {
+                    PaginationLink::new("9").show(ui);
+                });
+                PaginationItem::new().show(ui, |ui| {
+                    PaginationNext::new().show(ui);
+                });
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+    ui.label("Disabled active link (§9.9) — the current page, disabled: Outline variant at 50% opacity, non-interactive.");
+    ui.add_space(4.0);
+    Pagination::new().show(ui, |ui| {
+        PaginationContent::new().show(ui, |ui| {
+            PaginationItem::new().show(ui, |ui| {
+                PaginationPrevious::new().show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("4").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("5")
+                    .active(true)
+                    .disabled(true)
+                    .show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationLink::new("6").show(ui);
+            });
+            PaginationItem::new().show(ui, |ui| {
+                PaginationNext::new().show(ui);
+            });
+        });
+    });
+
+    ui.add_space(12.0);
     ui.label("The active page uses the Outline button variant, the rest Ghost.");
+    ui.add_space(4.0);
+    ui.label(
+        "Disabled links (N1) render at 50% opacity and do not respond to clicks; the wide \
+         Default link above (P6) is 32px tall under nova / 36px base; the ellipsis sits where \
+         the caller places it — the component defines no page-window algorithm (§9.1).",
+    );
 
     ui.ctx().data_mut(|d| d.insert_temp(page_store, page));
 }
