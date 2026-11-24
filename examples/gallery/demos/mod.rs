@@ -9409,7 +9409,10 @@ pub fn item_demo(ui: &mut egui::Ui) {
         egui::load::SizedTexture::new(texture.id(), texture.size_vec2()),
     );
 
-    ui.label("Outline items in a group (media/content/actions)");
+    ui.label("Item — list-row primitive (shadcn item.tsx + nova .cn-item*). Non-interactive rows: no keys, no Tab stop, no click; hover fill is anchor-only (D4: Item::interactive(bool) is the port mapping of asChild + <a>). No disabled/selected/invalid/pressed states exist in the source — none invented. Group size is a Rust extension (D5) approximating the has-data-[size] gap rule; the link API is S1's additive .link()/.text() choice (OPEN-3, reviewer decides); a second ItemContent is NOT flex-none (limitation); the focus ring does not animate (§6 / D8 — instant recolour in egui).");
+    ui.add_space(8.0);
+
+    ui.label("Composition — outline items in a group (media/content/actions)");
     ui.add_space(4.0);
     ItemGroup::new().show(ui, |ui| {
         Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
@@ -9452,7 +9455,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Muted and default variants");
+    ui.label("Variants — muted and default");
     ui.add_space(4.0);
     ItemGroup::new().show(ui, |ui| {
         Item::new().variant(ItemVariant::Muted).show(ui, |ui| {
@@ -9471,9 +9474,272 @@ pub fn item_demo(ui: &mut egui::Ui) {
     });
 
     ui.add_space(12.0);
-    ui.label("Header and footer rows (actions right-aligned)");
+    ui.label("§1 Sizes — default / Sm / Xs (xs is nova-only; under base the port applies the nova-xs geometry as an extension, spec §2.3)");
     ui.add_space(4.0);
+    let h_default = Item::new()
+        .variant(ItemVariant::Outline)
+        .show(ui, |ui| {
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Default size").show(ui);
+                ItemDescription::new("Title 19.25 + gap 4 + description 21.").show(ui);
+            });
+        })
+        .response
+        .rect
+        .height();
+    let h_sm = Item::new()
+        .variant(ItemVariant::Outline)
+        .size(ItemSize::Sm)
+        .show(ui, |ui| {
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Small size").show(ui);
+                ItemDescription::new("Same content as default; only the padding changes.").show(ui);
+            });
+        })
+        .response
+        .rect
+        .height();
+    let h_xs = Item::new()
+        .variant(ItemVariant::Outline)
+        .size(ItemSize::Xs)
+        .show(ui, |ui| {
+            ItemContent::new().show(ui, |ui| {
+                ItemTitle::new("Extra small size").show(ui);
+                ItemDescription::new("Nova-only: 12px description, 0 content gap.").show(ui);
+            });
+        })
+        .response
+        .rect
+        .height();
+    ui.small(format!(
+        "item heights: default {:.1} / sm {:.1} / xs {:.1} px (spec model 66.25 / 66.25 / 55.25 border-inclusive — ITM-01 FIXED, S10-verified: frames at the spec model in all 4 configs)",
+        h_default, h_sm, h_xs
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§2 Group gap — keys off the contained items' data-size (spec §2.4); base groups have no gap. The gap is two-frame (frame 1 uses the group-size hint); readouts are the settled values.");
+    ui.add_space(4.0);
+    fn measure_group_gap(
+        ui: &mut egui::Ui,
+        group: ItemGroup,
+        first_size: Option<ItemSize>,
+        second_size: Option<ItemSize>,
+        salt: &str,
+    ) -> f32 {
+        let (a, b) = group
+            .show(ui, |ui| {
+                let show_item =
+                    |ui: &mut egui::Ui, title: &str, size: Option<ItemSize>, tag: &str| {
+                        let mut item = Item::new()
+                            .variant(ItemVariant::Outline)
+                            .id_salt(format!("{salt}-{tag}"));
+                        if let Some(size) = size {
+                            item = item.size(size);
+                        }
+                        item.show(ui, |ui| {
+                            ItemContent::new().show(ui, |ui| {
+                                ItemTitle::new(title).show(ui);
+                            });
+                        })
+                        .response
+                        .rect
+                    };
+                let a = show_item(ui, "Alpha", first_size, "a");
+                let b = show_item(ui, "Beta", second_size, "b");
+                (a, b)
+            })
+            .inner;
+        b.min.y - a.max.y
+    }
+    ui.small("Default group (members default):");
+    let gap_default = measure_group_gap(ui, ItemGroup::new(), None, None, "gap-default");
+    ui.small(format!(
+        "settled gap {:.1} px (expected 16 nova / 0 base)",
+        gap_default
+    ));
+    ui.small("Sm group (members inherit Sm):");
+    let gap_sm = measure_group_gap(
+        ui,
+        ItemGroup::new().size(ItemSize::Sm),
+        None,
+        None,
+        "gap-sm",
+    );
+    ui.small(format!(
+        "settled gap {:.1} px (expected 10 nova / 0 base)",
+        gap_sm
+    ));
+    ui.small("Xs group (members inherit Xs):");
+    let gap_xs = measure_group_gap(
+        ui,
+        ItemGroup::new().size(ItemSize::Xs),
+        None,
+        None,
+        "gap-xs",
+    );
+    ui.small(format!(
+        "settled gap {:.1} px (expected 8 nova / 0 base)",
+        gap_xs
+    ));
+    ui.small(
+        "Mixed Sm + Xs group (OPEN-1 — xs wins by source order, S5 renders the confirmation):",
+    );
+    let gap_mixed = measure_group_gap(
+        ui,
+        ItemGroup::new(),
+        Some(ItemSize::Sm),
+        Some(ItemSize::Xs),
+        "gap-mixed",
+    );
+    ui.small(format!(
+        "settled gap {:.1} px (expected 8 nova / 0 base)",
+        gap_mixed
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§3 Media + description (N12) — the media shifts 2px down and top-aligns when a description is present");
+    ui.add_space(4.0);
+    let with_image = Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        let m = ItemMedia::image(src.clone()).show(ui).rect;
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Image media, with description").show(ui);
+            ItemDescription::new("The 40px image sits 2px below the item's top padding.").show(ui);
+        });
+        m
+    });
+    let with_image_off = with_image.inner.min.y - with_image.response.rect.min.y;
+    let without_image = Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        let m = ItemMedia::image(src.clone()).show(ui).rect;
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Image media, no description").show(ui);
+        });
+        m
+    });
+    let without_image_off = without_image.inner.min.y - without_image.response.rect.min.y;
+    ui.small(format!(
+        "image top − item top: with description {:.1} px (expected pad+border+2 = 13 nova / 19 base); without {:.1} px (expected pad+border = 11 / 17); shift {:.1} px (expected 2.0)",
+        with_image_off,
+        without_image_off,
+        with_image_off - without_image_off
+    ));
+    let with_icon = Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        let m = ItemMedia::icon(Icon::User).show(ui).rect;
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Icon media, with description").show(ui);
+            ItemDescription::new("The 32px icon box shifts the same 2px.").show(ui);
+        });
+        m
+    });
+    let with_icon_off = with_icon.inner.min.y - with_icon.response.rect.min.y;
+    let without_icon = Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        let m = ItemMedia::icon(Icon::User).show(ui).rect;
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Icon media, no description").show(ui);
+        });
+        m
+    });
+    let without_icon_off = without_icon.inner.min.y - without_icon.response.rect.min.y;
+    ui.small(format!(
+        "icon top − item top: with description {:.1} px; without {:.1} px; shift {:.1} px — N12 verified (S10): the icon sits at py+border without a description and shifts exactly 2.0 with one; the image above is the discriminating case (expected shift 2.0)",
+        with_icon_off,
+        without_icon_off,
+        with_icon_off - without_icon_off
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§4 Title wrap + icon (N11) — the title wraps at the content width minus the icon; the icon stays on the same line, vertically centred");
+    ui.add_space(4.0);
+    let avail = ui.available_rect_before_wrap();
+    let (title_row, icon_rect) = ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_size(
+                avail.min,
+                egui::vec2(360.0, avail.height()),
+            ))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            let mut title_row = egui::Rect::NOTHING;
+            let mut icon_rect = egui::Rect::NOTHING;
+            Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+                ItemContent::new().show(ui, |ui| {
+                    let t = ItemTitle::new(
+                        "A very long item title that must wrap across several lines inside the content column while the badge stays on the same row",
+                    )
+                    .show_with(ui, |ui| Badge::new("NEW").show(ui).rect);
+                    title_row = t.response.rect;
+                    icon_rect = t.inner;
+                });
+            });
+            (title_row, icon_rect)
+        },
+    ).inner;
+    ui.small(format!(
+        "title row {:.1} x {:.1} px (wrapped: {:.0} lines at 19.25px); badge centre y {:.1} vs row centre y {:.1} (expected within 1px); badge right {:.1} px from the column left (inside the 360px column)",
+        title_row.width(),
+        title_row.height(),
+        title_row.height() / 19.25,
+        icon_rect.center().y,
+        title_row.center().y,
+        icon_rect.max.x - avail.min.x
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§5 Description link (N10) — a direct <a> child renders underlined with a 4px offset and recolours to text-primary on hover");
+    ui.add_space(4.0);
+    let mut desc_rect = egui::Rect::NOTHING;
     Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+        ItemContent::new().show(ui, |ui| {
+            ItemTitle::new("Read the manual").show(ui);
+            desc_rect = ItemDescription::new("See ")
+                .link("the docs")
+                .text(" for setup instructions and examples.")
+                .show(ui)
+                .rect;
+        });
+    });
+    ui.small(format!(
+        "description {:.1} x {:.1} px — the link is underlined at baseline+4px; hover it to see text-primary (S6 leg)",
+        desc_rect.width(),
+        desc_rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label(
+        "§6 Line-clamp-2 — a long description truncates to two lines with a trailing ellipsis",
+    );
+    ui.add_space(4.0);
+    let avail = ui.available_rect_before_wrap();
+    let mut clamp_rect = egui::Rect::NOTHING;
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_size(
+                avail.min,
+                egui::vec2(360.0, avail.height()),
+            ))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
+                ItemContent::new().show(ui, |ui| {
+                    ItemTitle::new("Long description, clamped").show(ui);
+                    clamp_rect = ItemDescription::new(
+                        "This description is deliberately far too long for the two lines the source allows, so the port must truncate it with a trailing ellipsis instead of letting it spill onto a third line or overflow the item.",
+                    )
+                    .show(ui)
+                    .rect;
+                });
+            });
+        },
+    );
+    ui.small(format!(
+        "description {:.1} x {:.1} px (expected h = 42.0 = 2 x 21px, trailing …)",
+        clamp_rect.width(),
+        clamp_rect.height()
+    ));
+
+    ui.add_space(12.0);
+    ui.label("§7 Header and footer rows (actions right-aligned) — header and footer each take a full line");
+    ui.add_space(4.0);
+    let hf = Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
         ItemHeader::new().show(ui, |ui| {
             ItemTitle::new("Team settings").show(ui);
             ItemActions::new().show(ui, |ui| {
@@ -9490,9 +9756,14 @@ pub fn item_demo(ui: &mut egui::Ui) {
             });
         });
     });
+    ui.small(format!(
+        "item {:.1} x {:.1} px (pre-rebuild this stacked at 472 x 647 — the description wrapped one character per line)",
+        hf.response.rect.width(),
+        hf.response.rect.height()
+    ));
 
     ui.add_space(12.0);
-    ui.label("Interactive item (hover fill + focus ring, click to activate)");
+    ui.label("§8 Interactive item (hover fill + focus ring, click to activate)");
     ui.add_space(4.0);
     let item_active_store = egui::Id::unique("item_demo_active");
     let mut active: bool = ui
@@ -9521,7 +9792,7 @@ pub fn item_demo(ui: &mut egui::Ui) {
         .data_mut(|d| d.insert_temp(item_active_store, active));
 
     ui.add_space(12.0);
-    ui.label("Separator between items (nova my-2)");
+    ui.label("§9 Separator between items (nova my-2)");
     ui.add_space(4.0);
     Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
         ItemContent::new().show(ui, |ui| {
@@ -9533,26 +9804,6 @@ pub fn item_demo(ui: &mut egui::Ui) {
         ItemContent::new().show(ui, |ui| {
             ItemTitle::new("Below").show(ui);
         });
-    });
-
-    ui.add_space(12.0);
-    ui.label("Sizes (group data-size inheritance)");
-    ui.add_space(4.0);
-    ItemGroup::new().size(ItemSize::Sm).show(ui, |ui| {
-        Item::new().variant(ItemVariant::Outline).show(ui, |ui| {
-            ItemMedia::icon(Icon::Sparkles).show(ui);
-            ItemContent::new().show(ui, |ui| {
-                ItemTitle::new("Small item").show(ui);
-            });
-        });
-        Item::new()
-            .variant(ItemVariant::Outline)
-            .size(ItemSize::Xs)
-            .show(ui, |ui| {
-                ItemContent::new().show(ui, |ui| {
-                    ItemTitle::new("Extra small item").show(ui);
-                });
-            });
     });
 }
 
