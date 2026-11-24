@@ -73,13 +73,11 @@
 //!   them). No code change in this wave.
 //! - Token divergence (spec §5.4): light `--card-foreground` /
 //!   `--foreground` is `oklch(0.145 0 0)` in `themes.ts` vs `oklch(0% 0 0)`
-//!   in `globals.css`. The spec applies Batch B ruling R1 ("Palette
-//!   follows themes.ts", effective 0.145), but the Batch F cross-batch
-//!   verification (2026-11-21, `batch-f/reports/coordinator-note.md`)
-//!   found no such ruling in the Batch D sources and records
-//!   globals.css (0%) as the verified source — the disposition is
-//!   CONTESTED, carried to S12 / the Expert Reviewer; no card-line
-//!   action, and S10 did not re-measure the token value.
+//!   in `globals.css`. DECIDED 2026-11-24 (FND-D1, Expert Review:
+//!   globals.css wins, effective 0% in light mode); the resolve-time
+//!   override lives in `Preset::slots()`. The earlier "R1 (Palette
+//!   follows themes.ts)" reading was a misreading — no such ruling
+//!   exists (Batch F cross-batch verification 2026-11-21).
 //!
 //! ```ignore
 //! use egui_shadcn_ui::prelude::*;
@@ -1064,10 +1062,11 @@ mod tests {
     }
 
     #[test]
-    fn light_foreground_follows_themes_ts() {
-        // §5.4 / R1: light `foreground` / `card-foreground` is
-        // `oklch(0.145 0 0)` (themes.ts), not `oklch(0% 0 0)` (globals.css).
-        let expected = crate::theme::Oklch::parse("oklch(0.145 0 0)")
+    fn light_foreground_follows_globals_css() {
+        // §5.4 / FND-D1: light `foreground` / `card-foreground` is
+        // `oklch(0% 0 0)` (globals.css wins over themes.ts `0.145`,
+        // coordinator ruling 2026-11-24, Expert Review decision).
+        let expected = crate::theme::Oklch::parse("oklch(0% 0 0)")
             .unwrap()
             .to_color32();
         let p = palette(Mode::Light);

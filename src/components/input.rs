@@ -281,8 +281,8 @@ pub(crate) fn ring_visible(focused: bool, invalid: bool, style: Style) -> bool {
 ///
 /// Per-slot alpha halving double-fades the overlap pixels: a halved stroke
 /// over a halved fill read (239) nova-light where group fade requires
-/// (242), and halved glyphs over the faded fill read (129)/(182) where
-/// group fade requires (132)/(185). The fill itself keeps halving — it
+/// (242), and halved glyphs over the faded fill read (125)/(182) where
+/// group fade requires (128)/(185). The fill itself keeps halving — it
 /// paints over the backdrop alone, where halving IS the group fade — and
 /// the ring and shadow keep halving for the same reason (they sit outside
 /// the rect). The precomposite is exact at every coverage: coverage `c`
@@ -618,8 +618,8 @@ impl<'a> Input<'a> {
         // Disabled compositing (INP-VIS-01): the glyph colour precomposites
         // the group fade OPAQUE against the backdrop instead of halving its
         // alpha over the faded fill, which double-fades glyph cores (the
-        // per-slot path read (129) nova-light where group fade requires
-        // (132)). Enabled rendering is unchanged.
+        // per-slot path read (125) nova-light where group fade requires
+        // (128)). Enabled rendering is unchanged.
         let text_color = if self.disabled {
             disabled_group_fade(animated_foreground, fill_animated, p.background)
         } else {
@@ -1104,12 +1104,13 @@ mod tests {
         }
         // Glyph slots: an opaque slot fades against the backdrop alone —
         // the precomposite equals `mix(backdrop, slot, 0.5)` whatever the
-        // fill beneath it is. Numeric values: light text 132.5 -> 133
+        // fill beneath it is. Numeric values: light text 127.5 -> 128
         // (halves round away from zero), dark text 130, light placeholder
         // 185, dark placeholder 85.5 -> 86 — all within ±1 of the S5
-        // derivation (132/130, 185/86).
+        // derivation (128/130, 185/86). (FND-D1: light foreground is now
+        // `oklch(0% 0 0)`, so the text composite moved 132 -> 128.)
         for (p, dark_mode, expected_text, expected_hint) in
-            [(&light, false, 132u8, 185u8), (&dark, true, 130u8, 86u8)]
+            [(&light, false, 128u8, 185u8), (&dark, true, 130u8, 86u8)]
         {
             let fill_rule = color_alpha(p.input, input_fill_alpha(dark_mode, true, Style::Nova));
             assert_eq!(

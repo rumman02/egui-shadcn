@@ -67,7 +67,7 @@
 //! chrome composites once at 50% over the backdrop; per-slot halving
 //! would double-fade the overlap pixels (the CHK-VIS-01 defect).
 //! S10 closing values, exact in all four combinations (S10 §3):
-//! disabled checked border-over-fill (139) light / (120) dark,
+//! disabled checked border-over-fill (128) light / (120) dark,
 //! disabled unchecked border (242) light / (33) dark, differential
 //! patches maxdev ≤3. On backdrops other than the theme page
 //! background the overlap pixels use the theme background as the
@@ -1988,7 +1988,10 @@ mod tests {
         assert_eq!(stroke_of(&disabled), Color32::from_rgb(242, 242, 242));
 
         // Light checked, fresh context: the disabled border-over-fill
-        // reads the opaque group fade (139), not the per-slot (81).
+        // reads the opaque group fade (128), not the halved-alpha
+        // per-slot reading. (FND-D1: light primary is now `oklch(0% 0 0)`,
+        // so the 50/50 composite of the primary over white is 128,
+        // where the old primary rendered 139.)
         let ctx = egui::Context::default();
         Preset::default().install(&ctx);
         let mut checked = true;
@@ -1998,7 +2001,7 @@ mod tests {
                 .id_salt("dis_chk")
                 .show(ui);
         });
-        assert_eq!(stroke_of(&disabled), Color32::from_rgb(139, 139, 139));
+        assert_eq!(stroke_of(&disabled), Color32::from_rgb(128, 128, 128));
 
         let ctx = egui::Context::default();
         Preset::default().build(Mode::Dark).install(&ctx);
